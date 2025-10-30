@@ -1,0 +1,15 @@
+database:
+  driver: mysql
+  host: localhost
+  port: 3306
+  user: root
+  password: "396pqww!" # TODO: 在此填写你的密码
+  name: ququchat
+  params:
+    parseTime: "true"
+    loc: "Local"
+    charset: "utf8mb4"
+
+auth:
+  # JWT 密钥，建议生产环境使用长随机字符串，并通过安全方式管理
+  jwt_secret: "dev-secret-change-me"
