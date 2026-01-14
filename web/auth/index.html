@@ -22,6 +22,15 @@
       <button id="btnLogout">退出登录（当前设备）</button>
     </div>
     <div class="row">
+      <label>手动访问令牌（Authorization Header）</label>
+      <input id="manualAccess" type="text" class="mono" placeholder="粘贴或输入访问令牌" />
+    </div>
+    <div class="row">
+      <label>手动刷新令牌（JSON body 优先，否则使用 Cookie）</label>
+      <input id="manualRefresh" type="text" class="mono" placeholder="粘贴或输入刷新令牌" />
+      <div class="muted">留空时：刷新 / 登出 将使用 Cookie 中的 refresh_token；填写则随请求体一并提交。</div>
+    </div>
+    <div class="row">
       <div>访问令牌（JWT）：<span id="access" class="mono"></span></div>
       <div class="muted">刷新令牌保存在 HttpOnly Cookie 中（不可在页面直接读取）。</div>
     </div>

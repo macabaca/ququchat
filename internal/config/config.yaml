@@ -13,3 +13,9 @@ database:
 auth:
   # JWT 密钥，建议生产环境使用长随机字符串，并通过安全方式管理
   jwt_secret: "dev-secret-change-me"
+  # 访问令牌有效期（time.ParseDuration 支持的格式，如："15m"、"1h"）
+  access_ttl: "15m"
+  # 刷新令牌有效期（例如 30 天 = 720 小时）
+  refresh_ttl: "720h"
+  # 刷新令牌随机字节长度（默认 32）
+  refresh_token_bytes: 32

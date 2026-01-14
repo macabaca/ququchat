@@ -3,7 +3,7 @@ package config
 import (
     "os"
     "path/filepath"
-
+    
     "gopkg.in/yaml.v3"
 )
 
@@ -12,20 +12,7 @@ type Config struct {
     Auth     Auth     `yaml:"auth" json:"auth"`
 }
 
-type Database struct {
-    Driver   string            `yaml:"driver" json:"driver"`
-    Host     string            `yaml:"host" json:"host"`
-    Port     int               `yaml:"port" json:"port"`
-    User     string            `yaml:"user" json:"user"`
-    Password string            `yaml:"password" json:"password"`
-    Name     string            `yaml:"name" json:"name"`
-    Params   map[string]string `yaml:"params" json:"params"`
-}
-
-// Auth 认证相关配置
-type Auth struct {
-    JWTSecret string `yaml:"jwt_secret" json:"jwt_secret"`
-}
+// Database 结构体已拆分至 config_db.go
 
 // LoadFromFile 读取指定路径的 YAML 配置文件
 func LoadFromFile(path string) (*Config, error) {

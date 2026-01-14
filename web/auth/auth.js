@@ -1,6 +1,13 @@
 const logEl = document.getElementById('log');
 const accessEl = document.getElementById('access');
+const manualAccessEl = document.getElementById('manualAccess');
+const manualRefreshEl = document.getElementById('manualRefresh');
 const state = { accessToken: '' };
+
+function updateAccessClip() {
+  const current = (manualAccessEl?.value || '').trim() || state.accessToken;
+  accessEl.textContent = current ? current.slice(0, 24) + '…' : '';
+}
 
 function appendLog(type, msg, data) {
   const time = new Date().toLocaleTimeString();
@@ -55,7 +62,9 @@ async function onLogin() {
   const resp = await api('/api/auth/login', { body: { username, password } });
   if (resp.ok) {
     state.accessToken = resp.data?.accessToken || '';
-    accessEl.textContent = state.accessToken ? state.accessToken.slice(0, 24) + '…' : '';
+    if (manualAccessEl) manualAccessEl.value = state.accessToken;
+    if (manualRefreshEl) manualRefreshEl.value = resp.data?.refreshToken || '';
+    updateAccessClip();
     appendLog('ok', '登录成功（刷新令牌已写入 Cookie）', resp.data);
   } else {
     appendLog('err', `登录失败 (${resp.status})`, resp.data);
@@ -63,10 +72,15 @@ async function onLogin() {
 }
 
 async function onRefresh() {
-  const resp = await api('/api/auth/refresh');
+  const manualRefresh = (manualRefreshEl?.value || '').trim();
+  const resp = await api('/api/auth/refresh', {
+    body: manualRefresh ? { refresh_token: manualRefresh } : undefined,
+  });
   if (resp.ok) {
     state.accessToken = resp.data?.accessToken || '';
-    accessEl.textContent = state.accessToken ? state.accessToken.slice(0, 24) + '…' : '';
+    if (manualAccessEl) manualAccessEl.value = state.accessToken;
+    if (manualRefreshEl) manualRefreshEl.value = resp.data?.refreshToken || manualRefresh || '';
+    updateAccessClip();
     appendLog('ok', '访问令牌已刷新（刷新令牌已轮换并写入 Cookie）', resp.data);
   } else {
     appendLog('err', `刷新失败 (${resp.status})`, resp.data);
@@ -74,17 +88,21 @@ async function onRefresh() {
 }
 
 async function onLogout() {
-  if (!state.accessToken) {
-    appendLog('err', '请先登录获取访问令牌');
+  const manualAccess = (manualAccessEl?.value || '').trim();
+  const tokenToUse = manualAccess || state.accessToken;
+  if (!tokenToUse) {
+    appendLog('err', '请先登录或在输入框中提供访问令牌');
     return;
   }
+  const manualRefresh = (manualRefreshEl?.value || '').trim();
   const resp = await api('/api/auth/logout', {
-    headers: { Authorization: `Bearer ${state.accessToken}` },
-    // 不传 body 时，后端会从 Cookie 读取 refresh_token
+    headers: { Authorization: `Bearer ${tokenToUse}` },
+    body: manualRefresh ? { refresh_token: manualRefresh } : undefined,
+    // 留空 body 时，后端会从 Cookie 读取 refresh_token
   });
   if (resp.ok) {
     state.accessToken = '';
-    accessEl.textContent = '';
+    updateAccessClip();
     appendLog('ok', '已登出当前设备', resp.data);
   } else {
     appendLog('err', `登出失败 (${resp.status})`, resp.data);
@@ -95,3 +113,7 @@ document.getElementById('btnRegister').addEventListener('click', onRegister);
 document.getElementById('btnLogin').addEventListener('click', onLogin);
 document.getElementById('btnRefresh').addEventListener('click', onRefresh);
 document.getElementById('btnLogout').addEventListener('click', onLogout);
+
+if (manualAccessEl) {
+  manualAccessEl.addEventListener('input', updateAccessClip);
+}

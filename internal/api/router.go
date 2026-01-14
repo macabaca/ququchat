@@ -1,15 +1,16 @@
 package api
 
 import (
-	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
+    "github.com/gin-gonic/gin"
+    "gorm.io/gorm"
 
-	"ququchat/internal/api/handler"
-	"ququchat/internal/middleware"
+    "ququchat/internal/api/handler"
+    "ququchat/internal/config"
+    "ququchat/internal/middleware"
 )
 
 // SetupRouter 初始化 Gin 路由，并将数据库句柄注入到上下文中
-func SetupRouter(db *gorm.DB, jwtSecret string) *gin.Engine {
+func SetupRouter(db *gorm.DB, authCfg config.AuthSettings) *gin.Engine {
     r := gin.New()
     r.Use(gin.Logger())
     r.Use(gin.Recovery())
@@ -26,12 +27,12 @@ func SetupRouter(db *gorm.DB, jwtSecret string) *gin.Engine {
     // 路由分组
     api := r.Group("/api")
 
-	// 认证相关路由
-	auth := handler.NewAuthHandler(db, jwtSecret)
-	api.POST("/auth/register", auth.Register)
-	api.POST("/auth/login", auth.Login)
-	api.POST("/auth/refresh", auth.Refresh)
-	api.POST("/auth/logout", middleware.JWTAuth(jwtSecret), auth.Logout)
+    // 认证相关路由（注入认证配置）
+    auth := handler.NewAuthHandler(db, authCfg)
+    api.POST("/auth/register", auth.Register)
+    api.POST("/auth/login", auth.Login)
+    api.POST("/auth/refresh", auth.Refresh)
+    api.POST("/auth/logout", middleware.JWTAuth(authCfg.JWTSecret), auth.Logout)
 	// api.POST("/auth/logout-all", middleware.JWTAuth(jwtSecret), auth.LogoutAll)
 
 	// 其他处理器可在后续实现

@@ -8,7 +8,6 @@ import (
 
     "ququchat/internal/api"
     "ququchat/internal/config"
-    "ququchat/internal/server/auth"
     database "ququchat/internal/server/db"
 )
 
@@ -31,14 +30,11 @@ func main() {
 		log.Fatalf("数据库不可用: %v", err)
 	}
 
-    // 加载 JWT 密钥：优先使用配置文件，其次回退到环境变量/默认值
-    jwtSecret := cfg.Auth.JWTSecret
-    if jwtSecret == "" {
-        jwtSecret = auth.LoadSecret()
-    }
+    // 组装认证配置（在 config 包中集中解析 TTL 与密钥回退）
+    authCfg := cfg.Auth.ToSettings()
 
-	// 设置 Gin 路由
-	r := api.SetupRouter(db, jwtSecret)
+    // 设置 Gin 路由（传入统一的认证配置）
+    r := api.SetupRouter(db, authCfg)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

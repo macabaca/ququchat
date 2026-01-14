@@ -1,13 +1,11 @@
 package auth
 
 import (
-	"crypto/rand"
-	"encoding/base64"
-	"log"
-	"os"
-	"time"
+    "crypto/rand"
+    "encoding/base64"
+    "time"
 
-	"github.com/golang-jwt/jwt/v5"
+    "github.com/golang-jwt/jwt/v5"
 )
 
 // Claims 定义访问令牌的负载
@@ -17,20 +15,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// LoadSecret 从环境变量加载 JWT 密钥，若未设置则使用开发默认值
-// 环境变量优先级：JWT_SECRET > QUQUCHAT_JWT_SECRET
-func LoadSecret() string {
-	if s := os.Getenv("JWT_SECRET"); s != "" {
-		return s
-	}
-	if s := os.Getenv("QUQUCHAT_JWT_SECRET"); s != "" {
-		return s
-	}
-	// 开发环境默认值（请在生产中设置环境变量）
-	const dev = "dev-secret-change-me"
-	log.Println("警告: 未配置 JWT_SECRET，使用开发默认值。请设置 JWT_SECRET 环境变量！")
-	return dev
-}
+// 移除密钥加载回退逻辑，统一在配置层处理
 
 // SignAccessToken 生成访问令牌
 func SignAccessToken(userID, username string, ttl time.Duration, secret string) (string, time.Time, error) {
