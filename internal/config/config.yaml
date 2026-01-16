@@ -1,14 +1,13 @@
 database:
-  driver: mysql
+  driver: postgres
   host: localhost
-  port: 3306
-  user: root
+  port: 5432
+  user: ququchat_user
   password: "396pqww!" # TODO: 在此填写你的密码
   name: ququchat
   params:
-    parseTime: "true"
-    loc: "Local"
-    charset: "utf8mb4"
+    sslmode: disable
+    TimeZone: Asia/Shanghai
 
 auth:
   # JWT 密钥，建议生产环境使用长随机字符串，并通过安全方式管理

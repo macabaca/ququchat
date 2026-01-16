@@ -33,13 +33,14 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings) *gin.Engine {
     api.POST("/auth/login", auth.Login)
     api.POST("/auth/refresh", auth.Refresh)
     api.POST("/auth/logout", middleware.JWTAuth(authCfg.JWTSecret), auth.Logout)
-	// api.POST("/auth/logout-all", middleware.JWTAuth(jwtSecret), auth.LogoutAll)
 
-	// 其他处理器可在后续实现
-	// user := handler.NewUserHandler(db)
-	// ws := handler.NewWsHandler(db)
-	// api.Group("/user")
-	// api.Group("/ws")
+    userHandler := handler.NewUserHandler(db)
+    friends := api.Group("/friends", middleware.JWTAuth(authCfg.JWTSecret))
+    friends.POST("/add", userHandler.AddFriend)
+    friends.POST("/remove", userHandler.RemoveFriend)
+    friends.GET("/list", userHandler.ListFriends)
+    friends.GET("/requests/incoming", userHandler.ListIncomingFriendRequests)
+    friends.POST("/requests/respond", userHandler.RespondFriendRequest)
 
 	return r
 }

@@ -1,37 +1,37 @@
 package handler
 
 import (
-    "net/http"
-    "strings"
-    "time"
+	"net/http"
+	"strings"
+	"time"
 
-    "github.com/gin-gonic/gin"
-    mysqlerr "github.com/go-sql-driver/mysql"
-    "github.com/google/uuid"
-    "golang.org/x/crypto/bcrypt"
-    "gorm.io/gorm"
+	"github.com/gin-gonic/gin"
+	mysqlerr "github.com/go-sql-driver/mysql"
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
-    "ququchat/internal/config"
-    "ququchat/internal/models"
-    "ququchat/internal/server/auth"
+	"ququchat/internal/config"
+	"ququchat/internal/models"
+	"ququchat/internal/server/auth"
 )
 
 type AuthHandler struct {
-    db            *gorm.DB
-    jwtSecret     string
-    accessTTL     time.Duration
-    refreshTTL    time.Duration
-    refreshBytes  int
+	db           *gorm.DB
+	jwtSecret    string
+	accessTTL    time.Duration
+	refreshTTL   time.Duration
+	refreshBytes int
 }
 
 func NewAuthHandler(db *gorm.DB, settings config.AuthSettings) *AuthHandler {
-    return &AuthHandler{
-        db:           db,
-        jwtSecret:    settings.JWTSecret,
-        accessTTL:    settings.AccessTTL,
-        refreshTTL:   settings.RefreshTTL,
-        refreshBytes: settings.RefreshTokenBytes,
-    }
+	return &AuthHandler{
+		db:           db,
+		jwtSecret:    settings.JWTSecret,
+		accessTTL:    settings.AccessTTL,
+		refreshTTL:   settings.RefreshTTL,
+		refreshBytes: settings.RefreshTokenBytes,
+	}
 }
 
 type RegisterRequest struct {
@@ -161,9 +161,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"user": gin.H{
-			"id":       u.ID,
-			"username": u.Username,
-			"status":   u.Status,
+			"id":        u.ID,
+			"user_code": u.UserCode,
+			"username":  u.Username,
+			"status":    u.Status,
 		},
 	})
 }
@@ -196,15 +197,15 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-    // 登录成功：签发访问令牌 + 刷新令牌（使用配置的 TTL）
-    accessToken, _, err := auth.SignAccessToken(u.ID, u.Username, h.accessTTL, h.jwtSecret)
+	// 登录成功：签发访问令牌 + 刷新令牌（使用配置的 TTL）
+	accessToken, _, err := auth.SignAccessToken(u.ID, u.Username, h.accessTTL, h.jwtSecret)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "签发令牌失败"})
 		return
 	}
 
-    refreshTTL := h.refreshTTL
-    refreshToken, err := auth.GenerateRefreshToken(h.refreshBytes)
+	refreshTTL := h.refreshTTL
+	refreshToken, err := auth.GenerateRefreshToken(h.refreshBytes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成刷新令牌失败"})
 		return
@@ -216,7 +217,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	session := models.AuthSession{
 		ID:           uuid.NewString(),
 		UserID:       u.ID,
-        ExpiresAt:    time.Now().Add(refreshTTL),
+		ExpiresAt:    time.Now().Add(refreshTTL),
 		CreatedAt:    time.Now(),
 		RefreshToken: &refreshToken,
 	}
@@ -232,12 +233,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// 设置 HttpOnly Cookie（Web 客户端友好）
-    c.SetCookie("refresh_token", refreshToken, int(refreshTTL.Seconds()), "/", "", false, true)
+	c.SetCookie("refresh_token", refreshToken, int(refreshTTL.Seconds()), "/", "", false, true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"accessToken":  accessToken,
 		"refreshToken": refreshToken,
-		"user":         gin.H{"id": u.ID, "username": u.Username, "status": u.Status},
+		"user": gin.H{
+			"id":        u.ID,
+			"user_code": u.UserCode,
+			"username":  u.Username,
+			"status":    u.Status,
+		},
 	})
 }
 
@@ -286,14 +292,14 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-    // 生成新的访问令牌与刷新令牌（使用配置的 TTL）
-    accessToken, _, err := auth.SignAccessToken(u.ID, u.Username, h.accessTTL, h.jwtSecret)
+	// 生成新的访问令牌与刷新令牌（使用配置的 TTL）
+	accessToken, _, err := auth.SignAccessToken(u.ID, u.Username, h.accessTTL, h.jwtSecret)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "签发新访问令牌失败"})
 		return
 	}
-    refreshTTL := h.refreshTTL
-    newRefresh, err := auth.GenerateRefreshToken(h.refreshBytes)
+	refreshTTL := h.refreshTTL
+	newRefresh, err := auth.GenerateRefreshToken(h.refreshBytes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成新刷新令牌失败"})
 		return
@@ -320,7 +326,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	}
 
 	// 设置新的 Cookie
-    c.SetCookie("refresh_token", newRefresh, int(refreshTTL.Seconds()), "/", "", false, true)
+	c.SetCookie("refresh_token", newRefresh, int(refreshTTL.Seconds()), "/", "", false, true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"accessToken":  accessToken,

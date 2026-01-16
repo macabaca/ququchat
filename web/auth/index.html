@@ -34,6 +34,35 @@
       <div>访问令牌（JWT）：<span id="access" class="mono"></span></div>
       <div class="muted">刷新令牌保存在 HttpOnly Cookie 中（不可在页面直接读取）。</div>
     </div>
+    <div class="row">
+      <div>我的用户号（user_code）：<span id="myUserCode" class="mono"></span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row"><strong>好友管理</strong></div>
+    <div class="row">
+      <label>目标用户号（user_code）：<input id="friendCode" type="number" placeholder="例如: 100001" /></label>
+    </div>
+    <div class="row">
+      <button id="btnAddFriend">加好友</button>
+      <button id="btnRemoveFriend">删好友</button>
+      <button id="btnListFriends">获取好友列表</button>
+    </div>
+    <div class="row">
+      <div><strong>我的好友列表：</strong></div>
+      <ul id="friendList"></ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row"><strong>收到的好友请求</strong></div>
+    <div class="row">
+      <button id="btnRefreshFriendRequests">刷新收到的好友请求</button>
+    </div>
+    <div class="row">
+      <ul id="friendRequestList"></ul>
+    </div>
   </div>
 
   <div class="card">

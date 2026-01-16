@@ -10,3 +10,4 @@ pre { background: #f7f7f7; padding: 12px; border-radius: 6px; overflow: auto; }
 .ok { color: #0b8; }
 .err { color: #d33; }
 .mono { font-family: Consolas, Menlo, monospace; }
+.friend-item { margin: 2px 0; font-size: 14px; }

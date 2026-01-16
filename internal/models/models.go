@@ -45,6 +45,7 @@ const (
 // 如 Postgres 可使用: gorm:"type:uuid;default:gen_random_uuid()"
 type User struct {
 	ID           string    `gorm:"type:char(36);primaryKey" json:"id"`
+	UserCode     int64     `gorm:"autoIncrement;uniqueIndex;not null" json:"user_code"`
 	Username     string    `gorm:"size:64;uniqueIndex;not null" json:"username"`
 	Email        *string   `gorm:"size:255;uniqueIndex" json:"email,omitempty"`
 	Phone        *string   `gorm:"size:32;uniqueIndex" json:"phone,omitempty"`
