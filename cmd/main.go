@@ -1,14 +1,14 @@
 package main
 
 import (
-    "log"
-    "net/http"
+	"log"
+	"net/http"
 
-    "github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin"
 
-    "ququchat/internal/api"
-    "ququchat/internal/config"
-    database "ququchat/internal/server/db"
+	"ququchat/internal/api"
+	"ququchat/internal/config"
+	database "ququchat/internal/server/db"
 )
 
 func main() {
@@ -18,8 +18,8 @@ func main() {
 		log.Fatalf("加载配置失败: %v", err)
 	}
 
-    // 初始化数据库连接（使用 server/db 包）
-    db, err := database.OpenGorm(cfg.Database)
+	// 初始化数据库连接（使用 server/db 包）
+	db, err := database.OpenGorm(cfg.Database)
 	if err != nil {
 		log.Fatalf("数据库连接失败: %v", err)
 	}
@@ -30,11 +30,9 @@ func main() {
 		log.Fatalf("数据库不可用: %v", err)
 	}
 
-    // 组装认证配置（在 config 包中集中解析 TTL 与密钥回退）
-    authCfg := cfg.Auth.ToSettings()
+	authCfg := cfg.Auth.ToSettings()
 
-    // 设置 Gin 路由（传入统一的认证配置）
-    r := api.SetupRouter(db, authCfg)
+	r := api.SetupRouter(db, authCfg, cfg.Chat)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

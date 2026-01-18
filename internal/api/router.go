@@ -1,46 +1,58 @@
 package api
 
 import (
-    "github.com/gin-gonic/gin"
-    "gorm.io/gorm"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
-    "ququchat/internal/api/handler"
-    "ququchat/internal/config"
-    "ququchat/internal/middleware"
+	"ququchat/internal/api/handler"
+	"ququchat/internal/config"
+	"ququchat/internal/middleware"
 )
 
 // SetupRouter 初始化 Gin 路由，并将数据库句柄注入到上下文中
-func SetupRouter(db *gorm.DB, authCfg config.AuthSettings) *gin.Engine {
-    r := gin.New()
-    r.Use(gin.Logger())
-    r.Use(gin.Recovery())
+func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat) *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Logger())
+	r.Use(gin.Recovery())
 
-    // 简单的 DB 注入中间件
-    r.Use(func(c *gin.Context) {
-        c.Set("db", db)
-        c.Next()
-    })
+	// 简单的 DB 注入中间件
+	r.Use(func(c *gin.Context) {
+		c.Set("db", db)
+		c.Next()
+	})
 
-    // 静态资源：挂载 web 目录，便于本地验证前端页面
-    r.Static("/web", "web")
+	// 静态资源：挂载 web 目录，便于本地验证前端页面
+	r.Static("/web", "web")
 
-    // 路由分组
-    api := r.Group("/api")
+	api := r.Group("/api")
 
-    // 认证相关路由（注入认证配置）
-    auth := handler.NewAuthHandler(db, authCfg)
-    api.POST("/auth/register", auth.Register)
-    api.POST("/auth/login", auth.Login)
-    api.POST("/auth/refresh", auth.Refresh)
-    api.POST("/auth/logout", middleware.JWTAuth(authCfg.JWTSecret), auth.Logout)
+	// 认证相关路由（注入认证配置）
+	auth := handler.NewAuthHandler(db, authCfg)
+	api.POST("/auth/register", auth.Register)
+	api.POST("/auth/login", auth.Login)
+	api.POST("/auth/refresh", auth.Refresh)
+	api.POST("/auth/logout", middleware.JWTAuth(authCfg.JWTSecret), auth.Logout)
 
-    userHandler := handler.NewUserHandler(db)
-    friends := api.Group("/friends", middleware.JWTAuth(authCfg.JWTSecret))
-    friends.POST("/add", userHandler.AddFriend)
-    friends.POST("/remove", userHandler.RemoveFriend)
-    friends.GET("/list", userHandler.ListFriends)
-    friends.GET("/requests/incoming", userHandler.ListIncomingFriendRequests)
-    friends.POST("/requests/respond", userHandler.RespondFriendRequest)
+	userHandler := handler.NewUserHandler(db)
+	friends := api.Group("/friends", middleware.JWTAuth(authCfg.JWTSecret))
+	friends.POST("/add", userHandler.AddFriend)
+	friends.POST("/remove", userHandler.RemoveFriend)
+	friends.GET("/list", userHandler.ListFriends)
+	friends.GET("/requests/incoming", userHandler.ListIncomingFriendRequests)
+	friends.POST("/requests/respond", userHandler.RespondFriendRequest)
+
+	groupHandler := handler.NewGroupHandler(db)
+	groups := api.Group("/groups", middleware.JWTAuth(authCfg.JWTSecret))
+	groups.POST("/create", groupHandler.CreateGroup)
+	groups.GET("/:group_id", groupHandler.GetGroupDetail)
+	groups.GET("/my", groupHandler.ListMyGroups)
+
+	messageHandler := handler.NewMessageHandler(db, chatCfg.HistoryLimit)
+	api.GET("/messages/history/before", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetHistoryBefore)
+	api.GET("/messages/history/latest", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByFriend)
+
+	wsHandler := handler.NewWsHandler(db)
+	r.GET("/ws", middleware.JWTAuthFromHeaderOrQuery(authCfg.JWTSecret), wsHandler.Handle)
 
 	return r
 }

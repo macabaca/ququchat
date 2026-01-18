@@ -10,6 +10,7 @@ import (
 type Config struct {
     Database Database `yaml:"database" json:"database"`
     Auth     Auth     `yaml:"auth" json:"auth"`
+    Chat     Chat     `yaml:"chat" json:"chat"`
 }
 
 // Database 结构体已拆分至 config_db.go
