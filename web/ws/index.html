@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>QuQuChat WebSocket Demo</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="ws.css">
+</head>
+<body>
+<div class="page">
+<header class="header">
+<h1>QuQuChat WebSocket Demo</h1>
+</header>
+<main class="main">
+<section class="panel" id="login-section">
+<h2>登录</h2>
+<div class="field">
+<label for="login-username">用户名</label>
+<input id="login-username" type="text" autocomplete="username">
+</div>
+<div class="field">
+<label for="login-password">密码</label>
+<input id="login-password" type="password" autocomplete="current-password">
+</div>
+<div class="field inline">
+<button id="login-button">登录</button>
+<button id="logout-button">退出登录</button>
+</div>
+<div class="status" id="login-status"></div>
+</section>
+<section class="panel" id="friend-section">
+<h2>好友</h2>
+<div class="field inline">
+<input id="friend-code-input" type="number" placeholder="好友 user_code">
+<button id="add-friend-button">发送好友请求</button>
+</div>
+<button id="refresh-friends-button">刷新好友列表</button>
+<div class="status" id="friend-status"></div>
+<ul id="friend-list"></ul>
+</section>
+<section class="panel" id="chat-section">
+<h2>聊天</h2>
+<div class="field">
+<div id="current-user"></div>
+<div id="current-target"></div>
+</div>
+<div class="field">
+<button id="connect-ws-button">连接 WebSocket</button>
+<span id="ws-status"></span>
+</div>
+<div class="field">
+<button id="load-history-button">加载更多历史</button>
+</div>
+<div class="chat-box" id="chat-box"></div>
+<div class="field inline">
+<input id="chat-input" type="text" placeholder="输入消息内容" autocomplete="off">
+<button id="send-message-button">发送</button>
+</div>
+</section>
+</main>
+</div>
+<script src="ws.js"></script>
+</body>
+</html>
