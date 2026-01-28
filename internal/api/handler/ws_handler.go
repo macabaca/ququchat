@@ -32,12 +32,19 @@ type Hub struct {
 	register      chan *Client
 	unregister    chan *Client
 	direct        chan DirectMessage
+	broadcast     chan GroupMessage
 }
 
 type DirectMessage struct {
 	FromUserID string
 	ToUserID   string
 	Data       []byte
+}
+
+type GroupMessage struct {
+	RoomID  string
+	UserIDs []string
+	Data    []byte
 }
 
 func NewHub() *Hub {
@@ -47,6 +54,7 @@ func NewHub() *Hub {
 		register:      make(chan *Client),
 		unregister:    make(chan *Client),
 		direct:        make(chan DirectMessage),
+		broadcast:     make(chan GroupMessage),
 	}
 	go h.run()
 	return h
@@ -101,6 +109,23 @@ func (h *Hub) run() {
 					delete(h.clientsByUser, msg.FromUserID)
 				}
 			}
+		case msg := <-h.broadcast:
+			for _, uid := range msg.UserIDs {
+				if set, ok := h.clientsByUser[uid]; ok {
+					for c := range set {
+						select {
+						case c.send <- msg.Data:
+						default:
+							close(c.send)
+							delete(h.clients, c)
+							delete(set, c)
+						}
+					}
+					if len(set) == 0 {
+						delete(h.clientsByUser, uid)
+					}
+				}
+			}
 		}
 	}
 }
@@ -115,13 +140,15 @@ type Client struct {
 type IncomingMessage struct {
 	Type    string `json:"type"`
 	ToUser  string `json:"to_user_id,omitempty"`
+	RoomID  string `json:"room_id,omitempty"`
 	Content string `json:"content,omitempty"`
 }
 
 type OutgoingMessage struct {
 	Type      string `json:"type"`
 	FromUser  string `json:"from_user_id"`
-	ToUser    string `json:"to_user_id"`
+	ToUser    string `json:"to_user_id,omitempty"`
+	RoomID    string `json:"room_id,omitempty"`
 	Content   string `json:"content"`
 	Timestamp int64  `json:"timestamp"`
 }
@@ -170,32 +197,67 @@ func (c *Client) readLoop(h *WsHandler) {
 		if err := json.Unmarshal(data, &msg); err != nil {
 			continue
 		}
-		if msg.Type != "friend_message" || msg.ToUser == "" || msg.Content == "" {
-			continue
-		}
-		if !h.areFriends(c.userID, msg.ToUser) {
-			continue
-		}
-		roomID, err := h.ensureDirectRoom(c.userID, msg.ToUser)
-		if err != nil {
-			continue
-		}
-		h.saveDirectMessage(roomID, c.userID, msg.Content)
-		out := OutgoingMessage{
-			Type:      "friend_message",
-			FromUser:  c.userID,
-			ToUser:    msg.ToUser,
-			Content:   msg.Content,
-			Timestamp: time.Now().Unix(),
-		}
-		b, err := json.Marshal(out)
-		if err != nil {
-			continue
-		}
-		c.hub.direct <- DirectMessage{
-			FromUserID: c.userID,
-			ToUserID:   msg.ToUser,
-			Data:       b,
+		if msg.Type == "friend_message" {
+			if msg.ToUser == "" || msg.Content == "" {
+				continue
+			}
+			if !h.areFriends(c.userID, msg.ToUser) {
+				continue
+			}
+			roomID, err := h.ensureDirectRoom(c.userID, msg.ToUser)
+			if err != nil {
+				continue
+			}
+			h.saveDirectMessage(roomID, c.userID, msg.Content)
+			out := OutgoingMessage{
+				Type:      "friend_message",
+				FromUser:  c.userID,
+				ToUser:    msg.ToUser,
+				Content:   msg.Content,
+				Timestamp: time.Now().Unix(),
+			}
+			b, err := json.Marshal(out)
+			if err != nil {
+				continue
+			}
+			c.hub.direct <- DirectMessage{
+				FromUserID: c.userID,
+				ToUserID:   msg.ToUser,
+				Data:       b,
+			}
+		} else if msg.Type == "group_message" {
+			if msg.RoomID == "" || msg.Content == "" {
+				continue
+			}
+			// Check if user is a member of the group and not muted
+			if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
+				// Optionally send error back to user
+				continue
+			}
+			h.saveGroupMessage(msg.RoomID, c.userID, msg.Content)
+
+			// Get all active members to broadcast
+			memberIDs, err := h.getGroupMemberIDs(msg.RoomID)
+			if err != nil {
+				continue
+			}
+
+			out := OutgoingMessage{
+				Type:      "group_message",
+				FromUser:  c.userID,
+				RoomID:    msg.RoomID,
+				Content:   msg.Content,
+				Timestamp: time.Now().Unix(),
+			}
+			b, err := json.Marshal(out)
+			if err != nil {
+				continue
+			}
+			c.hub.broadcast <- GroupMessage{
+				RoomID:  msg.RoomID,
+				UserIDs: memberIDs,
+				Data:    b,
+			}
 		}
 	}
 }
@@ -253,6 +315,43 @@ func (h *WsHandler) ensureDirectRoom(a, b string) (string, error) {
 	}
 	h.ensureDirectRoomMembers(room.ID, a, b)
 	return room.ID, nil
+}
+
+func (h *WsHandler) checkGroupPostingPermission(roomID, userID string) error {
+	var member models.RoomMember
+	err := h.db.Where("room_id = ? AND user_id = ?", roomID, userID).First(&member).Error
+	if err != nil {
+		return err
+	}
+	if member.LeftAt != nil {
+		return errors.New("user has left the group")
+	}
+	if member.MuteUntil != nil && member.MuteUntil.After(time.Now()) {
+		return errors.New("user is muted")
+	}
+	return nil
+}
+
+func (h *WsHandler) getGroupMemberIDs(roomID string) ([]string, error) {
+	var userIDs []string
+	err := h.db.Model(&models.RoomMember{}).
+		Where("room_id = ? AND left_at IS NULL", roomID).
+		Pluck("user_id", &userIDs).Error
+	return userIDs, err
+}
+
+func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) {
+	now := time.Now()
+	text := content
+	m := models.Message{
+		ID:          uuid.NewString(),
+		RoomID:      roomID,
+		SenderID:    &fromUserID,
+		ContentType: models.ContentTypeText,
+		ContentText: &text,
+		CreatedAt:   now,
+	}
+	_ = h.db.Create(&m).Error
 }
 
 func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string) {
