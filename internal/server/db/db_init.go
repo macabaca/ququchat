@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"ququchat/internal/config"
+	"ququchat/internal/models"
 )
 
 // DSN 构造适用于 GORM 的数据库连接串
@@ -67,4 +68,21 @@ func OpenGorm(d config.Database) (*gorm.DB, error) {
 	default:
 		return nil, fmt.Errorf("unsupported driver: %s", d.Driver)
 	}
+}
+
+// Migrate 执行数据库自动迁移
+func Migrate(db *gorm.DB) error {
+	return db.AutoMigrate(
+		&models.User{},
+		&models.AuthSession{},
+		&models.FriendRequest{},
+		&models.Friendship{},
+		&models.Block{},
+		&models.Room{},
+		&models.RoomMember{},
+		&models.Message{},
+		&models.MessageReceipt{},
+		&models.MessageReaction{},
+		&models.Attachment{},
+	)
 }

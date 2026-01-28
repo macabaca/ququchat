@@ -30,6 +30,13 @@ func main() {
 		log.Fatalf("数据库不可用: %v", err)
 	}
 
+	// 自动迁移数据库结构
+	log.Println("正在检查并迁移数据库结构...")
+	if err := database.Migrate(db); err != nil {
+		log.Fatalf("数据库迁移失败: %v", err)
+	}
+	log.Println("数据库迁移完成")
+
 	authCfg := cfg.Auth.ToSettings()
 
 	r := api.SetupRouter(db, authCfg, cfg.Chat)
