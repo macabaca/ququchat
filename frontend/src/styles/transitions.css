@@ -1,0 +1,49 @@
+/* Page Transition Styles */
+
+:root {
+  --transition-duration: 300ms;
+  --transition-easing: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.page-transition-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  /* Ensure the container doesn't block clicks when it's just a wrapper */
+  pointer-events: none; 
+}
+
+/* Re-enable pointer events for the actual content */
+.page-transition-container > * {
+  pointer-events: auto;
+}
+
+/* Enter state: Starting point for the incoming page */
+.page-transition-enter {
+  opacity: 0;
+  transform: translateY(10px) scale(0.98);
+}
+
+/* Enter active state: Target point for the incoming page */
+.page-transition-enter-active {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition: opacity var(--transition-duration) var(--transition-easing),
+              transform var(--transition-duration) var(--transition-easing);
+}
+
+/* Exit state: Starting point for the outgoing page */
+.page-transition-exit {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* Exit active state: Target point for the outgoing page */
+.page-transition-exit-active {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.98);
+  transition: opacity var(--transition-duration) var(--transition-easing),
+              transform var(--transition-duration) var(--transition-easing);
+}

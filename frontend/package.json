@@ -1,0 +1,36 @@
+{
+  "name": "frontend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "electron": "electron .",
+    "start": "npm run build && electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "^38.4.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.1.0",
+    "@types/react-transition-group": "^4.4.12",
+    "antd": "^5.27.6",
+    "axios": "^1.12.2",
+    "dexie": "^4.2.1",
+    "jotai": "^2.15.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.5",
+    "react-transition-group": "^4.4.5",
+    "zustand": "^5.0.8"
+  }
+}
