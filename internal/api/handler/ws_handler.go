@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"ququchat/internal/models"
 )
@@ -341,31 +342,54 @@ func (h *WsHandler) getGroupMemberIDs(roomID string) ([]string, error) {
 }
 
 func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) {
-	now := time.Now()
-	text := content
-	m := models.Message{
-		ID:          uuid.NewString(),
-		RoomID:      roomID,
-		SenderID:    &fromUserID,
-		ContentType: models.ContentTypeText,
-		ContentText: &text,
-		CreatedAt:   now,
-	}
-	_ = h.db.Create(&m).Error
+	h.saveMessage(roomID, fromUserID, content)
 }
 
 func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string) {
+	h.saveMessage(roomID, fromUserID, content)
+}
+
+func (h *WsHandler) saveMessage(roomID, fromUserID, content string) {
 	now := time.Now()
 	text := content
-	m := models.Message{
-		ID:          uuid.NewString(),
-		RoomID:      roomID,
-		SenderID:    &fromUserID,
-		ContentType: models.ContentTypeText,
-		ContentText: &text,
-		CreatedAt:   now,
+
+	// 重试逻辑：处理高并发下的 SequenceID 冲突（尤其是在 Postgres 无间隙锁的情况下）
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		m := models.Message{
+			ID:          uuid.NewString(),
+			RoomID:      roomID,
+			SenderID:    &fromUserID,
+			ContentType: models.ContentTypeText,
+			ContentText: &text,
+			CreatedAt:   now,
+		}
+
+		err := h.db.Transaction(func(tx *gorm.DB) error {
+			var lastMsg models.Message
+			// 尝试锁定最新的一条消息
+			// 注意：如果房间为空，First 会返回 RecordNotFound，此时无法加锁，依赖唯一索引冲突重试
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("room_id = ?", roomID).
+				Order("sequence_id desc").
+				First(&lastMsg).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+				m.SequenceID = 1
+			} else {
+				m.SequenceID = lastMsg.SequenceID + 1
+			}
+			return tx.Create(&m).Error
+		})
+
+		if err == nil {
+			return
+		}
+		// 如果是唯一索引冲突，稍微等待后重试
+		time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
 	}
-	_ = h.db.Create(&m).Error
+	// TODO: 记录重试失败日志
 }
 
 func (h *WsHandler) ensureDirectRoomMembers(roomID, a, b string) {

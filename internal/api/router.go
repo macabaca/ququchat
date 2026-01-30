@@ -55,6 +55,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat) 
 	messageHandler := handler.NewMessageHandler(db, chatCfg.HistoryLimit)
 	api.GET("/messages/history/before", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetHistoryBefore)
 	api.GET("/messages/history/latest", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByFriend)
+	api.GET("/messages/history/group", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByGroup)
 
 	wsHandler := handler.NewWsHandler(db)
 	r.GET("/ws", middleware.JWTAuthFromHeaderOrQuery(authCfg.JWTSecret), wsHandler.Handle)

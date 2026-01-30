@@ -165,12 +165,14 @@ func (h *GroupHandler) ListMyGroups(c *gin.Context) {
 	}
 	roomIDs := make([]string, 0, len(memberships))
 	roleByRoom := make(map[string]models.MemberRole, len(memberships))
+	leftAtByRoom := make(map[string]*time.Time, len(memberships))
 	for _, m := range memberships {
 		roomIDs = append(roomIDs, m.RoomID)
 		roleByRoom[m.RoomID] = m.Role
+		leftAtByRoom[m.RoomID] = m.LeftAt
 	}
 	var rooms []models.Room
-	if err := h.db.Where("id IN ? AND room_type = ?", roomIDs, models.RoomTypeGroup).Find(&rooms).Error; err != nil {
+	if err := h.db.Unscoped().Where("id IN ? AND room_type = ?", roomIDs, models.RoomTypeGroup).Find(&rooms).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询群信息失败"})
 		return
 	}
@@ -181,9 +183,17 @@ func (h *GroupHandler) ListMyGroups(c *gin.Context) {
 	resp := make([]gin.H, 0, len(rooms))
 	for _, r := range rooms {
 		var memberCount int64
-		if err := h.db.Model(&models.RoomMember{}).Where("room_id = ?", r.ID).Count(&memberCount).Error; err != nil {
+		if err := h.db.Model(&models.RoomMember{}).Where("room_id = ? AND left_at IS NULL", r.ID).Count(&memberCount).Error; err != nil {
 			memberCount = 0
 		}
+
+		status := "active"
+		if r.DeletedAt.Valid {
+			status = "dismissed"
+		} else if leftAtByRoom[r.ID] != nil {
+			status = "left"
+		}
+
 		resp = append(resp, gin.H{
 			"id":           r.ID,
 			"name":         r.Name,
@@ -191,6 +201,7 @@ func (h *GroupHandler) ListMyGroups(c *gin.Context) {
 			"member_count": memberCount,
 			"my_role":      roleByRoom[r.ID],
 			"created_at":   r.CreatedAt,
+			"status":       status,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"groups": resp})
