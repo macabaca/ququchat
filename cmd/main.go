@@ -8,6 +8,7 @@ import (
 
 	"ququchat/internal/api"
 	"ququchat/internal/config"
+	models "ququchat/internal/models"
 	database "ququchat/internal/server/db"
 )
 
@@ -29,6 +30,7 @@ func main() {
 	} else if err := sqlDB.Ping(); err != nil {
 		log.Fatalf("数据库不可用: %v", err)
 	}
+	db.AutoMigrate(&models.User{}, &models.FriendRequest{}, &models.AuthSession{}, &models.Friendship{}, &models.Attachment{}, &models.Message{}, &models.Room{}, &models.MessageReceipt{}, &models.MessageReaction{}, &models.RoomMember{}, &models.Block{})
 
 	authCfg := cfg.Auth.ToSettings()
 

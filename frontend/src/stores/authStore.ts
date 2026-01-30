@@ -15,6 +15,7 @@ interface AuthState {
 
     // 设置 accessToken
     setAccessToken: (token: string) => void;
+    setTokens: (accessToken: string, refreshToken: string) => void;
 
     login: (credentials: LoginRequest) => Promise<void>;
     register: (credentials: RegisterRequest) => Promise<RegisterResponse>;
@@ -35,6 +36,9 @@ export const useAuthStore = create<AuthState>()(
 
             setAccessToken: (token: string) => {
                 set({ accessToken: token })
+            },
+            setTokens: (accessToken: string, refreshToken: string) => {
+                set({ accessToken, refreshToken, isAuthenticated: true })
             },
             login: async (credentials: LoginRequest) => {
                 set({ isLoading: true, error: null });

@@ -33,10 +33,10 @@ export class WebSocketService {
         // Let's assume for now we replace protocol and append /ws based on typical setups
         // Or we can parse BASE_URL. 
         // Let's try to derive it intelligently.
-        let wsBase = BASE_URL.replace('http', 'ws').replace('https', 'wss');
-        // Remove /api/v1 suffix if present to get root
-        wsBase = wsBase.split('/api')[0]; 
-        this.url = `${wsBase}/ws?token=${token}`;
+        const base = new URL(BASE_URL);
+        const wsProtocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsBase = `${wsProtocol}//${base.host}`;
+        this.url = `${wsBase}/ws?token=${encodeURIComponent(token)}`;
     }
 
     public connect() {
