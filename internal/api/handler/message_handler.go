@@ -316,7 +316,7 @@ func (h *MessageHandler) GetLatestByGroup(c *gin.Context) {
 
 	var list []models.Message
 	if err := query.
-		Order("created_at desc").
+		Order("sequence_id desc").
 		Limit(h.historyLimit).
 		Find(&list).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询消息历史失败"})
@@ -402,7 +402,7 @@ func (h *MessageHandler) GetLatestByFriend(c *gin.Context) {
 	var list []models.Message
 	if err := h.db.
 		Where("room_id = ?", room.ID).
-		Order("created_at desc").
+		Order("sequence_id desc").
 		Limit(h.historyLimit).
 		Find(&list).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询消息历史失败"})

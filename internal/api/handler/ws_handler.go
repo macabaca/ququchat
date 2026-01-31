@@ -146,12 +146,14 @@ type IncomingMessage struct {
 }
 
 type OutgoingMessage struct {
-	Type      string `json:"type"`
-	FromUser  string `json:"from_user_id"`
-	ToUser    string `json:"to_user_id,omitempty"`
-	RoomID    string `json:"room_id,omitempty"`
-	Content   string `json:"content"`
-	Timestamp int64  `json:"timestamp"`
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	FromUser   string `json:"from_user_id"`
+	ToUser     string `json:"to_user_id,omitempty"`
+	RoomID     string `json:"room_id,omitempty"`
+	Content    string `json:"content"`
+	Timestamp  int64  `json:"timestamp"`
+	SequenceID int64  `json:"sequence_id"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -209,13 +211,19 @@ func (c *Client) readLoop(h *WsHandler) {
 			if err != nil {
 				continue
 			}
-			h.saveDirectMessage(roomID, c.userID, msg.Content)
+			savedMsg, err := h.saveDirectMessage(roomID, c.userID, msg.Content)
+			if err != nil {
+				continue
+			}
 			out := OutgoingMessage{
-				Type:      "friend_message",
-				FromUser:  c.userID,
-				ToUser:    msg.ToUser,
-				Content:   msg.Content,
-				Timestamp: time.Now().Unix(),
+				ID:         savedMsg.ID,
+				Type:       "friend_message",
+				FromUser:   c.userID,
+				ToUser:     msg.ToUser,
+				RoomID:     roomID,
+				Content:    msg.Content,
+				Timestamp:  savedMsg.CreatedAt.Unix(),
+				SequenceID: savedMsg.SequenceID,
 			}
 			b, err := json.Marshal(out)
 			if err != nil {
@@ -235,7 +243,10 @@ func (c *Client) readLoop(h *WsHandler) {
 				// Optionally send error back to user
 				continue
 			}
-			h.saveGroupMessage(msg.RoomID, c.userID, msg.Content)
+			savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content)
+			if err != nil {
+				continue
+			}
 
 			// Get all active members to broadcast
 			memberIDs, err := h.getGroupMemberIDs(msg.RoomID)
@@ -244,11 +255,13 @@ func (c *Client) readLoop(h *WsHandler) {
 			}
 
 			out := OutgoingMessage{
-				Type:      "group_message",
-				FromUser:  c.userID,
-				RoomID:    msg.RoomID,
-				Content:   msg.Content,
-				Timestamp: time.Now().Unix(),
+				ID:         savedMsg.ID,
+				Type:       "group_message",
+				FromUser:   c.userID,
+				RoomID:     msg.RoomID,
+				Content:    msg.Content,
+				Timestamp:  savedMsg.CreatedAt.Unix(),
+				SequenceID: savedMsg.SequenceID,
 			}
 			b, err := json.Marshal(out)
 			if err != nil {
@@ -341,15 +354,15 @@ func (h *WsHandler) getGroupMemberIDs(roomID string) ([]string, error) {
 	return userIDs, err
 }
 
-func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) {
-	h.saveMessage(roomID, fromUserID, content)
+func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) (*models.Message, error) {
+	return h.saveMessage(roomID, fromUserID, content)
 }
 
-func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string) {
-	h.saveMessage(roomID, fromUserID, content)
+func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string) (*models.Message, error) {
+	return h.saveMessage(roomID, fromUserID, content)
 }
 
-func (h *WsHandler) saveMessage(roomID, fromUserID, content string) {
+func (h *WsHandler) saveMessage(roomID, fromUserID, content string) (*models.Message, error) {
 	now := time.Now()
 	text := content
 
@@ -384,12 +397,13 @@ func (h *WsHandler) saveMessage(roomID, fromUserID, content string) {
 		})
 
 		if err == nil {
-			return
+			return &m, nil
 		}
 		// 如果是唯一索引冲突，稍微等待后重试
 		time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
 	}
 	// TODO: 记录重试失败日志
+	return nil, errors.New("failed to save message after retries")
 }
 
 func (h *WsHandler) ensureDirectRoomMembers(roomID, a, b string) {
