@@ -35,6 +35,7 @@ type HistoryRequest struct {
 type MessageDTO struct {
 	ID          string `json:"id"`
 	RoomID      string `json:"room_id"`
+	SequenceID  int64  `json:"sequence_id"`
 	SenderID    string `json:"sender_id,omitempty"`
 	ContentType string `json:"content_type"`
 	ContentText string `json:"content_text,omitempty"`
@@ -163,6 +164,101 @@ func (h *MessageHandler) GetHistoryBefore(c *gin.Context) {
 		dto := MessageDTO{
 			ID:          m.ID,
 			RoomID:      m.RoomID,
+			SequenceID:  m.SequenceID,
+			ContentType: string(m.ContentType),
+			CreatedAt:   m.CreatedAt.Unix(),
+		}
+		if m.SenderID != nil {
+			dto.SenderID = *m.SenderID
+		}
+		if m.ContentText != nil {
+			dto.ContentText = *m.ContentText
+		}
+		result = append(result, dto)
+	}
+	c.JSON(http.StatusOK, gin.H{"messages": result})
+}
+
+type SyncHistoryRequest struct {
+	RoomID          string `form:"room_id" json:"room_id" binding:"required"`
+	AfterSequenceID int64  `form:"after_sequence_id" json:"after_sequence_id"`
+}
+
+// GetHistoryAfter 获取指定 sequence_id 之后的消息（用于增量同步）
+func (h *MessageHandler) GetHistoryAfter(c *gin.Context) {
+	userID := c.GetString("user_id")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		return
+	}
+	var req SyncHistoryRequest
+	if err := c.ShouldBind(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: 缺少 room_id"})
+		return
+	}
+
+	// 1. 加载房间，进行权限检查
+	var room models.Room
+	if err := h.db.Unscoped().Where("id = ?", req.RoomID).First(&room).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "房间不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询房间失败"})
+		return
+	}
+
+	// 2. 权限校验
+	var memberLeftAt *time.Time
+	if room.RoomType == models.RoomTypeDirect {
+		parts := strings.Split(room.Name, ":")
+		if len(parts) != 2 {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无效的私聊房间"})
+			return
+		}
+		if userID != parts[0] && userID != parts[1] {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权查看该私聊历史"})
+			return
+		}
+	} else if room.RoomType == models.RoomTypeGroup {
+		var member models.RoomMember
+		if err := h.db.Where("room_id = ? AND user_id = ?", room.ID, userID).First(&member).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusForbidden, gin.H{"error": "您不是该群成员"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询成员关系失败"})
+			return
+		}
+		memberLeftAt = member.LeftAt
+	}
+
+	// 3. 执行查询
+	query := h.db.Where("room_id = ? AND sequence_id > ?", room.ID, req.AfterSequenceID)
+	if memberLeftAt != nil {
+		query = query.Where("created_at < ?", memberLeftAt)
+	}
+
+	var list []models.Message
+	if err := query.
+		Order("sequence_id asc"). // 增量同步按 sequence_id 正序
+		Limit(h.historyLimit).
+		Find(&list).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询消息历史失败"})
+		return
+	}
+
+	if len(list) == 0 {
+		c.JSON(http.StatusOK, gin.H{"messages": []MessageDTO{}})
+		return
+	}
+
+	result := make([]MessageDTO, 0, len(list))
+	for _, m := range list {
+		dto := MessageDTO{
+			ID:          m.ID,
+			RoomID:      m.RoomID,
+			SequenceID:  m.SequenceID,
 			ContentType: string(m.ContentType),
 			CreatedAt:   m.CreatedAt.Unix(),
 		}
@@ -241,6 +337,7 @@ func (h *MessageHandler) GetLatestByGroup(c *gin.Context) {
 		dto := MessageDTO{
 			ID:          m.ID,
 			RoomID:      m.RoomID,
+			SequenceID:  m.SequenceID,
 			ContentType: string(m.ContentType),
 			CreatedAt:   m.CreatedAt.Unix(),
 		}
@@ -323,6 +420,7 @@ func (h *MessageHandler) GetLatestByFriend(c *gin.Context) {
 		dto := MessageDTO{
 			ID:          m.ID,
 			RoomID:      m.RoomID,
+			SequenceID:  m.SequenceID,
 			ContentType: string(m.ContentType),
 			CreatedAt:   m.CreatedAt.Unix(),
 		}

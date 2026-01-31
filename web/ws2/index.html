@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>QuQuChat WebSocket Demo</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="ws.css">
+    <style>
+      /* Modal Styles */
+      .modal {
+        display: none; 
+        position: fixed; 
+        z-index: 1000; 
+        left: 0;
+        top: 0;
+        width: 100%; 
+        height: 100%; 
+        overflow: auto; 
+        background-color: rgba(0,0,0,0.4); 
+      }
+      .modal-content {
+        background-color: #fefefe;
+        margin: 15% auto; 
+        padding: 20px;
+        border: 1px solid #888;
+        width: 80%; 
+        max-width: 500px;
+        border-radius: 8px;
+      }
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 15px;
+      }
+      .modal-header h3 { margin: 0; }
+      .close-modal {
+        color: #aaa;
+        font-size: 28px;
+        font-weight: bold;
+        cursor: pointer;
+      }
+      .close-modal:hover,
+      .close-modal:focus {
+        color: black;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .friend-checklist {
+        max-height: 300px;
+        overflow-y: auto;
+        border: 1px solid #eee;
+        padding: 10px;
+        margin-bottom: 15px;
+      }
+      .friend-item {
+        display: flex;
+        align-items: center;
+        padding: 5px 0;
+        border-bottom: 1px solid #f9f9f9;
+      }
+      .friend-item:last-child { border-bottom: none; }
+      .friend-item input { margin-right: 10px; }
+    </style>
+</head>
+<body>
+<div class="page">
+<header class="header">
+<h1>QuQuChat WebSocket Demo</h1>
+</header>
+<main class="main">
+<section class="panel" id="login-section">
+<h2>登录</h2>
+<div class="field">
+<label for="login-username">用户名</label>
+<input id="login-username" type="text" autocomplete="username">
+</div>
+<div class="field">
+<label for="login-password">密码</label>
+<input id="login-password" type="password" autocomplete="current-password">
+</div>
+<div class="field inline">
+<button id="login-button">登录</button>
+<button id="logout-button">退出登录</button>
+</div>
+<div class="status" id="login-status"></div>
+</section>
+<section class="panel" id="friend-section">
+<h2>好友</h2>
+<div class="field inline">
+<input id="friend-code-input" type="number" placeholder="好友 user_code">
+<button id="add-friend-button">发送好友请求</button>
+</div>
+<button id="refresh-friends-button">刷新好友列表</button>
+<div class="status" id="friend-status"></div>
+<ul id="friend-list"></ul>
+</section>
+<section class="panel" id="group-section">
+<h2>群聊</h2>
+<div class="field inline">
+<input id="group-name-input" type="text" placeholder="群名称">
+<button id="create-group-button">创建群聊</button>
+</div>
+<button id="refresh-groups-button">刷新群聊列表</button>
+      <div class="status" id="group-status"></div>
+      <ul id="group-list"></ul>
+    </section>
+    <section class="panel" id="group-detail-section" style="display: none;">
+      <h2>群成员管理</h2>
+      <div class="field">
+        <strong>当前群组: </strong><span id="detail-group-name"></span>
+      </div>
+      <div class="field inline">
+        <button id="invite-member-button">邀请好友入群...</button>
+      </div>
+      <div class="field">
+        <button id="leave-group-button" style="background-color: #f44336; color: white;">退出群聊</button>
+        <button id="dismiss-group-button" style="background-color: #d32f2f; color: white; display: none;">解散群聊</button>
+      </div>
+      <div class="status" id="group-detail-status"></div>
+      <ul id="group-member-list" class="member-list"></ul>
+    </section>
+    <section class="panel" id="chat-section">
+<h2>聊天</h2>
+<div class="field">
+<div id="current-user"></div>
+<div id="current-target"></div>
+</div>
+<div class="field">
+<button id="connect-ws-button">连接 WebSocket</button>
+<span id="ws-status"></span>
+</div>
+<div class="field">
+<button id="load-history-button">加载更多历史</button>
+</div>
+<div class="chat-box" id="chat-box"></div>
+<div class="field inline">
+<input id="chat-input" type="text" placeholder="输入消息内容" autocomplete="off">
+<button id="send-message-button">发送</button>
+</div>
+</section>
+</main>
+</div>
+<div id="invite-friend-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>选择要邀请的好友</h3>
+        <span class="close-modal" id="close-invite-modal">&times;</span>
+      </div>
+      <div id="invite-friend-list-container" class="friend-checklist">
+        <!-- Friend items will be injected here -->
+      </div>
+      <div class="field" style="text-align: right;">
+        <button id="confirm-invite-button" style="background-color: #4CAF50; color: white;">确认邀请</button>
+        <button id="cancel-invite-button">取消</button>
+      </div>
+    </div>
+  </div>
+<script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
+<script src="db.js"></script>
+  <script>
+    document.write('<script src="ws.js?v=' + new Date().getTime() + '"><\/script>');
+  </script>
+</body>
+</html>

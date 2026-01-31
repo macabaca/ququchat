@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -228,6 +229,36 @@ func (h *UserHandler) ListFriends(c *gin.Context) {
 		return
 	}
 
+	// Batch find room IDs for these friends
+	roomNames := make([]string, 0, len(friendIDs))
+	for _, fid := range friendIDs {
+		a, b := currentUserID, fid
+		if a > b {
+			a, b = b, a
+		}
+		roomNames = append(roomNames, a+":"+b)
+	}
+
+	var rooms []models.Room
+	if len(roomNames) > 0 {
+		h.db.Where("room_type = ? AND name IN ?", models.RoomTypeDirect, roomNames).Find(&rooms)
+	}
+
+	roomMap := make(map[string]string) // friendID -> roomID
+	for _, r := range rooms {
+		// Name is "id1:id2"
+		parts := strings.Split(r.Name, ":")
+		if len(parts) == 2 {
+			var fid string
+			if parts[0] == currentUserID {
+				fid = parts[1]
+			} else {
+				fid = parts[0]
+			}
+			roomMap[fid] = r.ID
+		}
+	}
+
 	userMap := make(map[string]models.User, len(users))
 	for _, u := range users {
 		userMap[u.ID] = u
@@ -241,6 +272,7 @@ func (h *UserHandler) ListFriends(c *gin.Context) {
 				"user_code": u.UserCode,
 				"username":  u.Username,
 				"status":    u.Status,
+				"room_id":   roomMap[id],
 			})
 		}
 	}
@@ -389,6 +421,47 @@ func (h *UserHandler) RespondFriendRequest(c *gin.Context) {
 				return err
 			}
 		}
+
+		// Eagerly create Direct Room and Members
+		name := a + ":" + b
+		var room models.Room
+		if err := tx.Where("room_type = ? AND name = ?", models.RoomTypeDirect, name).First(&room).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				room = models.Room{
+					ID:          uuid.NewString(),
+					RoomType:    models.RoomTypeDirect,
+					Name:        name,
+					OwnerUserID: a,
+					CreatedAt:   now,
+					UpdatedAt:   now,
+				}
+				if err := tx.Create(&room).Error; err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
+		}
+
+		// Ensure Members exist
+		for _, uid := range []string{a, b} {
+			var m models.RoomMember
+			if err := tx.Where("room_id = ? AND user_id = ?", room.ID, uid).First(&m).Error; err != nil {
+				if err == gorm.ErrRecordNotFound {
+					if err := tx.Create(&models.RoomMember{
+						RoomID:   room.ID,
+						UserID:   uid,
+						Role:     models.MemberRoleMember,
+						JoinedAt: now,
+					}).Error; err != nil {
+						return err
+					}
+				} else {
+					return err
+				}
+			}
+		}
+
 		return nil
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "接受好友请求失败"})
