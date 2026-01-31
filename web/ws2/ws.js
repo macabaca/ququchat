@@ -863,6 +863,7 @@ function fetchGroupMembers(groupId) {
         }
         state.currentGroupMembers = res.data.members || []
         renderGroupMembers(state.currentGroupMembers)
+        updateAdminButtonVisibility()
         setStatus($("group-detail-status"), "成员加载完成", "ok")
       })
       .catch(function (err) {
@@ -1073,6 +1074,95 @@ function fetchGroupMembers(groupId) {
     .catch(function(err) { setStatus($("group-detail-status"), err.message, "error") })
   }
 
+  function updateAdminButtonVisibility() {
+    var btn = $("set-admin-button")
+    if (!state.currentGroup || !state.user) {
+      btn.style.display = "none"
+      return
+    }
+    // Check if I am owner
+    if (state.currentGroup.owner_id === state.user.id) {
+      btn.style.display = "inline-block"
+    } else {
+      btn.style.display = "none"
+    }
+  }
+
+  function openSetAdminModal() {
+    if (!state.currentGroupMembers) return
+    var modal = $("set-admin-modal")
+    var container = $("admin-member-list-container")
+    container.innerHTML = ""
+    
+    // Filter out self
+    var candidates = state.currentGroupMembers.filter(function(m) {
+      return m.user_id !== state.user.id
+    })
+    
+    if (candidates.length === 0) {
+      container.innerHTML = "<div style='padding:10px;color:#999'>没有其他成员可操作</div>"
+    } else {
+      candidates.forEach(function(m) {
+        var div = document.createElement("div")
+        div.className = "friend-item"
+        
+        var checkbox = document.createElement("input")
+        checkbox.type = "checkbox"
+        checkbox.value = m.user_id
+        checkbox.id = "admin-chk-" + m.user_id
+        
+        var label = document.createElement("label")
+        label.htmlFor = "admin-chk-" + m.user_id
+        var name = m.nickname || m.username || m.user_id
+        label.textContent = name + (m.role === 'admin' ? " (已是管理员)" : "")
+        
+        div.appendChild(checkbox)
+        div.appendChild(label)
+        container.appendChild(div)
+      })
+    }
+    modal.style.display = "block"
+  }
+
+  function closeAdminModal() {
+    $("set-admin-modal").style.display = "none"
+  }
+
+  function submitSetAdmins() {
+    var checkboxes = document.querySelectorAll("#admin-member-list-container input[type='checkbox']:checked")
+    var userIds = []
+    checkboxes.forEach(function(cb) {
+      userIds.push(cb.value)
+    })
+    
+    if (userIds.length === 0) {
+      alert("请至少选择一个成员")
+      return
+    }
+    
+    fetchWithRefresh(apiBase() + "/groups/" + state.currentGroup.id + "/admins/add", {
+      method: "POST",
+      headers: Object.assign({"Content-Type": "application/json"}, authHeaders()),
+      body: JSON.stringify({ user_ids: userIds })
+    })
+    .then(function(res) {
+      return res.json().then(function(data) { return {ok: res.ok, data: data} })
+    })
+    .then(function(res) {
+      if (!res.ok) {
+        alert(res.data.error || "操作失败")
+      } else {
+        alert("操作成功")
+        closeAdminModal()
+        // Refresh member list
+        fetchGroupMembers(state.currentGroup.id)
+      }
+    })
+    .catch(function(err) {
+      alert("请求错误: " + err.message)
+    })
+  }
+
 function bindEvents() {
 $("login-button").onclick = login
 $("logout-button").onclick = logout
@@ -1089,6 +1179,7 @@ sendMessage()
 }
 })
   $("invite-member-button").onclick = openInviteModal
+  $("set-admin-button").onclick = openSetAdminModal
   $("leave-group-button").onclick = leaveGroup
   $("dismiss-group-button").onclick = dismissGroup
   
@@ -1096,12 +1187,18 @@ sendMessage()
   $("close-invite-modal").onclick = closeInviteModal
   $("cancel-invite-button").onclick = closeInviteModal
   $("confirm-invite-button").onclick = confirmInvite
+
+  $("close-admin-modal").onclick = closeAdminModal
+  $("cancel-admin-button").onclick = closeAdminModal
+  $("confirm-admin-button").onclick = submitSetAdmins
   
   // Close modal when clicking outside
   window.onclick = function(event) {
-    var modal = $("invite-friend-modal")
-    if (event.target == modal) {
+    if (event.target == $("invite-friend-modal")) {
       closeInviteModal()
+    }
+    if (event.target == $("set-admin-modal")) {
+      closeAdminModal()
     }
   }
 }

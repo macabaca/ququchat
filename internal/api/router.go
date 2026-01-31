@@ -51,6 +51,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat) 
 	groups.POST("/:group_id/members/remove", groupHandler.RemoveMember)
 	groups.POST("/:group_id/leave", groupHandler.LeaveGroup)
 	groups.GET("/:group_id/members", groupHandler.ListGroupMembers)
+	groups.POST("/:group_id/admins/add", groupHandler.AddAdmins)
 
 	messageHandler := handler.NewMessageHandler(db, chatCfg.HistoryLimit)
 	api.GET("/messages/history/before", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetHistoryBefore)

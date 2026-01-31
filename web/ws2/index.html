@@ -112,6 +112,7 @@
       </div>
       <div class="field inline">
         <button id="invite-member-button">邀请好友入群...</button>
+        <button id="set-admin-button" style="display: none;">设置管理员...</button>
       </div>
       <div class="field">
         <button id="leave-group-button" style="background-color: #f44336; color: white;">退出群聊</button>
@@ -153,6 +154,21 @@
       <div class="field" style="text-align: right;">
         <button id="confirm-invite-button" style="background-color: #4CAF50; color: white;">确认邀请</button>
         <button id="cancel-invite-button">取消</button>
+      </div>
+    </div>
+  </div>
+  <div id="set-admin-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>选择要设为管理员的成员</h3>
+        <span class="close-modal" id="close-admin-modal">&times;</span>
+      </div>
+      <div id="admin-member-list-container" class="friend-checklist">
+        <!-- Member items will be injected here -->
+      </div>
+      <div class="field" style="text-align: right;">
+        <button id="confirm-admin-button" style="background-color: #4CAF50; color: white;">确认设置</button>
+        <button id="cancel-admin-button">取消</button>
       </div>
     </div>
   </div>

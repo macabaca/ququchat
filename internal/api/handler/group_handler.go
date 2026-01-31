@@ -486,3 +486,64 @@ func (h *GroupHandler) ListGroupMembers(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"members": resp})
 }
+
+type AddAdminsRequest struct {
+	UserIDs []string `json:"user_ids" binding:"required"`
+}
+
+// AddAdmins 批量设置管理员（仅群主可用）
+func (h *GroupHandler) AddAdmins(c *gin.Context) {
+	currentUserID := c.GetString("user_id")
+	if currentUserID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		return
+	}
+	groupID := c.Param("group_id")
+	if groupID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少群ID"})
+		return
+	}
+	var req AddAdminsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数错误"})
+		return
+	}
+	if len(req.UserIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "未指定用户"})
+		return
+	}
+
+	// 1. Check Group existence
+	var room models.Room
+	if err := h.db.Where("id = ? AND room_type = ?", groupID, models.RoomTypeGroup).First(&room).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "群不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询群信息失败"})
+		return
+	}
+
+	// 2. Check Requester Permission (Must be Owner)
+	if room.OwnerUserID != currentUserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "只有群主可以设置管理员"})
+		return
+	}
+
+	// 3. Update roles
+	// Update all matching members who are NOT the owner to Admin
+	// 排除群主自己（虽然群主一般不在列表里，但为了安全）以及已经退群的人
+	result := h.db.Model(&models.RoomMember{}).
+		Where("room_id = ? AND user_id IN ? AND user_id != ? AND left_at IS NULL", groupID, req.UserIDs, currentUserID).
+		Update("role", models.MemberRoleAdmin)
+
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "设置管理员失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "操作成功",
+		"updated_count": result.RowsAffected,
+	})
+}
