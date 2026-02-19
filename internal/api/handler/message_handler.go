@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
@@ -33,13 +34,15 @@ type HistoryRequest struct {
 }
 
 type MessageDTO struct {
-	ID          string `json:"id"`
-	RoomID      string `json:"room_id"`
-	SequenceID  int64  `json:"sequence_id"`
-	SenderID    string `json:"sender_id,omitempty"`
-	ContentType string `json:"content_type"`
-	ContentText string `json:"content_text,omitempty"`
-	CreatedAt   int64  `json:"created_at"`
+	ID           string          `json:"id"`
+	RoomID       string          `json:"room_id"`
+	SequenceID   int64           `json:"sequence_id"`
+	SenderID     string          `json:"sender_id,omitempty"`
+	ContentType  string          `json:"content_type"`
+	ContentText  string          `json:"content_text,omitempty"`
+	AttachmentID string          `json:"attachment_id,omitempty"`
+	PayloadJSON  json.RawMessage `json:"payload_json,omitempty"`
+	CreatedAt    int64           `json:"created_at"`
 }
 
 func (h *MessageHandler) GetHistoryBefore(c *gin.Context) {
@@ -174,6 +177,12 @@ func (h *MessageHandler) GetHistoryBefore(c *gin.Context) {
 		if m.ContentText != nil {
 			dto.ContentText = *m.ContentText
 		}
+		if m.AttachmentID != nil {
+			dto.AttachmentID = *m.AttachmentID
+		}
+		if len(m.PayloadJSON) > 0 {
+			dto.PayloadJSON = json.RawMessage(m.PayloadJSON)
+		}
 		result = append(result, dto)
 	}
 	c.JSON(http.StatusOK, gin.H{"messages": result})
@@ -268,6 +277,12 @@ func (h *MessageHandler) GetHistoryAfter(c *gin.Context) {
 		if m.ContentText != nil {
 			dto.ContentText = *m.ContentText
 		}
+		if m.AttachmentID != nil {
+			dto.AttachmentID = *m.AttachmentID
+		}
+		if len(m.PayloadJSON) > 0 {
+			dto.PayloadJSON = json.RawMessage(m.PayloadJSON)
+		}
 		result = append(result, dto)
 	}
 	c.JSON(http.StatusOK, gin.H{"messages": result})
@@ -346,6 +361,12 @@ func (h *MessageHandler) GetLatestByGroup(c *gin.Context) {
 		}
 		if m.ContentText != nil {
 			dto.ContentText = *m.ContentText
+		}
+		if m.AttachmentID != nil {
+			dto.AttachmentID = *m.AttachmentID
+		}
+		if len(m.PayloadJSON) > 0 {
+			dto.PayloadJSON = json.RawMessage(m.PayloadJSON)
 		}
 		result = append(result, dto)
 	}
@@ -429,6 +450,12 @@ func (h *MessageHandler) GetLatestByFriend(c *gin.Context) {
 		}
 		if m.ContentText != nil {
 			dto.ContentText = *m.ContentText
+		}
+		if m.AttachmentID != nil {
+			dto.AttachmentID = *m.AttachmentID
+		}
+		if len(m.PayloadJSON) > 0 {
+			dto.PayloadJSON = json.RawMessage(m.PayloadJSON)
 		}
 		result = append(result, dto)
 	}

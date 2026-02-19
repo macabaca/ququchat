@@ -9,6 +9,7 @@ import (
 	"ququchat/internal/api"
 	"ququchat/internal/config"
 	database "ququchat/internal/server/db"
+	"ququchat/internal/server/storage"
 )
 
 func main() {
@@ -37,9 +38,14 @@ func main() {
 	}
 	log.Println("数据库迁移完成")
 
+	minioClient, err := storage.InitMinio(cfg.Minio)
+	if err != nil {
+		log.Fatalf("MinIO 连接失败: %v", err)
+	}
+
 	authCfg := cfg.Auth.ToSettings()
 
-	r := api.SetupRouter(db, authCfg, cfg.Chat)
+	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Minio, minioClient)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

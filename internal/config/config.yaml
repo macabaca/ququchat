@@ -21,3 +21,15 @@ auth:
 
 chat:
   history_limit: 50
+
+file:
+  upload_dir: data/uploads
+  max_size_bytes: 10485760
+  retention: "720h"
+
+minio:
+  endpoint: "localhost:9000"
+  access_key: "minioadmin"
+  secret_key: "minioadmin"
+  bucket: "ququchat"
+  use_ssl: false

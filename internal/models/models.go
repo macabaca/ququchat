@@ -180,14 +180,16 @@ type MessageReaction struct {
 
 // 附件元数据
 type Attachment struct {
-	ID              string    `gorm:"type:char(36);primaryKey" json:"id"`
-	UploaderUserID  *string   `gorm:"type:char(36);index" json:"uploader_user_id,omitempty"`
-	UploaderUser    *User     `gorm:"foreignKey:UploaderUserID;constraint:OnDelete:SET NULL" json:"-"`
-	URL             *string   `gorm:"size:512" json:"url,omitempty"`
-	StorageKey      *string   `gorm:"size:512" json:"storage_key,omitempty"`
-	MimeType        *string   `gorm:"size:128" json:"mime_type,omitempty"`
-	SizeBytes       *int64    `json:"size_bytes,omitempty"`
-	Hash            *string   `gorm:"size:128" json:"hash,omitempty"`
-	StorageProvider *string   `gorm:"size:64" json:"storage_provider,omitempty"`
-	CreatedAt       time.Time `gorm:"not null" json:"created_at"`
+	ID              string     `gorm:"type:char(36);primaryKey" json:"id"`
+	UploaderUserID  *string    `gorm:"type:char(36);index" json:"uploader_user_id,omitempty"`
+	UploaderUser    *User      `gorm:"foreignKey:UploaderUserID;constraint:OnDelete:SET NULL" json:"-"`
+	URL             *string    `gorm:"size:512" json:"url,omitempty"`
+	FileName        *string    `gorm:"size:255" json:"file_name,omitempty"`
+	StorageKey      *string    `gorm:"size:512" json:"storage_key,omitempty"`
+	MimeType        *string    `gorm:"size:128" json:"mime_type,omitempty"`
+	SizeBytes       *int64     `json:"size_bytes,omitempty"`
+	Hash            *string    `gorm:"size:128" json:"hash,omitempty"`
+	StorageProvider *string    `gorm:"size:64" json:"storage_provider,omitempty"`
+	ExpiresAt       *time.Time `gorm:"index" json:"expires_at,omitempty"`
+	CreatedAt       time.Time  `gorm:"not null" json:"created_at"`
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -139,21 +140,34 @@ type Client struct {
 }
 
 type IncomingMessage struct {
-	Type    string `json:"type"`
-	ToUser  string `json:"to_user_id,omitempty"`
-	RoomID  string `json:"room_id,omitempty"`
-	Content string `json:"content,omitempty"`
+	Type         string `json:"type"`
+	ToUser       string `json:"to_user_id,omitempty"`
+	RoomID       string `json:"room_id,omitempty"`
+	Content      string `json:"content,omitempty"`
+	AttachmentID string `json:"attachment_id,omitempty"`
 }
 
 type OutgoingMessage struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	FromUser   string `json:"from_user_id"`
-	ToUser     string `json:"to_user_id,omitempty"`
-	RoomID     string `json:"room_id,omitempty"`
-	Content    string `json:"content"`
-	Timestamp  int64  `json:"timestamp"`
-	SequenceID int64  `json:"sequence_id"`
+	ID           string             `json:"id"`
+	Type         string             `json:"type"`
+	FromUser     string             `json:"from_user_id"`
+	ToUser       string             `json:"to_user_id,omitempty"`
+	RoomID       string             `json:"room_id,omitempty"`
+	Content      string             `json:"content,omitempty"`
+	AttachmentID string             `json:"attachment_id,omitempty"`
+	Attachment   *AttachmentPayload `json:"attachment,omitempty"`
+	Timestamp    int64              `json:"timestamp"`
+	SequenceID   int64              `json:"sequence_id"`
+}
+
+type AttachmentPayload struct {
+	AttachmentID    string  `json:"attachment_id"`
+	FileName        *string `json:"file_name,omitempty"`
+	MimeType        *string `json:"mime_type,omitempty"`
+	SizeBytes       *int64  `json:"size_bytes,omitempty"`
+	Hash            *string `json:"hash,omitempty"`
+	StorageProvider *string `json:"storage_provider,omitempty"`
+	CreatedAt       int64   `json:"created_at"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -272,6 +286,78 @@ func (c *Client) readLoop(h *WsHandler) {
 				UserIDs: memberIDs,
 				Data:    b,
 			}
+		} else if msg.Type == "file_message" {
+			if msg.AttachmentID == "" {
+				continue
+			}
+			attachment, payload, payloadJSON, err := h.loadAttachmentPayload(c.userID, msg.AttachmentID)
+			if err != nil {
+				continue
+			}
+			if msg.ToUser != "" {
+				if !h.areFriends(c.userID, msg.ToUser) {
+					continue
+				}
+				roomID, err := h.ensureDirectRoom(c.userID, msg.ToUser)
+				if err != nil {
+					continue
+				}
+				savedMsg, err := h.saveFileMessage(roomID, c.userID, attachment.ID, payloadJSON)
+				if err != nil {
+					continue
+				}
+				out := OutgoingMessage{
+					ID:           savedMsg.ID,
+					Type:         "file_message",
+					FromUser:     c.userID,
+					ToUser:       msg.ToUser,
+					RoomID:       roomID,
+					AttachmentID: attachment.ID,
+					Attachment:   payload,
+					Timestamp:    savedMsg.CreatedAt.Unix(),
+					SequenceID:   savedMsg.SequenceID,
+				}
+				b, err := json.Marshal(out)
+				if err != nil {
+					continue
+				}
+				c.hub.direct <- DirectMessage{
+					FromUserID: c.userID,
+					ToUserID:   msg.ToUser,
+					Data:       b,
+				}
+			} else if msg.RoomID != "" {
+				if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
+					continue
+				}
+				savedMsg, err := h.saveFileMessage(msg.RoomID, c.userID, attachment.ID, payloadJSON)
+				if err != nil {
+					continue
+				}
+				memberIDs, err := h.getGroupMemberIDs(msg.RoomID)
+				if err != nil {
+					continue
+				}
+				out := OutgoingMessage{
+					ID:           savedMsg.ID,
+					Type:         "file_message",
+					FromUser:     c.userID,
+					RoomID:       msg.RoomID,
+					AttachmentID: attachment.ID,
+					Attachment:   payload,
+					Timestamp:    savedMsg.CreatedAt.Unix(),
+					SequenceID:   savedMsg.SequenceID,
+				}
+				b, err := json.Marshal(out)
+				if err != nil {
+					continue
+				}
+				c.hub.broadcast <- GroupMessage{
+					RoomID:  msg.RoomID,
+					UserIDs: memberIDs,
+					Data:    b,
+				}
+			}
 		}
 	}
 }
@@ -355,27 +441,35 @@ func (h *WsHandler) getGroupMemberIDs(roomID string) ([]string, error) {
 }
 
 func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) (*models.Message, error) {
-	return h.saveMessage(roomID, fromUserID, content)
+	text := content
+	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil)
 }
 
 func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string) (*models.Message, error) {
-	return h.saveMessage(roomID, fromUserID, content)
+	text := content
+	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil)
 }
 
-func (h *WsHandler) saveMessage(roomID, fromUserID, content string) (*models.Message, error) {
+func (h *WsHandler) saveFileMessage(roomID, fromUserID, attachmentID string, payload datatypes.JSON) (*models.Message, error) {
+	aid := attachmentID
+	return h.saveMessage(roomID, fromUserID, models.ContentTypeFile, nil, &aid, payload)
+}
+
+func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.ContentType, contentText *string, attachmentID *string, payload datatypes.JSON) (*models.Message, error) {
 	now := time.Now()
-	text := content
 
 	// 重试逻辑：处理高并发下的 SequenceID 冲突（尤其是在 Postgres 无间隙锁的情况下）
 	maxRetries := 3
 	for i := 0; i < maxRetries; i++ {
 		m := models.Message{
-			ID:          uuid.NewString(),
-			RoomID:      roomID,
-			SenderID:    &fromUserID,
-			ContentType: models.ContentTypeText,
-			ContentText: &text,
-			CreatedAt:   now,
+			ID:           uuid.NewString(),
+			RoomID:       roomID,
+			SenderID:     &fromUserID,
+			ContentType:  contentType,
+			ContentText:  contentText,
+			AttachmentID: attachmentID,
+			PayloadJSON:  payload,
+			CreatedAt:    now,
 		}
 
 		err := h.db.Transaction(func(tx *gorm.DB) error {
@@ -404,6 +498,30 @@ func (h *WsHandler) saveMessage(roomID, fromUserID, content string) (*models.Mes
 	}
 	// TODO: 记录重试失败日志
 	return nil, errors.New("failed to save message after retries")
+}
+
+func (h *WsHandler) loadAttachmentPayload(userID, attachmentID string) (*models.Attachment, *AttachmentPayload, datatypes.JSON, error) {
+	var attachment models.Attachment
+	if err := h.db.Where("id = ?", attachmentID).First(&attachment).Error; err != nil {
+		return nil, nil, nil, err
+	}
+	if attachment.UploaderUserID != nil && *attachment.UploaderUserID != userID {
+		return nil, nil, nil, errors.New("attachment not owned by user")
+	}
+	payload := &AttachmentPayload{
+		AttachmentID:    attachment.ID,
+		FileName:        attachment.FileName,
+		MimeType:        attachment.MimeType,
+		SizeBytes:       attachment.SizeBytes,
+		Hash:            attachment.Hash,
+		StorageProvider: attachment.StorageProvider,
+		CreatedAt:       attachment.CreatedAt.Unix(),
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return &attachment, payload, datatypes.JSON(b), nil
 }
 
 func (h *WsHandler) ensureDirectRoomMembers(roomID, a, b string) {
