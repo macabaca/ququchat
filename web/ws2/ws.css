@@ -52,6 +52,10 @@ display: flex;
 gap: 8px;
 }
 
+.field.inline.file-upload input[type="file"] {
+flex: 1;
+}
+
 label {
 display: block;
 font-size: 12px;
@@ -161,6 +165,21 @@ max-width: 70%;
 word-break: break-word;
 }
 
+.chat-message.file-message .content {
+display: inline-flex;
+align-items: center;
+gap: 6px;
+}
+
+.chat-message.file-message .content .file-name {
+font-weight: 600;
+}
+
+.chat-message.file-message .content button {
+padding: 2px 6px;
+font-size: 12px;
+}
+
 .chat-message.me .content {
 background: #1976d2;
 color: #fff;
@@ -187,4 +206,3 @@ margin-left: 8px;
 grid-template-columns: 1fr;
 }
 }
-

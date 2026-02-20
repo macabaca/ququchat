@@ -8,14 +8,22 @@
     window.ChatDB = {
         // Save a single message (handles both raw WS msg and formatted DB msg)
         saveMessage: function(msg) {
+            var payload = msg.payload_json || msg.attachment || null
+            var contentType = msg.content_type || (msg.type === "file_message" ? "file" : "text")
+            var fileName = ""
+            if (payload && typeof payload === "object") {
+                fileName = payload.file_name || ""
+            }
             return db.messages.put({
                 id: msg.id,
                 room_id: msg.room_id,
                 sequence_id: msg.sequence_id || 0,
                 sender_id: msg.sender_id || msg.from_user_id,
-                content_text: msg.content_text || msg.content,
+                content_text: msg.content_text || msg.content || fileName,
                 created_at: msg.created_at || msg.timestamp,
-                content_type: msg.content_type || 'text'
+                content_type: contentType,
+                attachment_id: msg.attachment_id,
+                payload_json: payload
             });
         },
 

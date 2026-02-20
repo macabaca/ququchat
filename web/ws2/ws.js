@@ -432,6 +432,16 @@ el.textContent = "当前聊天对象: [群组] " + state.currentGroup.name + " (
 } else {
 el.textContent = "当前聊天对象: 未选择"
 }
+var fileInput = $("file-input")
+var uploadButton = $("upload-file-button")
+var canSendFile = false
+if (state.currentGroup) {
+canSendFile = state.currentGroup.status === "active"
+} else if (state.currentFriend) {
+canSendFile = true
+}
+if (fileInput) fileInput.disabled = !canSendFile
+if (uploadButton) uploadButton.disabled = !canSendFile
 }
 
 function buildWsUrl() {
@@ -492,10 +502,12 @@ state.friends = []
   $("friend-list").innerHTML = ""
   $("group-list").innerHTML = ""
   $("chat-box").innerHTML = ""
+  if ($("file-input")) $("file-input").value = ""
   updateCurrentUser()
 updateCurrentTarget()
 setWsStatus("", null)
 setStatus($("friend-status"), "", null)
+setStatus($("file-upload-status"), "", null)
 }
 
 function connectWs() {
@@ -549,6 +561,24 @@ ws.onmessage = function (event) {
                  handleIncomingWsMessage(event.data); 
              }
         });
+    } else if (msg.type === 'file_message') {
+        var fileDbMsg = {
+            id: msg.id || ('temp_' + Date.now()),
+            room_id: msg.room_id || null,
+            sequence_id: msg.sequence_id || 0,
+            sender_id: msg.from_user_id,
+            content_text: (msg.attachment && msg.attachment.file_name) || "",
+            created_at: msg.timestamp,
+            content_type: 'file',
+            attachment_id: msg.attachment_id,
+            payload_json: msg.attachment
+        };
+        
+        ChatDB.saveMessage(fileDbMsg).then(function() {
+             if (state.currentRoomId && state.currentRoomId === fileDbMsg.room_id) {
+                 handleIncomingWsMessage(event.data); 
+             }
+        });
     } else {
         handleIncomingWsMessage(event.data);
     }
@@ -595,15 +625,90 @@ if (data.type === "friend_message") {
       var prefix = isMe ? "我" : senderName
       appendChatLine(prefix, data.content, isMe, data)
     }
+  } else if (data.type === "file_message") {
+    var isMe = state.user && data.from_user_id === state.user.id
+    if (state.currentGroup && state.currentGroup.id === data.room_id) {
+      var senderName = "成员" + data.from_user_id.substring(0, 4)
+      if (state.currentGroupMembers) {
+        var gm = state.currentGroupMembers.find(function(mem) { return mem.user_id === data.from_user_id })
+        if (gm) senderName = gm.nickname || gm.username || senderName
+      }
+      var prefix = isMe ? "我" : senderName
+      appendChatLine(prefix, data.content || "", isMe, data)
+      return
+    }
+    if (state.currentFriend && (isMe || state.currentFriend.id === data.from_user_id)) {
+      var friendPrefix = isMe ? "我" : "对方"
+      appendChatLine(friendPrefix, data.content || "", isMe, data)
+    }
   } else {
     appendChatLine("system", raw, false)
   }
 }
 
+function normalizePayload(payload) {
+if (!payload) return null
+if (typeof payload === "string") {
+    try {
+        return JSON.parse(payload)
+    } catch (e) {
+        return null
+    }
+}
+return payload
+}
+
+function getAttachmentId(data) {
+if (!data) return ""
+if (data.attachment_id) return data.attachment_id
+var payload = normalizePayload(data.attachment || data.payload_json)
+if (payload && payload.attachment_id) return payload.attachment_id
+return ""
+}
+
+function getAttachmentName(data, fallback) {
+var payload = normalizePayload(data.attachment || data.payload_json)
+if (payload && payload.file_name) return payload.file_name
+if (data && data.file_name) return data.file_name
+return fallback || "未命名文件"
+}
+
+function requestDownloadUrl(attachmentId) {
+if (!attachmentId) {
+appendChatLine("system", "无法下载：缺少附件ID", false)
+return
+}
+setStatus($("file-upload-status"), "获取下载链接中...")
+fetchWithRefresh(apiBase() + "/files/" + encodeURIComponent(attachmentId) + "/url", {
+headers: authHeaders()
+})
+.then(function (res) {
+return res.json().then(function (data) {
+return { ok: res.ok, data: data }
+})
+})
+.then(function (res) {
+if (!res.ok) {
+setStatus($("file-upload-status"), res.data.error || "获取下载链接失败", "error")
+return
+}
+if (!res.data || !res.data.url) {
+setStatus($("file-upload-status"), "下载链接缺失", "error")
+return
+}
+setStatus($("file-upload-status"), "已生成下载链接", "ok")
+window.open(res.data.url, "_blank")
+})
+.catch(function (err) {
+setStatus($("file-upload-status"), err.message, "error")
+})
+}
+
 function appendChatLine(sender, text, isMe, data) {
 var box = $("chat-box")
 var div = document.createElement("div")
-div.className = "chat-message " + (isMe ? "me" : "other")
+var isFile = data && (data.type === "file_message" || data.content_type === "file")
+div.className = "chat-message " + (isMe ? "me" : "other") + (isFile ? " file-message" : "")
 var meta = document.createElement("span")
 meta.className = "meta"
 var timeText = ""
@@ -614,7 +719,21 @@ timeText = d.toLocaleTimeString()
 meta.textContent = sender + (timeText ? " " + timeText : "")
 var content = document.createElement("span")
 content.className = "content"
+if (isFile) {
+var fileName = getAttachmentName(data, text)
+var label = document.createElement("span")
+label.className = "file-name"
+label.textContent = fileName
+var btn = document.createElement("button")
+btn.textContent = "下载"
+btn.onclick = function () {
+requestDownloadUrl(getAttachmentId(data))
+}
+content.appendChild(label)
+content.appendChild(btn)
+} else {
 content.textContent = text
+}
 div.appendChild(meta)
 div.appendChild(content)
 box.appendChild(div)
@@ -636,13 +755,21 @@ function appendHistoryMessages(messages) {
 			}
 		}
 
-		appendChatLine(sender, m.content_text || "", isMe, { timestamp: m.created_at })
+		appendChatLine(sender, m.content_text || "", isMe, {
+            timestamp: m.created_at,
+            content_type: m.content_type,
+            attachment_id: m.attachment_id,
+            payload_json: m.payload_json
+        })
 		state.messages.push({
 			id: m.id,
 			room_id: m.room_id,
 			sender_id: m.sender_id,
 			content_text: m.content_text || "",
-			created_at: m.created_at
+			created_at: m.created_at,
+            content_type: m.content_type,
+            attachment_id: m.attachment_id,
+            payload_json: m.payload_json
 		})
 	})
 }
@@ -843,6 +970,70 @@ content: text
 }
 state.ws.send(JSON.stringify(payload))
 input.value = ""
+}
+
+function sendFileMessage() {
+if (!state.accessToken) {
+setStatus($("file-upload-status"), "请先登录", "error")
+return
+}
+if (!state.ws || !state.wsConnected) {
+setStatus($("file-upload-status"), "尚未连接 WebSocket", "error")
+return
+}
+if (state.currentGroup && state.currentGroup.status !== "active") {
+setStatus($("file-upload-status"), "无法发送文件: " + (state.currentGroup.status === "dismissed" ? "群已解散" : "已退群"), "error")
+return
+}
+if (!state.currentFriend && !state.currentGroup) {
+setStatus($("file-upload-status"), "请先选择会话", "error")
+return
+}
+var input = $("file-input")
+var file = input.files && input.files[0]
+if (!file) {
+setStatus($("file-upload-status"), "请选择文件", "error")
+return
+}
+setStatus($("file-upload-status"), "上传中...")
+var form = new FormData()
+form.append("file", file)
+fetchWithRefresh(apiBase() + "/files/upload", {
+method: "POST",
+headers: authHeaders(),
+body: form
+})
+.then(function (res) {
+return res.json().then(function (data) {
+return { ok: res.ok, data: data }
+})
+})
+.then(function (res) {
+if (!res.ok) {
+setStatus($("file-upload-status"), res.data.error || "上传失败", "error")
+return
+}
+var attachment = res.data && res.data.attachment
+if (!attachment || !attachment.id) {
+setStatus($("file-upload-status"), "上传响应缺少附件ID", "error")
+return
+}
+var payload = {
+type: "file_message",
+attachment_id: attachment.id
+}
+if (state.currentGroup) {
+payload.room_id = state.currentGroup.id
+} else {
+payload.to_user_id = state.currentFriend.id
+}
+state.ws.send(JSON.stringify(payload))
+input.value = ""
+setStatus($("file-upload-status"), "已发送", "ok")
+})
+.catch(function (err) {
+setStatus($("file-upload-status"), err.message, "error")
+})
 }
 
 function fetchGroupMembers(groupId) {
@@ -1172,6 +1363,7 @@ $("add-friend-button").onclick = addFriend
   $("refresh-groups-button").onclick = refreshGroups
   $("connect-ws-button").onclick = connectWs
 $("send-message-button").onclick = sendMessage
+$("upload-file-button").onclick = sendFileMessage
 $("load-history-button").onclick = loadMoreHistory
 $("chat-input").addEventListener("keydown", function (e) {
 if (e.key === "Enter") {
