@@ -11,8 +11,10 @@ var state = {
     messages: [],
     ws: null,
     wsConnected: false,
-    currentRoomId: null // Track current room ID for DB queries
+    currentRoomId: null, // Track current room ID for DB queries
+    chunkSession: null
   }
+  var SESSION_KEY = "ququchat_ws2_session"
 
   function syncMessages(roomId) {
       // 1. Get local max sequence_id
@@ -87,6 +89,7 @@ return false
 }
 state.accessToken = data.accessToken
 state.refreshToken = data.refreshToken
+saveSessionState()
 return true
 })
 })
@@ -162,6 +165,7 @@ return res.json()
 state.accessToken = data.accessToken
 state.refreshToken = data.refreshToken || null
 state.user = data.user
+saveSessionState()
 setStatus($("login-status"), "登录成功，user_id=" + data.user.id, "ok")
 updateCurrentUser()
       refreshFriends()
@@ -177,6 +181,52 @@ if (!state.accessToken) return {}
 return {
 Authorization: "Bearer " + state.accessToken
 }
+}
+
+function saveSessionState() {
+if (!state.accessToken || !state.user) {
+try {
+localStorage.removeItem(SESSION_KEY)
+} catch (e) {
+}
+return
+}
+try {
+localStorage.setItem(SESSION_KEY, JSON.stringify({
+accessToken: state.accessToken,
+refreshToken: state.refreshToken,
+user: state.user
+}))
+} catch (e) {
+}
+}
+
+function loadSessionState() {
+var raw = null
+try {
+raw = localStorage.getItem(SESSION_KEY)
+} catch (e) {
+return false
+}
+if (!raw) return false
+var data = null
+try {
+data = JSON.parse(raw)
+} catch (e) {
+return false
+}
+if (!data || !data.accessToken || !data.user) {
+return false
+}
+state.accessToken = data.accessToken
+state.refreshToken = data.refreshToken || null
+state.user = data.user
+updateCurrentUser()
+updateCurrentTarget()
+setStatus($("login-status"), "已恢复登录", "ok")
+refreshFriends()
+refreshGroups()
+return true
 }
 
 function addFriend() {
@@ -434,6 +484,9 @@ el.textContent = "当前聊天对象: 未选择"
 }
 var fileInput = $("file-input")
 var uploadButton = $("upload-file-button")
+var chunkInput = $("chunk-file-input")
+var chunkButton = $("chunk-upload-button")
+var chunkSizeInput = $("chunk-size-input")
 var canSendFile = false
 if (state.currentGroup) {
 canSendFile = state.currentGroup.status === "active"
@@ -442,6 +495,9 @@ canSendFile = true
 }
 if (fileInput) fileInput.disabled = !canSendFile
 if (uploadButton) uploadButton.disabled = !canSendFile
+if (chunkInput) chunkInput.disabled = !canSendFile
+if (chunkButton) chunkButton.disabled = !canSendFile
+if (chunkSizeInput) chunkSizeInput.disabled = !canSendFile
 }
 
 function buildWsUrl() {
@@ -488,6 +544,10 @@ try {
 state.ws.close()
 } catch (e) {
 }
+}
+try {
+localStorage.removeItem(SESSION_KEY)
+} catch (e) {
 }
 state.ws = null
 state.wsConnected = false
@@ -972,6 +1032,225 @@ state.ws.send(JSON.stringify(payload))
 input.value = ""
 }
 
+function getChunkSizeBytes() {
+var input = $("chunk-size-input")
+var sizeMb = input ? parseInt(input.value, 10) : 5
+if (!sizeMb || sizeMb <= 0) {
+sizeMb = 5
+if (input) input.value = "5"
+}
+return sizeMb * 1024 * 1024
+}
+
+function setChunkProgress(percent, text) {
+var bar = $("chunk-upload-progress")
+var label = $("chunk-upload-progress-text")
+if (bar) {
+bar.style.width = Math.max(0, Math.min(100, percent)) + "%"
+}
+if (label) {
+label.textContent = text || ""
+}
+}
+
+function resetChunkSession() {
+state.chunkSession = null
+setStatus($("chunk-upload-status"), "", null)
+setChunkProgress(0, "")
+}
+
+function startChunkSession(file) {
+return fetchWithRefresh(apiBase() + "/files/multipart/start", {
+method: "POST",
+headers: Object.assign({"Content-Type": "application/json"}, authHeaders()),
+body: JSON.stringify({
+file_name: file.name,
+mime_type: file.type || ""
+})
+})
+.then(function (res) {
+return res.json().then(function (data) {
+return { ok: res.ok, data: data }
+})
+})
+.then(function (res) {
+if (!res.ok) {
+throw new Error(res.data.error || "初始化分片上传失败")
+}
+state.chunkSession = {
+fileKey: file.name + "|" + file.size + "|" + file.lastModified,
+uploadId: res.data.upload_id,
+storageKey: res.data.storage_key,
+attachmentId: res.data.attachment_id,
+fileName: res.data.file_name || file.name,
+mimeType: res.data.mime_type || file.type || ""
+}
+return state.chunkSession
+})
+}
+
+function listChunkParts(session) {
+var url = apiBase() + "/files/multipart/parts?upload_id=" + encodeURIComponent(session.uploadId) + "&storage_key=" + encodeURIComponent(session.storageKey)
+return fetchWithRefresh(url, { headers: authHeaders() })
+.then(function (res) {
+return res.json().then(function (data) {
+return { ok: res.ok, data: data }
+})
+})
+.then(function (res) {
+if (!res.ok) {
+throw new Error(res.data.error || "获取分片列表失败")
+}
+return res.data.parts || []
+})
+}
+
+function uploadChunkPart(session, partNumber, blob) {
+var form = new FormData()
+form.append("upload_id", session.uploadId)
+form.append("storage_key", session.storageKey)
+form.append("part_number", String(partNumber))
+form.append("file", blob, "part-" + partNumber)
+return fetchWithRefresh(apiBase() + "/files/multipart/part", {
+method: "POST",
+headers: authHeaders(),
+body: form
+})
+.then(function (res) {
+return res.json().then(function (data) {
+return { ok: res.ok, data: data }
+})
+})
+.then(function (res) {
+if (!res.ok) {
+throw new Error(res.data.error || "上传分片失败")
+}
+return res.data
+})
+}
+
+function completeChunkUpload(session, expectedSHA256) {
+return fetchWithRefresh(apiBase() + "/files/multipart/complete", {
+method: "POST",
+headers: Object.assign({"Content-Type": "application/json"}, authHeaders()),
+body: JSON.stringify({
+upload_id: session.uploadId,
+storage_key: session.storageKey,
+attachment_id: session.attachmentId,
+file_name: session.fileName,
+mime_type: session.mimeType,
+expected_sha256: expectedSHA256 || ""
+})
+})
+.then(function (res) {
+return res.json().then(function (data) {
+return { ok: res.ok, data: data }
+})
+})
+.then(function (res) {
+if (!res.ok) {
+throw new Error(res.data.error || "完成上传失败")
+}
+return res.data.attachment
+})
+}
+
+function sendChunkedFileMessage() {
+if (!state.accessToken) {
+setStatus($("chunk-upload-status"), "请先登录", "error")
+return
+}
+if (!state.ws || !state.wsConnected) {
+setStatus($("chunk-upload-status"), "尚未连接 WebSocket", "error")
+return
+}
+if (state.currentGroup && state.currentGroup.status !== "active") {
+setStatus($("chunk-upload-status"), "无法发送文件: " + (state.currentGroup.status === "dismissed" ? "群已解散" : "已退群"), "error")
+return
+}
+if (!state.currentFriend && !state.currentGroup) {
+setStatus($("chunk-upload-status"), "请先选择会话", "error")
+return
+}
+var input = $("chunk-file-input")
+var file = input.files && input.files[0]
+if (!file) {
+setStatus($("chunk-upload-status"), "请选择文件", "error")
+return
+}
+var fileKey = file.name + "|" + file.size + "|" + file.lastModified
+var sessionPromise
+if (state.chunkSession && state.chunkSession.fileKey === fileKey) {
+sessionPromise = Promise.resolve(state.chunkSession)
+} else {
+sessionPromise = startChunkSession(file)
+}
+setStatus($("chunk-upload-status"), "初始化分片上传...")
+setChunkProgress(0, "")
+sessionPromise
+.then(function (session) {
+return listChunkParts(session).then(function (parts) {
+return { session: session, parts: parts }
+})
+})
+.then(function (ctx) {
+var session = ctx.session
+var uploaded = {}
+ctx.parts.forEach(function (p) {
+uploaded[p.PartNumber] = true
+})
+var chunkSize = getChunkSizeBytes()
+var totalParts = Math.ceil(file.size / chunkSize)
+setChunkProgress(0, "0%")
+var chain = Promise.resolve()
+for (var i = 0; i < totalParts; i++) {
+var partNumber = i + 1
+if (uploaded[partNumber]) {
+continue
+}
+chain = chain.then((function (partNo) {
+return function () {
+var start = (partNo - 1) * chunkSize
+var end = Math.min(file.size, start + chunkSize)
+var blob = file.slice(start, end)
+var percent = Math.floor((end / file.size) * 100)
+setStatus($("chunk-upload-status"), "上传分片 " + partNo + "/" + totalParts + " (" + percent + "%)")
+setChunkProgress(percent, percent + "%")
+return uploadChunkPart(session, partNo, blob)
+}
+})(partNumber))
+}
+return chain.then(function () { return session })
+})
+.then(function (session) {
+setStatus($("chunk-upload-status"), "合并分片中...")
+setChunkProgress(100, "合并中...")
+return completeChunkUpload(session, "")
+})
+.then(function (attachment) {
+if (!attachment || !attachment.id) {
+throw new Error("上传响应缺少附件ID")
+}
+var payload = {
+type: "file_message",
+attachment_id: attachment.id
+}
+if (state.currentGroup) {
+payload.room_id = state.currentGroup.id
+} else {
+payload.to_user_id = state.currentFriend.id
+}
+state.ws.send(JSON.stringify(payload))
+input.value = ""
+resetChunkSession()
+setStatus($("chunk-upload-status"), "已发送", "ok")
+setChunkProgress(100, "完成")
+})
+.catch(function (err) {
+setStatus($("chunk-upload-status"), err.message, "error")
+setChunkProgress(0, "")
+})
+}
 function sendFileMessage() {
 if (!state.accessToken) {
 setStatus($("file-upload-status"), "请先登录", "error")
@@ -1364,6 +1643,7 @@ $("add-friend-button").onclick = addFriend
   $("connect-ws-button").onclick = connectWs
 $("send-message-button").onclick = sendMessage
 $("upload-file-button").onclick = sendFileMessage
+  $("chunk-upload-button").onclick = sendChunkedFileMessage
 $("load-history-button").onclick = loadMoreHistory
 $("chat-input").addEventListener("keydown", function (e) {
 if (e.key === "Enter") {
@@ -1374,6 +1654,7 @@ sendMessage()
   $("set-admin-button").onclick = openSetAdminModal
   $("leave-group-button").onclick = leaveGroup
   $("dismiss-group-button").onclick = dismissGroup
+  $("chunk-file-input").addEventListener("change", resetChunkSession)
   
   // Modal bindings
   $("close-invite-modal").onclick = closeInviteModal
@@ -1397,7 +1678,9 @@ sendMessage()
 
 document.addEventListener("DOMContentLoaded", function () {
 bindEvents()
+if (!loadSessionState()) {
 updateCurrentUser()
 updateCurrentTarget()
+}
 })
 })()

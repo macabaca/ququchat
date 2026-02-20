@@ -144,6 +144,18 @@
 <button id="upload-file-button">发送文件</button>
 </div>
 <div class="status" id="file-upload-status"></div>
+<div class="field inline file-upload">
+<input id="chunk-file-input" type="file">
+<input id="chunk-size-input" type="number" min="1" value="5">
+<button id="chunk-upload-button">分片上传</button>
+</div>
+<div class="status" id="chunk-upload-status"></div>
+<div class="field">
+<div class="progress">
+<div class="progress-bar" id="chunk-upload-progress"></div>
+</div>
+<div class="progress-meta" id="chunk-upload-progress-text"></div>
+</div>
 </section>
 </main>
 </div>
