@@ -12,7 +12,9 @@ var state = {
     ws: null,
     wsConnected: false,
     currentRoomId: null, // Track current room ID for DB queries
-    chunkSession: null
+    chunkSession: null,
+    heartbeatTimer: null,
+    lastHeartbeatAt: 0
   }
   var SESSION_KEY = "ququchat_ws2_session"
 
@@ -545,6 +547,7 @@ state.ws.close()
 } catch (e) {
 }
 }
+stopHeartbeat()
 try {
 localStorage.removeItem(SESSION_KEY)
 } catch (e) {
@@ -586,6 +589,7 @@ state.ws = ws
 ws.onopen = function () {
 state.wsConnected = true
 setWsStatus("已连接", "ok")
+startHeartbeat()
 // On Reconnect, we could try to sync current room
 if (state.currentRoomId) {
     syncMessages(state.currentRoomId).then(function(count) {
@@ -596,13 +600,25 @@ if (state.currentRoomId) {
 ws.onclose = function () {
 state.wsConnected = false
 setWsStatus("已断开", "error")
+stopHeartbeat()
 }
 ws.onerror = function () {
 state.wsConnected = false
 setWsStatus("连接错误", "error")
+stopHeartbeat()
 }
 ws.onmessage = function (event) {
     var msg = JSON.parse(event.data);
+    if (msg.type === "ping") {
+        if (state.ws && state.wsConnected) {
+            state.ws.send(JSON.stringify({ type: "pong", ts: Date.now() }))
+        }
+        return
+    }
+    if (msg.type === "pong") {
+        state.lastHeartbeatAt = Date.now()
+        return
+    }
     
     // Intercept messages to save to DB first (Push)
     if (msg.type === 'group_message' || msg.type === 'friend_message') {
@@ -642,6 +658,26 @@ ws.onmessage = function (event) {
     } else {
         handleIncomingWsMessage(event.data);
     }
+}
+}
+
+function startHeartbeat() {
+stopHeartbeat()
+if (!state.ws || !state.wsConnected) return
+state.lastHeartbeatAt = Date.now()
+state.heartbeatTimer = setInterval(function () {
+if (!state.ws || !state.wsConnected) return
+try {
+state.ws.send(JSON.stringify({ type: "ping", ts: Date.now() }))
+} catch (e) {
+}
+}, 45000)
+}
+
+function stopHeartbeat() {
+if (state.heartbeatTimer) {
+clearInterval(state.heartbeatTimer)
+state.heartbeatTimer = null
 }
 }
 

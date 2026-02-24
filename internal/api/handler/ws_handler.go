@@ -16,6 +16,13 @@ import (
 	"ququchat/internal/models"
 )
 
+const (
+	wsWriteWait   = 10 * time.Second
+	wsPongWait    = 60 * time.Second
+	wsPingPeriod  = 50 * time.Second
+	wsMaxMsgBytes = 64 * 1024
+)
+
 type WsHandler struct {
 	db  *gorm.DB
 	hub *Hub
@@ -205,6 +212,11 @@ func (c *Client) readLoop(h *WsHandler) {
 		c.hub.unregister <- c
 		_ = c.conn.Close()
 	}()
+	c.conn.SetReadLimit(wsMaxMsgBytes)
+	_ = c.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	c.conn.SetPongHandler(func(string) error {
+		return c.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
 	for {
 		_, data, err := c.conn.ReadMessage()
 		if err != nil {
@@ -212,6 +224,22 @@ func (c *Client) readLoop(h *WsHandler) {
 		}
 		var msg IncomingMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		if msg.Type == "ping" {
+			resp, err := json.Marshal(map[string]interface{}{
+				"type": "pong",
+				"ts":   time.Now().Unix(),
+			})
+			if err == nil {
+				select {
+				case c.send <- resp:
+				default:
+				}
+			}
+			continue
+		}
+		if msg.Type == "pong" {
 			continue
 		}
 		if msg.Type == "friend_message" {
@@ -366,9 +394,24 @@ func (c *Client) writeLoop() {
 	defer func() {
 		_ = c.conn.Close()
 	}()
-	for msg := range c.send {
-		if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			break
+	ticker := time.NewTicker(wsPingPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case msg, ok := <-c.send:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+			if !ok {
+				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		case <-ticker.C:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }
