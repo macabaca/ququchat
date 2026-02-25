@@ -637,7 +637,7 @@ ws.onmessage = function (event) {
                  handleIncomingWsMessage(event.data); 
              }
         });
-    } else if (msg.type === 'file_message') {
+    } else if (msg.type === 'file_message' || msg.type === 'image_message') {
         var fileDbMsg = {
             id: msg.id || ('temp_' + Date.now()),
             room_id: msg.room_id || null,
@@ -645,7 +645,7 @@ ws.onmessage = function (event) {
             sender_id: msg.from_user_id,
             content_text: (msg.attachment && msg.attachment.file_name) || "",
             created_at: msg.timestamp,
-            content_type: 'file',
+            content_type: msg.type === "image_message" ? "image" : "file",
             attachment_id: msg.attachment_id,
             payload_json: msg.attachment
         };
@@ -721,7 +721,7 @@ if (data.type === "friend_message") {
       var prefix = isMe ? "我" : senderName
       appendChatLine(prefix, data.content, isMe, data)
     }
-  } else if (data.type === "file_message") {
+  } else if (data.type === "file_message" || data.type === "image_message") {
     var isMe = state.user && data.from_user_id === state.user.id
     if (state.currentGroup && state.currentGroup.id === data.room_id) {
       var senderName = "成员" + data.from_user_id.substring(0, 4)
@@ -754,6 +754,16 @@ if (typeof payload === "string") {
 return payload
 }
 
+function isImagePayload(data) {
+var payload = normalizePayload(data && (data.attachment || data.payload_json))
+if (data && data.content_type === "image") return true
+if (data && data.type === "image_message") return true
+if (payload && payload.mime_type) {
+    return payload.mime_type.indexOf("image/") === 0
+}
+return false
+}
+
 function getAttachmentId(data) {
 if (!data) return ""
 if (data.attachment_id) return data.attachment_id
@@ -762,11 +772,42 @@ if (payload && payload.attachment_id) return payload.attachment_id
 return ""
 }
 
+function getThumbAttachmentId(data) {
+if (!data) return ""
+var payload = normalizePayload(data.attachment || data.payload_json)
+if (payload && payload.thumb_attachment_id) return payload.thumb_attachment_id
+return ""
+}
+
 function getAttachmentName(data, fallback) {
 var payload = normalizePayload(data.attachment || data.payload_json)
 if (payload && payload.file_name) return payload.file_name
 if (data && data.file_name) return data.file_name
 return fallback || "未命名文件"
+}
+
+function requestThumbnailUrl(attachmentId, thumbAttachmentId) {
+if (!attachmentId && !thumbAttachmentId) {
+return Promise.reject(new Error("缺少附件ID"))
+}
+if (thumbAttachmentId) {
+return fetchWithRefresh(apiBase() + "/files/" + encodeURIComponent(thumbAttachmentId) + "/url", {
+headers: authHeaders()
+})
+.then(function (res) {
+return res.json().then(function (data) {
+return { ok: res.ok, data: data }
+})
+})
+}
+return fetchWithRefresh(apiBase() + "/files/" + encodeURIComponent(attachmentId) + "/thumb/url", {
+headers: authHeaders()
+})
+.then(function (res) {
+return res.json().then(function (data) {
+return { ok: res.ok, data: data }
+})
+})
 }
 
 function requestDownloadUrl(attachmentId) {
@@ -804,7 +845,8 @@ function appendChatLine(sender, text, isMe, data) {
 var box = $("chat-box")
 var div = document.createElement("div")
 var isFile = data && (data.type === "file_message" || data.content_type === "file")
-div.className = "chat-message " + (isMe ? "me" : "other") + (isFile ? " file-message" : "")
+var isImage = data && isImagePayload(data)
+div.className = "chat-message " + (isMe ? "me" : "other") + (isFile ? " file-message" : "") + (isImage ? " image-message" : "")
 var meta = document.createElement("span")
 meta.className = "meta"
 var timeText = ""
@@ -815,7 +857,35 @@ timeText = d.toLocaleTimeString()
 meta.textContent = sender + (timeText ? " " + timeText : "")
 var content = document.createElement("span")
 content.className = "content"
-if (isFile) {
+if (isImage) {
+var attachmentId = getAttachmentId(data)
+var thumbAttachmentId = getThumbAttachmentId(data)
+var img = document.createElement("img")
+img.className = "thumb"
+img.alt = getAttachmentName(data, text)
+img.title = "点击查看原图"
+img.onclick = function () {
+requestDownloadUrl(attachmentId)
+}
+content.appendChild(img)
+if (attachmentId || thumbAttachmentId) {
+requestThumbnailUrl(attachmentId, thumbAttachmentId)
+  .then(function (res) {
+    if (!res.ok || !res.data || !res.data.url) {
+      throw new Error(res.data && res.data.error ? res.data.error : "缩略图不可用")
+    }
+    img.src = res.data.url
+  })
+  .catch(function () {
+    var btn = document.createElement("button")
+    btn.textContent = "下载"
+    btn.onclick = function () {
+      requestDownloadUrl(attachmentId)
+    }
+    content.appendChild(btn)
+  })
+}
+} else if (isFile) {
 var fileName = getAttachmentName(data, text)
 var label = document.createElement("span")
 label.className = "file-name"
@@ -1267,8 +1337,9 @@ return completeChunkUpload(session, "")
 if (!attachment || !attachment.id) {
 throw new Error("上传响应缺少附件ID")
 }
+var isImage = attachment.mime_type && attachment.mime_type.indexOf("image/") === 0
 var payload = {
-type: "file_message",
+type: isImage ? "image_message" : "file_message",
 attachment_id: attachment.id
 }
 if (state.currentGroup) {
@@ -1333,8 +1404,9 @@ if (!attachment || !attachment.id) {
 setStatus($("file-upload-status"), "上传响应缺少附件ID", "error")
 return
 }
+var isImage = attachment.mime_type && attachment.mime_type.indexOf("image/") === 0
 var payload = {
-type: "file_message",
+type: isImage ? "image_message" : "file_message",
 attachment_id: attachment.id
 }
 if (state.currentGroup) {

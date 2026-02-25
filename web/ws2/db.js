@@ -9,7 +9,7 @@
         // Save a single message (handles both raw WS msg and formatted DB msg)
         saveMessage: function(msg) {
             var payload = msg.payload_json || msg.attachment || null
-            var contentType = msg.content_type || (msg.type === "file_message" ? "file" : "text")
+            var contentType = msg.content_type || (msg.type === "image_message" ? "image" : (msg.type === "file_message" ? "file" : "text"))
             var fileName = ""
             if (payload && typeof payload === "object") {
                 fileName = payload.file_name || ""

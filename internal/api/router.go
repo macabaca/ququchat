@@ -64,6 +64,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	files := api.Group("/files", middleware.JWTAuth(authCfg.JWTSecret))
 	files.POST("/upload", fileHandler.Upload)
 	files.GET("/:attachment_id/url", fileHandler.GetDownloadURL)
+	files.GET("/:attachment_id/thumb/url", fileHandler.GetThumbnailURL)
 	files.POST("/multipart/start", fileHandler.StartMultipartUpload)
 	files.POST("/multipart/part", fileHandler.UploadPart)
 	files.GET("/multipart/parts", fileHandler.ListUploadedParts)

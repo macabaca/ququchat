@@ -1,11 +1,16 @@
 package filesvc
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"mime/multipart"
 	"path/filepath"
@@ -33,6 +38,20 @@ var ErrUploadIDRequired = errors.New("upload_id_required")
 var ErrPartNumberInvalid = errors.New("part_number_invalid")
 var ErrChecksumMismatch = errors.New("checksum_mismatch")
 
+const thumbMaxDimension = 320
+const thumbJPEGQuality = 80
+const thumbRetryCount = 3
+const thumbRetryDelay = 200 * time.Millisecond
+const thumbMaxSourceBytes = int64(10 * 1024 * 1024)
+
+type thumbResult struct {
+	attachment *models.Attachment
+	origW      int
+	origH      int
+	thumbW     int
+	thumbH     int
+}
+
 type countReader struct {
 	r   io.Reader
 	n   int64
@@ -56,6 +75,168 @@ type Service struct {
 	minioClient  *minio.Client
 	bucket       string
 	retention    time.Duration
+}
+
+func isImageMime(mimePtr *string) bool {
+	if mimePtr == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(*mimePtr)), "image/")
+}
+
+func shouldGenerateThumbnail(mimePtr *string, sizeBytes *int64) bool {
+	if !isImageMime(mimePtr) {
+		return false
+	}
+	if sizeBytes == nil || *sizeBytes <= 0 {
+		return true
+	}
+	return *sizeBytes <= thumbMaxSourceBytes
+}
+
+func resizeNearest(src image.Image, width int, height int) *image.RGBA {
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+	b := src.Bounds()
+	srcW := b.Dx()
+	srcH := b.Dy()
+	if srcW == 0 || srcH == 0 {
+		return dst
+	}
+	for y := 0; y < height; y++ {
+		sy := b.Min.Y + (y*srcH)/height
+		for x := 0; x < width; x++ {
+			sx := b.Min.X + (x*srcW)/width
+			dst.Set(x, y, src.At(sx, sy))
+		}
+	}
+	return dst
+}
+
+func resizeToMax(src image.Image, maxDim int) (image.Image, int, int, int, int) {
+	b := src.Bounds()
+	origW := b.Dx()
+	origH := b.Dy()
+	if maxDim <= 0 || (origW <= maxDim && origH <= maxDim) {
+		return src, origW, origH, origW, origH
+	}
+	var newW int
+	var newH int
+	if origW >= origH {
+		newW = maxDim
+		newH = int(float64(origH) * float64(maxDim) / float64(origW))
+	} else {
+		newH = maxDim
+		newW = int(float64(origW) * float64(maxDim) / float64(origH))
+	}
+	if newW <= 0 {
+		newW = 1
+	}
+	if newH <= 0 {
+		newH = 1
+	}
+	return resizeNearest(src, newW, newH), origW, origH, newW, newH
+}
+
+func (s *Service) createThumbnailFromImage(userID string, original *models.Attachment, img image.Image) (*models.Attachment, int, int, int, int, error) {
+	thumbImg, origW, origH, thumbW, thumbH := resizeToMax(img, thumbMaxDimension)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, thumbImg, &jpeg.Options{Quality: thumbJPEGQuality}); err != nil {
+		return nil, origW, origH, 0, 0, err
+	}
+	thumbID := uuid.NewString()
+	storedName := thumbID + ".jpg"
+	storageKey := filepath.ToSlash(filepath.Join("uploads", "thumbs", storedName))
+	contentType := "image/jpeg"
+	provider := "minio"
+	now := time.Now()
+	expiresAt := now.Add(s.retention)
+	sizeBytes := int64(buf.Len())
+	hashValue := sha256.Sum256(buf.Bytes())
+	hashHex := hex.EncodeToString(hashValue[:])
+	uploadOptions := minio.PutObjectOptions{ContentType: contentType}
+	if _, err := s.minioClient.PutObject(context.Background(), s.bucket, storageKey, bytes.NewReader(buf.Bytes()), sizeBytes, uploadOptions); err != nil {
+		return nil, origW, origH, 0, 0, err
+	}
+	fileName := "thumb.jpg"
+	if original.FileName != nil && strings.TrimSpace(*original.FileName) != "" {
+		base := strings.TrimSpace(*original.FileName)
+		fileName = base + ".thumb.jpg"
+	}
+	thumbAttachment := models.Attachment{
+		ID:              thumbID,
+		UploaderUserID:  original.UploaderUserID,
+		FileName:        &fileName,
+		StorageKey:      &storageKey,
+		MimeType:        &contentType,
+		SizeBytes:       &sizeBytes,
+		Hash:            &hashHex,
+		StorageProvider: &provider,
+		ImageWidth:      &thumbW,
+		ImageHeight:     &thumbH,
+		ExpiresAt:       &expiresAt,
+		CreatedAt:       now,
+	}
+	if err := s.db.Create(&thumbAttachment).Error; err != nil {
+		return nil, origW, origH, 0, 0, err
+	}
+	return &thumbAttachment, origW, origH, thumbW, thumbH, nil
+}
+
+func (s *Service) tryCreateThumbnail(create func() (*models.Attachment, int, int, int, int, error)) *thumbResult {
+	for i := 0; i < thumbRetryCount; i++ {
+		attachment, origW, origH, thumbW, thumbH, err := create()
+		if err == nil && attachment != nil {
+			return &thumbResult{
+				attachment: attachment,
+				origW:      origW,
+				origH:      origH,
+				thumbW:     thumbW,
+				thumbH:     thumbH,
+			}
+		}
+		if i < thumbRetryCount-1 {
+			time.Sleep(thumbRetryDelay * time.Duration(i+1))
+		}
+	}
+	return nil
+}
+
+func (s *Service) ensureThumbnailForAttachment(userID string, attachment *models.Attachment) {
+	if attachment == nil || attachment.StorageKey == nil || strings.TrimSpace(*attachment.StorageKey) == "" {
+		return
+	}
+	if !shouldGenerateThumbnail(attachment.MimeType, attachment.SizeBytes) {
+		return
+	}
+	if attachment.ThumbAttachmentID != nil && strings.TrimSpace(*attachment.ThumbAttachmentID) != "" {
+		return
+	}
+	result := s.tryCreateThumbnail(func() (*models.Attachment, int, int, int, int, error) {
+		obj, err := s.minioClient.GetObject(context.Background(), s.bucket, *attachment.StorageKey, minio.GetObjectOptions{})
+		if err != nil {
+			return nil, 0, 0, 0, 0, err
+		}
+		defer obj.Close()
+		img, _, err := image.Decode(obj)
+		if err != nil {
+			return nil, 0, 0, 0, 0, err
+		}
+		return s.createThumbnailFromImage(userID, attachment, img)
+	})
+	if result != nil {
+		attachment.ImageWidth = &result.origW
+		attachment.ImageHeight = &result.origH
+		attachment.ThumbAttachmentID = &result.attachment.ID
+		attachment.ThumbWidth = &result.thumbW
+		attachment.ThumbHeight = &result.thumbH
+		_ = s.db.Model(&models.Attachment{}).Where("id = ?", attachment.ID).Updates(map[string]interface{}{
+			"image_width":         result.origW,
+			"image_height":        result.origH,
+			"thumb_attachment_id": result.attachment.ID,
+			"thumb_width":         result.thumbW,
+			"thumb_height":        result.thumbH,
+		}).Error
+	}
 }
 
 type MultipartSession struct {
@@ -180,6 +361,34 @@ func (s *Service) Upload(userID string, file *multipart.FileHeader) (*models.Att
 
 	if err := s.db.Create(&attachment).Error; err != nil {
 		return nil, fmt.Errorf("create attachment: %w", err)
+	}
+	if shouldGenerateThumbnail(mimePtr, &sizeBytes) {
+		result := s.tryCreateThumbnail(func() (*models.Attachment, int, int, int, int, error) {
+			imgFile, err := file.Open()
+			if err != nil {
+				return nil, 0, 0, 0, 0, err
+			}
+			defer imgFile.Close()
+			img, _, err := image.Decode(imgFile)
+			if err != nil {
+				return nil, 0, 0, 0, 0, err
+			}
+			return s.createThumbnailFromImage(userID, &attachment, img)
+		})
+		if result != nil {
+			attachment.ImageWidth = &result.origW
+			attachment.ImageHeight = &result.origH
+			attachment.ThumbAttachmentID = &result.attachment.ID
+			attachment.ThumbWidth = &result.thumbW
+			attachment.ThumbHeight = &result.thumbH
+			_ = s.db.Model(&models.Attachment{}).Where("id = ?", attachment.ID).Updates(map[string]interface{}{
+				"image_width":         result.origW,
+				"image_height":        result.origH,
+				"thumb_attachment_id": result.attachment.ID,
+				"thumb_width":         result.thumbW,
+				"thumb_height":        result.thumbH,
+			}).Error
+		}
 	}
 
 	return &attachment, nil
@@ -365,6 +574,7 @@ func (s *Service) CompleteMultipartUpload(userID string, session MultipartSessio
 	if err := s.db.Create(&attachment).Error; err != nil {
 		return nil, fmt.Errorf("create attachment: %w", err)
 	}
+	s.ensureThumbnailForAttachment(userID, &attachment)
 	return &attachment, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -168,13 +169,18 @@ type OutgoingMessage struct {
 }
 
 type AttachmentPayload struct {
-	AttachmentID    string  `json:"attachment_id"`
-	FileName        *string `json:"file_name,omitempty"`
-	MimeType        *string `json:"mime_type,omitempty"`
-	SizeBytes       *int64  `json:"size_bytes,omitempty"`
-	Hash            *string `json:"hash,omitempty"`
-	StorageProvider *string `json:"storage_provider,omitempty"`
-	CreatedAt       int64   `json:"created_at"`
+	AttachmentID      string  `json:"attachment_id"`
+	FileName          *string `json:"file_name,omitempty"`
+	MimeType          *string `json:"mime_type,omitempty"`
+	SizeBytes         *int64  `json:"size_bytes,omitempty"`
+	Hash              *string `json:"hash,omitempty"`
+	StorageProvider   *string `json:"storage_provider,omitempty"`
+	ImageWidth        *int    `json:"image_width,omitempty"`
+	ImageHeight       *int    `json:"image_height,omitempty"`
+	ThumbAttachmentID *string `json:"thumb_attachment_id,omitempty"`
+	ThumbWidth        *int    `json:"thumb_width,omitempty"`
+	ThumbHeight       *int    `json:"thumb_height,omitempty"`
+	CreatedAt         int64   `json:"created_at"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -314,13 +320,19 @@ func (c *Client) readLoop(h *WsHandler) {
 				UserIDs: memberIDs,
 				Data:    b,
 			}
-		} else if msg.Type == "file_message" {
+		} else if msg.Type == "file_message" || msg.Type == "image_message" {
 			if msg.AttachmentID == "" {
 				continue
 			}
 			attachment, payload, payloadJSON, err := h.loadAttachmentPayload(c.userID, msg.AttachmentID)
 			if err != nil {
 				continue
+			}
+			contentType := models.ContentTypeFile
+			outType := "file_message"
+			if isImageAttachment(attachment) {
+				contentType = models.ContentTypeImage
+				outType = "image_message"
 			}
 			if msg.ToUser != "" {
 				if !h.areFriends(c.userID, msg.ToUser) {
@@ -330,13 +342,13 @@ func (c *Client) readLoop(h *WsHandler) {
 				if err != nil {
 					continue
 				}
-				savedMsg, err := h.saveFileMessage(roomID, c.userID, attachment.ID, payloadJSON)
+				savedMsg, err := h.saveAttachmentMessage(roomID, c.userID, attachment.ID, payloadJSON, contentType)
 				if err != nil {
 					continue
 				}
 				out := OutgoingMessage{
 					ID:           savedMsg.ID,
-					Type:         "file_message",
+					Type:         outType,
 					FromUser:     c.userID,
 					ToUser:       msg.ToUser,
 					RoomID:       roomID,
@@ -358,7 +370,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
 					continue
 				}
-				savedMsg, err := h.saveFileMessage(msg.RoomID, c.userID, attachment.ID, payloadJSON)
+				savedMsg, err := h.saveAttachmentMessage(msg.RoomID, c.userID, attachment.ID, payloadJSON, contentType)
 				if err != nil {
 					continue
 				}
@@ -368,7 +380,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				}
 				out := OutgoingMessage{
 					ID:           savedMsg.ID,
-					Type:         "file_message",
+					Type:         outType,
 					FromUser:     c.userID,
 					RoomID:       msg.RoomID,
 					AttachmentID: attachment.ID,
@@ -493,9 +505,9 @@ func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string) (*mode
 	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil)
 }
 
-func (h *WsHandler) saveFileMessage(roomID, fromUserID, attachmentID string, payload datatypes.JSON) (*models.Message, error) {
+func (h *WsHandler) saveAttachmentMessage(roomID, fromUserID, attachmentID string, payload datatypes.JSON, contentType models.ContentType) (*models.Message, error) {
 	aid := attachmentID
-	return h.saveMessage(roomID, fromUserID, models.ContentTypeFile, nil, &aid, payload)
+	return h.saveMessage(roomID, fromUserID, contentType, nil, &aid, payload)
 }
 
 func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.ContentType, contentText *string, attachmentID *string, payload datatypes.JSON) (*models.Message, error) {
@@ -552,19 +564,31 @@ func (h *WsHandler) loadAttachmentPayload(userID, attachmentID string) (*models.
 		return nil, nil, nil, errors.New("attachment not owned by user")
 	}
 	payload := &AttachmentPayload{
-		AttachmentID:    attachment.ID,
-		FileName:        attachment.FileName,
-		MimeType:        attachment.MimeType,
-		SizeBytes:       attachment.SizeBytes,
-		Hash:            attachment.Hash,
-		StorageProvider: attachment.StorageProvider,
-		CreatedAt:       attachment.CreatedAt.Unix(),
+		AttachmentID:      attachment.ID,
+		FileName:          attachment.FileName,
+		MimeType:          attachment.MimeType,
+		SizeBytes:         attachment.SizeBytes,
+		Hash:              attachment.Hash,
+		StorageProvider:   attachment.StorageProvider,
+		ImageWidth:        attachment.ImageWidth,
+		ImageHeight:       attachment.ImageHeight,
+		ThumbAttachmentID: attachment.ThumbAttachmentID,
+		ThumbWidth:        attachment.ThumbWidth,
+		ThumbHeight:       attachment.ThumbHeight,
+		CreatedAt:         attachment.CreatedAt.Unix(),
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	return &attachment, payload, datatypes.JSON(b), nil
+}
+
+func isImageAttachment(attachment *models.Attachment) bool {
+	if attachment == nil || attachment.MimeType == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(*attachment.MimeType)), "image/")
 }
 
 func (h *WsHandler) ensureDirectRoomMembers(roomID, a, b string) {

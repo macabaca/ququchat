@@ -184,6 +184,20 @@ padding: 2px 6px;
 font-size: 12px;
 }
 
+.chat-message.image-message .content {
+display: inline-flex;
+align-items: center;
+gap: 6px;
+}
+
+.chat-message.image-message .content .thumb {
+max-width: 160px;
+max-height: 160px;
+border-radius: 6px;
+cursor: pointer;
+border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
 .progress {
 height: 8px;
 background: #e0e0e0;
