@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/minio/minio-go/v7"
 	"gorm.io/gorm"
 
 	"ququchat/internal/config"
 	"ququchat/internal/models"
+	serverstorage "ququchat/internal/server/storage"
 	filesvc "ququchat/internal/service/file"
 )
 
@@ -43,10 +43,10 @@ func attachmentResponse(attachment *models.Attachment) gin.H {
 	}
 }
 
-func NewFileHandler(db *gorm.DB, cfg config.File, minioClient *minio.Client, bucket string) *FileHandler {
+func NewFileHandler(db *gorm.DB, cfg config.File, objStorage serverstorage.ObjectStorage, bucket string) *FileHandler {
 	return &FileHandler{
 		db:  db,
-		svc: filesvc.NewService(db, minioClient, bucket, cfg.MaxSizeBytes, cfg.RetentionDuration()),
+		svc: filesvc.NewService(db, objStorage, bucket, cfg.MaxSizeBytes, cfg.RetentionDuration()),
 	}
 }
 

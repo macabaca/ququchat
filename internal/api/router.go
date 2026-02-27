@@ -2,16 +2,16 @@ package api
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/minio/minio-go/v7"
 	"gorm.io/gorm"
 
 	"ququchat/internal/api/handler"
 	"ququchat/internal/config"
 	"ququchat/internal/middleware"
+	serverstorage "ququchat/internal/server/storage"
 )
 
 // SetupRouter 初始化 Gin 路由，并将数据库句柄注入到上下文中
-func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, minioCfg config.Minio, minioClient *minio.Client) *gin.Engine {
+func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, objStorage serverstorage.ObjectStorage, bucket string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
@@ -60,7 +60,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	api.GET("/messages/history/latest", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByFriend)
 	api.GET("/messages/history/group", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByGroup)
 
-	fileHandler := handler.NewFileHandler(db, fileCfg, minioClient, minioCfg.Bucket)
+	fileHandler := handler.NewFileHandler(db, fileCfg, objStorage, bucket)
 	files := api.Group("/files", middleware.JWTAuth(authCfg.JWTSecret))
 	files.POST("/upload", fileHandler.Upload)
 	files.GET("/:attachment_id/url", fileHandler.GetDownloadURL)

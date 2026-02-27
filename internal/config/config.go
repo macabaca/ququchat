@@ -12,7 +12,9 @@ type Config struct {
     Auth     Auth     `yaml:"auth" json:"auth"`
     Chat     Chat     `yaml:"chat" json:"chat"`
     File     File     `yaml:"file" json:"file"`
+    Storage  Storage  `yaml:"storage" json:"storage"`
     Minio    Minio    `yaml:"minio" json:"minio"`
+    OSS      OSS      `yaml:"oss" json:"oss"`
 }
 
 // Database 结构体已拆分至 config_db.go

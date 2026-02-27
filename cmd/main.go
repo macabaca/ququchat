@@ -38,14 +38,29 @@ func main() {
 	}
 	log.Println("数据库迁移完成")
 
-	minioClient, err := storage.InitMinio(cfg.Minio)
-	if err != nil {
-		log.Fatalf("MinIO 连接失败: %v", err)
+	provider := cfg.Storage.ProviderOrDefault()
+	var objStorage storage.ObjectStorage
+	var bucket string
+	switch provider {
+	case "minio":
+		objStorage, err = storage.InitMinioStorage(cfg.Minio)
+		if err != nil {
+			log.Fatalf("MinIO 连接失败: %v", err)
+		}
+		bucket = cfg.Minio.Bucket
+	case "oss":
+		objStorage, err = storage.InitOSSStorage(cfg.OSS)
+		if err != nil {
+			log.Fatalf("OSS 连接失败: %v", err)
+		}
+		bucket = cfg.OSS.Bucket
+	default:
+		log.Fatalf("不支持的对象存储 provider: %s", provider)
 	}
 
 	authCfg := cfg.Auth.ToSettings()
 
-	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Minio, minioClient)
+	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, objStorage, bucket)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

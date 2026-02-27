@@ -20,3 +20,10 @@
 
 # Documentation
 document/
+
+# Project local folders
+bash/
+bin/
+documents/
+
+internal/config/config.yaml

@@ -19,16 +19,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/minio/minio-go/v7"
 	"gorm.io/gorm"
 
 	"ququchat/internal/models"
+	serverstorage "ququchat/internal/server/storage"
 )
 
 var ErrUserIDRequired = errors.New("user_id_required")
 var ErrFileRequired = errors.New("file_required")
 var ErrFileTooLarge = errors.New("file_too_large")
-var ErrMinioClientRequired = errors.New("minio_client_required")
+var ErrStorageClientRequired = errors.New("storage_client_required")
+var ErrMinioClientRequired = ErrStorageClientRequired
 var ErrBucketRequired = errors.New("bucket_required")
 var ErrAttachmentNotFound = errors.New("attachment_not_found")
 var ErrStorageKeyRequired = errors.New("storage_key_required")
@@ -72,7 +73,7 @@ func (c *countReader) Read(p []byte) (int, error) {
 type Service struct {
 	db           *gorm.DB
 	maxSizeBytes int64
-	minioClient  *minio.Client
+	storage      serverstorage.ObjectStorage
 	bucket       string
 	retention    time.Duration
 }
@@ -147,14 +148,13 @@ func (s *Service) createThumbnailFromImage(userID string, original *models.Attac
 	storedName := thumbID + ".jpg"
 	storageKey := filepath.ToSlash(filepath.Join("uploads", "thumbs", storedName))
 	contentType := "image/jpeg"
-	provider := "minio"
+	provider := s.storage.Provider()
 	now := time.Now()
 	expiresAt := now.Add(s.retention)
 	sizeBytes := int64(buf.Len())
 	hashValue := sha256.Sum256(buf.Bytes())
 	hashHex := hex.EncodeToString(hashValue[:])
-	uploadOptions := minio.PutObjectOptions{ContentType: contentType}
-	if _, err := s.minioClient.PutObject(context.Background(), s.bucket, storageKey, bytes.NewReader(buf.Bytes()), sizeBytes, uploadOptions); err != nil {
+	if err := s.storage.PutObject(context.Background(), s.bucket, storageKey, bytes.NewReader(buf.Bytes()), sizeBytes, &contentType); err != nil {
 		return nil, origW, origH, 0, 0, err
 	}
 	fileName := "thumb.jpg"
@@ -212,7 +212,7 @@ func (s *Service) ensureThumbnailForAttachment(userID string, attachment *models
 		return
 	}
 	result := s.tryCreateThumbnail(func() (*models.Attachment, int, int, int, int, error) {
-		obj, err := s.minioClient.GetObject(context.Background(), s.bucket, *attachment.StorageKey, minio.GetObjectOptions{})
+		obj, err := s.storage.GetObject(context.Background(), s.bucket, *attachment.StorageKey)
 		if err != nil {
 			return nil, 0, 0, 0, 0, err
 		}
@@ -247,14 +247,14 @@ type MultipartSession struct {
 	MimeType     *string
 }
 
-func NewService(db *gorm.DB, minioClient *minio.Client, bucket string, maxSizeBytes int64, retention time.Duration) *Service {
+func NewService(db *gorm.DB, objStorage serverstorage.ObjectStorage, bucket string, maxSizeBytes int64, retention time.Duration) *Service {
 	if retention <= 0 {
 		retention = 30 * 24 * time.Hour
 	}
 	return &Service{
 		db:           db,
 		maxSizeBytes: maxSizeBytes,
-		minioClient:  minioClient,
+		storage:      objStorage,
 		bucket:       strings.TrimSpace(bucket),
 		retention:    retention,
 	}
@@ -270,8 +270,8 @@ func (s *Service) Upload(userID string, file *multipart.FileHeader) (*models.Att
 	if s.maxSizeBytes > 0 && file.Size > s.maxSizeBytes {
 		return nil, ErrFileTooLarge
 	}
-	if s.minioClient == nil {
-		return nil, ErrMinioClientRequired
+	if s.storage == nil {
+		return nil, ErrStorageClientRequired
 	}
 	if strings.TrimSpace(s.bucket) == "" {
 		return nil, ErrBucketRequired
@@ -298,7 +298,7 @@ func (s *Service) Upload(userID string, file *multipart.FileHeader) (*models.Att
 	defer src.Close()
 
 	storageKey := filepath.ToSlash(filepath.Join("uploads", storedName))
-	provider := "minio"
+	provider := s.storage.Provider()
 	now := time.Now()
 	expiresAt := now.Add(s.retention)
 	sizeBytes := file.Size
@@ -320,29 +320,20 @@ func (s *Service) Upload(userID string, file *multipart.FileHeader) (*models.Att
 		mimePtr = &ct
 	}
 
-	uploadOptions := minio.PutObjectOptions{}
-	if mimePtr != nil {
-		uploadOptions.ContentType = *mimePtr
-	}
-	if uploadSize < 0 {
-		uploadOptions.PartSize = 10 * 1024 * 1024
-	}
-	if _, err := s.minioClient.PutObject(context.Background(), s.bucket, storageKey, reader, uploadSize, uploadOptions); err != nil {
+	if err := s.storage.PutObject(context.Background(), s.bucket, storageKey, reader, uploadSize, mimePtr); err != nil {
 		if errors.Is(err, ErrFileTooLarge) {
 			return nil, ErrFileTooLarge
 		}
 		return nil, fmt.Errorf("put object: %w", err)
 	}
 	hashValue := hex.EncodeToString(hasher.Sum(nil))
-	stat, err := s.minioClient.StatObject(context.Background(), s.bucket, storageKey, minio.StatObjectOptions{})
+	stat, err := s.storage.StatObject(context.Background(), s.bucket, storageKey)
 	if err != nil {
 		return nil, fmt.Errorf("stat object: %w", err)
 	}
-	if stat.Size > 0 {
-		sizeBytes = stat.Size
-	}
+	sizeBytes = stat.Size
 	if sizeBytes <= 0 {
-		_ = s.minioClient.RemoveObject(context.Background(), s.bucket, storageKey, minio.RemoveObjectOptions{})
+		_ = s.storage.RemoveObject(context.Background(), s.bucket, storageKey)
 		return nil, ErrEmptyFile
 	}
 
@@ -398,8 +389,8 @@ func (s *Service) StartMultipartUpload(userID string, filename string, mimeType 
 	if strings.TrimSpace(userID) == "" {
 		return nil, ErrUserIDRequired
 	}
-	if s.minioClient == nil {
-		return nil, ErrMinioClientRequired
+	if s.storage == nil {
+		return nil, ErrStorageClientRequired
 	}
 	if strings.TrimSpace(s.bucket) == "" {
 		return nil, ErrBucketRequired
@@ -420,12 +411,7 @@ func (s *Service) StartMultipartUpload(userID string, filename string, mimeType 
 	if mt := strings.TrimSpace(mimeType); mt != "" {
 		mimePtr = &mt
 	}
-	opts := minio.PutObjectOptions{}
-	if mimePtr != nil {
-		opts.ContentType = *mimePtr
-	}
-	core := minio.Core{Client: s.minioClient}
-	uploadID, err := core.NewMultipartUpload(context.Background(), s.bucket, storageKey, opts)
+	uploadID, err := s.storage.NewMultipartUpload(context.Background(), s.bucket, storageKey, mimePtr)
 	if err != nil {
 		return nil, fmt.Errorf("new multipart upload: %w", err)
 	}
@@ -438,34 +424,33 @@ func (s *Service) StartMultipartUpload(userID string, filename string, mimeType 
 	}, nil
 }
 
-func (s *Service) UploadPart(userID string, storageKey string, uploadID string, partNumber int, reader io.Reader, size int64) (minio.ObjectPart, error) {
+func (s *Service) UploadPart(userID string, storageKey string, uploadID string, partNumber int, reader io.Reader, size int64) (serverstorage.UploadedPart, error) {
 	if strings.TrimSpace(userID) == "" {
-		return minio.ObjectPart{}, ErrUserIDRequired
+		return serverstorage.UploadedPart{}, ErrUserIDRequired
 	}
 	if strings.TrimSpace(uploadID) == "" {
-		return minio.ObjectPart{}, ErrUploadIDRequired
+		return serverstorage.UploadedPart{}, ErrUploadIDRequired
 	}
 	if strings.TrimSpace(storageKey) == "" {
-		return minio.ObjectPart{}, ErrStorageKeyRequired
+		return serverstorage.UploadedPart{}, ErrStorageKeyRequired
 	}
 	if partNumber <= 0 {
-		return minio.ObjectPart{}, ErrPartNumberInvalid
+		return serverstorage.UploadedPart{}, ErrPartNumberInvalid
 	}
-	if s.minioClient == nil {
-		return minio.ObjectPart{}, ErrMinioClientRequired
+	if s.storage == nil {
+		return serverstorage.UploadedPart{}, ErrStorageClientRequired
 	}
 	if strings.TrimSpace(s.bucket) == "" {
-		return minio.ObjectPart{}, ErrBucketRequired
+		return serverstorage.UploadedPart{}, ErrBucketRequired
 	}
-	core := minio.Core{Client: s.minioClient}
-	part, err := core.PutObjectPart(context.Background(), s.bucket, storageKey, uploadID, partNumber, reader, size, minio.PutObjectPartOptions{})
+	part, err := s.storage.UploadPart(context.Background(), s.bucket, storageKey, uploadID, partNumber, reader, size)
 	if err != nil {
-		return minio.ObjectPart{}, fmt.Errorf("put object part: %w", err)
+		return serverstorage.UploadedPart{}, fmt.Errorf("put object part: %w", err)
 	}
 	return part, nil
 }
 
-func (s *Service) ListUploadedParts(userID string, storageKey string, uploadID string) ([]minio.ObjectPart, error) {
+func (s *Service) ListUploadedParts(userID string, storageKey string, uploadID string) ([]serverstorage.UploadedPart, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, ErrUserIDRequired
 	}
@@ -475,18 +460,17 @@ func (s *Service) ListUploadedParts(userID string, storageKey string, uploadID s
 	if strings.TrimSpace(storageKey) == "" {
 		return nil, ErrStorageKeyRequired
 	}
-	if s.minioClient == nil {
-		return nil, ErrMinioClientRequired
+	if s.storage == nil {
+		return nil, ErrStorageClientRequired
 	}
 	if strings.TrimSpace(s.bucket) == "" {
 		return nil, ErrBucketRequired
 	}
-	core := minio.Core{Client: s.minioClient}
-	result, err := core.ListObjectParts(context.Background(), s.bucket, storageKey, uploadID, 0, 0)
+	parts, err := s.storage.ListUploadedParts(context.Background(), s.bucket, storageKey, uploadID)
 	if err != nil {
 		return nil, fmt.Errorf("list object parts: %w", err)
 	}
-	return result.ObjectParts, nil
+	return parts, nil
 }
 
 func (s *Service) AbortMultipartUpload(userID string, storageKey string, uploadID string) error {
@@ -499,20 +483,19 @@ func (s *Service) AbortMultipartUpload(userID string, storageKey string, uploadI
 	if strings.TrimSpace(storageKey) == "" {
 		return ErrStorageKeyRequired
 	}
-	if s.minioClient == nil {
-		return ErrMinioClientRequired
+	if s.storage == nil {
+		return ErrStorageClientRequired
 	}
 	if strings.TrimSpace(s.bucket) == "" {
 		return ErrBucketRequired
 	}
-	core := minio.Core{Client: s.minioClient}
-	if err := core.AbortMultipartUpload(context.Background(), s.bucket, storageKey, uploadID); err != nil {
+	if err := s.storage.AbortMultipartUpload(context.Background(), s.bucket, storageKey, uploadID); err != nil {
 		return fmt.Errorf("abort multipart upload: %w", err)
 	}
 	return nil
 }
 
-func (s *Service) CompleteMultipartUpload(userID string, session MultipartSession, parts []minio.ObjectPart, expectedSHA256 string) (*models.Attachment, error) {
+func (s *Service) CompleteMultipartUpload(userID string, session MultipartSession, parts []serverstorage.UploadedPart, expectedSHA256 string) (*models.Attachment, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, ErrUserIDRequired
 	}
@@ -522,8 +505,8 @@ func (s *Service) CompleteMultipartUpload(userID string, session MultipartSessio
 	if strings.TrimSpace(session.StorageKey) == "" {
 		return nil, ErrStorageKeyRequired
 	}
-	if s.minioClient == nil {
-		return nil, ErrMinioClientRequired
+	if s.storage == nil {
+		return nil, ErrStorageClientRequired
 	}
 	if strings.TrimSpace(s.bucket) == "" {
 		return nil, ErrBucketRequired
@@ -531,21 +514,15 @@ func (s *Service) CompleteMultipartUpload(userID string, session MultipartSessio
 	sort.Slice(parts, func(i, j int) bool {
 		return parts[i].PartNumber < parts[j].PartNumber
 	})
-	completeParts := make([]minio.CompletePart, 0, len(parts))
-	for _, p := range parts {
-		completeParts = append(completeParts, minio.CompletePart{PartNumber: p.PartNumber, ETag: p.ETag})
-	}
-	core := minio.Core{Client: s.minioClient}
-	_, err := core.CompleteMultipartUpload(context.Background(), s.bucket, session.StorageKey, session.UploadID, completeParts, minio.PutObjectOptions{})
-	if err != nil {
+	if err := s.storage.CompleteMultipartUpload(context.Background(), s.bucket, session.StorageKey, session.UploadID, parts); err != nil {
 		return nil, fmt.Errorf("complete multipart upload: %w", err)
 	}
-	stat, err := s.minioClient.StatObject(context.Background(), s.bucket, session.StorageKey, minio.StatObjectOptions{})
+	stat, err := s.storage.StatObject(context.Background(), s.bucket, session.StorageKey)
 	if err != nil {
 		return nil, fmt.Errorf("stat object: %w", err)
 	}
 	if stat.Size <= 0 {
-		_ = s.minioClient.RemoveObject(context.Background(), s.bucket, session.StorageKey, minio.RemoveObjectOptions{})
+		_ = s.storage.RemoveObject(context.Background(), s.bucket, session.StorageKey)
 		return nil, ErrEmptyFile
 	}
 	hashValue, err := s.hashObjectSHA256(session.StorageKey)
@@ -553,12 +530,13 @@ func (s *Service) CompleteMultipartUpload(userID string, session MultipartSessio
 		return nil, err
 	}
 	if expectedSHA256 != "" && !strings.EqualFold(expectedSHA256, hashValue) {
-		_ = s.minioClient.RemoveObject(context.Background(), s.bucket, session.StorageKey, minio.RemoveObjectOptions{})
+		_ = s.storage.RemoveObject(context.Background(), s.bucket, session.StorageKey)
 		return nil, ErrChecksumMismatch
 	}
 	now := time.Now()
 	expiresAt := now.Add(s.retention)
 	sizeBytes := stat.Size
+	provider := s.storage.Provider()
 	attachment := models.Attachment{
 		ID:              session.AttachmentID,
 		UploaderUserID:  &userID,
@@ -567,7 +545,7 @@ func (s *Service) CompleteMultipartUpload(userID string, session MultipartSessio
 		MimeType:        session.MimeType,
 		SizeBytes:       &sizeBytes,
 		Hash:            &hashValue,
-		StorageProvider: func() *string { v := "minio"; return &v }(),
+		StorageProvider: &provider,
 		ExpiresAt:       &expiresAt,
 		CreatedAt:       now,
 	}
@@ -582,7 +560,10 @@ func (s *Service) hashObjectSHA256(storageKey string) (string, error) {
 	if strings.TrimSpace(storageKey) == "" {
 		return "", ErrStorageKeyRequired
 	}
-	obj, err := s.minioClient.GetObject(context.Background(), s.bucket, storageKey, minio.GetObjectOptions{})
+	if s.storage == nil {
+		return "", ErrStorageClientRequired
+	}
+	obj, err := s.storage.GetObject(context.Background(), s.bucket, storageKey)
 	if err != nil {
 		return "", fmt.Errorf("get object: %w", err)
 	}
@@ -601,8 +582,8 @@ func (s *Service) PresignDownload(userID string, attachmentID string, expires ti
 	if strings.TrimSpace(attachmentID) == "" {
 		return "", ErrAttachmentNotFound
 	}
-	if s.minioClient == nil {
-		return "", ErrMinioClientRequired
+	if s.storage == nil {
+		return "", ErrStorageClientRequired
 	}
 	if strings.TrimSpace(s.bucket) == "" {
 		return "", ErrBucketRequired
@@ -625,10 +606,10 @@ func (s *Service) PresignDownload(userID string, attachmentID string, expires ti
 	if expires <= 0 {
 		expires = 15 * time.Minute
 	}
-	presignedURL, err := s.minioClient.PresignedGetObject(context.Background(), s.bucket, *attachment.StorageKey, expires, nil)
+	presignedURL, err := s.storage.PresignGetObject(context.Background(), s.bucket, *attachment.StorageKey, expires)
 	if err != nil {
 		return "", fmt.Errorf("presign download: %w", err)
 	}
 
-	return presignedURL.String(), nil
+	return presignedURL, nil
 }
