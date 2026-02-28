@@ -15,6 +15,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
+	r.Use(middleware.CORS())
 
 	// 简单的 DB 注入中间件
 	r.Use(func(c *gin.Context) {

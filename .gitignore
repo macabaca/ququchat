@@ -31,3 +31,4 @@ internal/config/config.yaml
 
 # Local config (contains secrets)
 internal/config/config.yaml
+ququchat.log
