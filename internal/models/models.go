@@ -44,18 +44,18 @@ const (
 // 使用字符串 UUID 作为主键，可在应用层或数据库默认生成
 // 如 Postgres 可使用: gorm:"type:uuid;default:gen_random_uuid()"
 type User struct {
-	ID           string    `gorm:"type:char(36);primaryKey" json:"id"`
-	UserCode     int64     `gorm:"autoIncrement;uniqueIndex;not null" json:"user_code"`
-	Username     string    `gorm:"size:64;uniqueIndex;not null" json:"username"`
-	Email        *string   `gorm:"size:255;uniqueIndex" json:"email,omitempty"`
-	Phone        *string   `gorm:"size:32;uniqueIndex" json:"phone,omitempty"`
-	PasswordHash string    `gorm:"size:255;not null" json:"-"`
-	Status       string    `gorm:"size:16;not null;default:active" json:"status"`
-	DisplayName  *string   `gorm:"size:64" json:"display_name,omitempty"`
-	AvatarURL    *string   `gorm:"size:512" json:"avatar_url,omitempty"`
-	Bio          *string   `gorm:"size:1024" json:"bio,omitempty"`
-	CreatedAt    time.Time `gorm:"not null" json:"created_at"`
-	UpdatedAt    time.Time `gorm:"not null" json:"updated_at"`
+	ID                 string    `gorm:"type:char(36);primaryKey" json:"id"`
+	UserCode           int64     `gorm:"autoIncrement;uniqueIndex;not null" json:"user_code"`
+	Username           string    `gorm:"size:64;uniqueIndex;not null" json:"username"`
+	Email              *string   `gorm:"size:255;uniqueIndex" json:"email,omitempty"`
+	Phone              *string   `gorm:"size:32;uniqueIndex" json:"phone,omitempty"`
+	PasswordHash       string    `gorm:"size:255;not null" json:"-"`
+	Status             string    `gorm:"size:16;not null;default:active" json:"status"`
+	DisplayName        *string   `gorm:"size:64" json:"display_name,omitempty"`
+	AvatarAttachmentID *string   `gorm:"type:char(36)" json:"avatar_attachment_id,omitempty"`
+	Bio                *string   `gorm:"size:1024" json:"bio,omitempty"`
+	CreatedAt          time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt          time.Time `gorm:"not null" json:"updated_at"`
 }
 
 // 登录会话/令牌

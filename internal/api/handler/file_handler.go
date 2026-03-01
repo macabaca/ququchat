@@ -44,9 +44,16 @@ func attachmentResponse(attachment *models.Attachment) gin.H {
 }
 
 func NewFileHandler(db *gorm.DB, cfg config.File, objStorage serverstorage.ObjectStorage, bucket string) *FileHandler {
+	thumb := filesvc.ThumbnailOptions{
+		MaxDimension:   cfg.Thumbnail.MaxDimensionOrDefault(),
+		JPEGQuality:    cfg.Thumbnail.JPEGQualityOrDefault(),
+		RetryCount:     cfg.Thumbnail.RetryCountOrDefault(),
+		RetryDelay:     cfg.Thumbnail.RetryDelayDuration(),
+		MaxSourceBytes: cfg.Thumbnail.MaxSourceBytesOrDefault(),
+	}
 	return &FileHandler{
 		db:  db,
-		svc: filesvc.NewService(db, objStorage, bucket, cfg.MaxSizeBytes, cfg.RetentionDuration()),
+		svc: filesvc.NewService(db, objStorage, bucket, cfg.MaxSizeBytes, cfg.RetentionDuration(), thumb),
 	}
 }
 

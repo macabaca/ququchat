@@ -161,10 +161,11 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"user": gin.H{
-			"id":        u.ID,
-			"user_code": u.UserCode,
-			"username":  u.Username,
-			"status":    u.Status,
+			"id":                   u.ID,
+			"user_code":            u.UserCode,
+			"username":             u.Username,
+			"status":               u.Status,
+			"avatar_attachment_id": u.AvatarAttachmentID,
 		},
 	})
 }
@@ -239,10 +240,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"accessToken":  accessToken,
 		"refreshToken": refreshToken,
 		"user": gin.H{
-			"id":        u.ID,
-			"user_code": u.UserCode,
-			"username":  u.Username,
-			"status":    u.Status,
+			"id":                   u.ID,
+			"user_code":            u.UserCode,
+			"username":             u.Username,
+			"status":               u.Status,
+			"avatar_attachment_id": u.AvatarAttachmentID,
 		},
 	})
 }

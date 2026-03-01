@@ -450,11 +450,12 @@ func (h *GroupHandler) ListGroupMembers(c *gin.Context) {
 	}
 
 	type MemberResp struct {
-		UserID   string            `json:"user_id"`
-		Username string            `json:"username"`
-		Nickname string            `json:"nickname"` // Nickname in room
-		Role     models.MemberRole `json:"role"`
-		JoinedAt time.Time         `json:"joined_at"`
+		UserID             string            `json:"user_id"`
+		Username           string            `json:"username"`
+		Nickname           string            `json:"nickname"` // Nickname in room
+		AvatarAttachmentID *string           `json:"avatar_attachment_id,omitempty"`
+		Role               models.MemberRole `json:"role"`
+		JoinedAt           time.Time         `json:"joined_at"`
 	}
 
 	resp := make([]MemberResp, 0, len(members))
@@ -471,16 +472,19 @@ func (h *GroupHandler) ListGroupMembers(c *gin.Context) {
 		}
 
 		username := ""
+		var avatarAttachmentID *string
 		if m.User != nil {
 			username = m.User.Username
+			avatarAttachmentID = m.User.AvatarAttachmentID
 		}
 
 		resp = append(resp, MemberResp{
-			UserID:   m.UserID,
-			Username: username,
-			Nickname: nickname,
-			Role:     m.Role,
-			JoinedAt: m.JoinedAt,
+			UserID:             m.UserID,
+			Username:           username,
+			Nickname:           nickname,
+			AvatarAttachmentID: avatarAttachmentID,
+			Role:               m.Role,
+			JoinedAt:           m.JoinedAt,
 		})
 	}
 

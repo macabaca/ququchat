@@ -60,7 +60,7 @@ func main() {
 
 	authCfg := cfg.Auth.ToSettings()
 
-	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, objStorage, bucket)
+	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

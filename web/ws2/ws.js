@@ -14,9 +14,81 @@ var state = {
     currentRoomId: null, // Track current room ID for DB queries
     chunkSession: null,
     heartbeatTimer: null,
-    lastHeartbeatAt: 0
+    lastHeartbeatAt: 0,
+    avatarCache: {},
+    avatarPending: {}
   }
   var SESSION_KEY = "ququchat_ws2_session"
+  var TRANSPARENT_PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+
+  function normalizeUserID(id) {
+    return (id || "").toString().trim()
+  }
+
+  function getUserAvatarUrl(userId) {
+    userId = normalizeUserID(userId)
+    if (!userId || !state.accessToken) return Promise.resolve(null)
+
+    var now = Date.now()
+    var cached = state.avatarCache[userId]
+    if (cached && now - cached.at < 5 * 60 * 1000) {
+      return Promise.resolve(cached.url)
+    }
+    if (state.avatarPending[userId]) return state.avatarPending[userId]
+
+    var p = fetchWithRefresh(apiBase() + "/users/" + encodeURIComponent(userId) + "/avatar/thumb/url", {
+      headers: authHeaders()
+    })
+      .then(function (res) {
+        return res
+          .json()
+          .catch(function () {
+            return {}
+          })
+          .then(function (data) {
+            return { ok: res.ok, data: data }
+          })
+      })
+      .then(function (res) {
+        if (res.ok && res.data && res.data.url) {
+          state.avatarCache[userId] = { url: res.data.url, at: Date.now() }
+          return res.data.url
+        }
+        state.avatarCache[userId] = { url: null, at: Date.now() }
+        return null
+      })
+      .catch(function () {
+        state.avatarCache[userId] = { url: null, at: Date.now() }
+        return null
+      })
+      .finally(function () {
+        delete state.avatarPending[userId]
+      })
+
+    state.avatarPending[userId] = p
+    return p
+  }
+
+  function attachAvatarImage(img, userId, extraClass) {
+    if (!img) return
+    img.src = TRANSPARENT_PIXEL
+    img.decoding = "async"
+    img.loading = "lazy"
+    if (extraClass) img.className = extraClass
+    userId = normalizeUserID(userId)
+    if (!userId) return
+    getUserAvatarUrl(userId).then(function (url) {
+      if (!url) return
+      if (img.dataset && img.dataset.userId && img.dataset.userId !== userId) return
+      img.src = url
+    })
+  }
+
+  function invalidateAvatarCache(userId) {
+    userId = normalizeUserID(userId)
+    if (!userId) return
+    delete state.avatarCache[userId]
+  }
 
   function syncMessages(roomId) {
       // 1. Get local max sequence_id
@@ -307,7 +379,14 @@ if (state.currentFriend && state.currentFriend.id === f.id) {
 li.classList.add("active")
 }
 var left = document.createElement("span")
-left.textContent = f.username
+left.className = "friend-left"
+var avatar = document.createElement("img")
+avatar.dataset.userId = f.id
+attachAvatarImage(avatar, f.id, "avatar avatar-sm")
+var name = document.createElement("span")
+name.textContent = f.username
+left.appendChild(avatar)
+left.appendChild(name)
 var meta = document.createElement("span")
 meta.className = "meta"
 meta.textContent = "id=" + f.id + " code=" + f.user_code
@@ -470,9 +549,22 @@ function updateCurrentUser() {
 var el = $("current-user")
 if (!state.user) {
 el.textContent = ""
+var imgEl = $("current-user-avatar")
+if (imgEl) imgEl.src = TRANSPARENT_PIXEL
+var textEl = $("current-user-avatar-text")
+if (textEl) textEl.textContent = ""
 return
 }
 el.textContent = "当前用户: " + state.user.username + " (id=" + state.user.id + ", code=" + state.user.user_code + ")"
+var img = $("current-user-avatar")
+if (img) {
+  img.dataset.userId = state.user.id
+  attachAvatarImage(img, state.user.id, "avatar avatar-lg")
+}
+var avatarText = $("current-user-avatar-text")
+if (avatarText) {
+  avatarText.textContent = "我的头像"
+}
 }
 
 function updateCurrentTarget() {
@@ -847,6 +939,19 @@ var div = document.createElement("div")
 var isFile = data && (data.type === "file_message" || data.content_type === "file")
 var isImage = data && isImagePayload(data)
 div.className = "chat-message " + (isMe ? "me" : "other") + (isFile ? " file-message" : "") + (isImage ? " image-message" : "")
+var userId = null
+if (data) {
+  userId = data.from_user_id || data.sender_id || null
+}
+var isSystem = sender === "system"
+if (!isSystem && userId) {
+  var avatar = document.createElement("img")
+  avatar.dataset.userId = userId
+  attachAvatarImage(avatar, userId, "avatar avatar-sm")
+  div.appendChild(avatar)
+}
+var bubble = document.createElement("div")
+bubble.className = "bubble"
 var meta = document.createElement("span")
 meta.className = "meta"
 var timeText = ""
@@ -900,8 +1005,9 @@ content.appendChild(btn)
 } else {
 content.textContent = text
 }
-div.appendChild(meta)
-div.appendChild(content)
+if (!isSystem) bubble.appendChild(meta)
+bubble.appendChild(content)
+div.appendChild(bubble)
 box.appendChild(div)
 box.scrollTop = box.scrollHeight
 }
@@ -923,6 +1029,7 @@ function appendHistoryMessages(messages) {
 
 		appendChatLine(sender, m.content_text || "", isMe, {
             timestamp: m.created_at,
+            sender_id: m.sender_id,
             content_type: m.content_type,
             attachment_id: m.attachment_id,
             payload_json: m.payload_json
@@ -1475,7 +1582,14 @@ function fetchGroupMembers(groupId) {
       }
       
       var left = document.createElement("span")
-      left.textContent = info
+      left.className = "friend-left"
+      var avatar = document.createElement("img")
+      avatar.dataset.userId = m.user_id
+      attachAvatarImage(avatar, m.user_id, "avatar avatar-sm")
+      var label = document.createElement("span")
+      label.textContent = info
+      left.appendChild(avatar)
+      left.appendChild(label)
       
       var right = document.createElement("span")
       
@@ -1502,6 +1616,45 @@ function fetchGroupMembers(groupId) {
       ul.appendChild(li)
     })
   }
+
+function uploadAvatar() {
+  if (!state.accessToken || !state.user) {
+    setStatus($("avatar-status"), "请先登录", "error")
+    return
+  }
+  var input = $("avatar-input")
+  if (!input || !input.files || !input.files[0]) {
+    setStatus($("avatar-status"), "请选择图片文件", "error")
+    return
+  }
+  var file = input.files[0]
+  var fd = new FormData()
+  fd.append("file", file)
+  setStatus($("avatar-status"), "上传中...")
+  fetchWithRefresh(apiBase() + "/users/me/avatar", {
+    method: "POST",
+    headers: authHeaders(),
+    body: fd
+  })
+    .then(function (res) {
+      return res.json().catch(function () { return {} }).then(function (data) {
+        return { ok: res.ok, data: data }
+      })
+    })
+    .then(function (res) {
+      if (!res.ok) {
+        setStatus($("avatar-status"), res.data.error || "上传失败", "error")
+        return
+      }
+      setStatus($("avatar-status"), "上传成功", "ok")
+      invalidateAvatarCache(state.user.id)
+      updateCurrentUser()
+      input.value = ""
+    })
+    .catch(function (err) {
+      setStatus($("avatar-status"), err.message, "error")
+    })
+}
 
   function openInviteModal() {
     if (!state.currentGroup) return
@@ -1753,6 +1906,8 @@ $("send-message-button").onclick = sendMessage
 $("upload-file-button").onclick = sendFileMessage
   $("chunk-upload-button").onclick = sendChunkedFileMessage
 $("load-history-button").onclick = loadMoreHistory
+var uploadAvatarBtn = $("upload-avatar-button")
+if (uploadAvatarBtn) uploadAvatarBtn.onclick = uploadAvatar
 $("chat-input").addEventListener("keydown", function (e) {
 if (e.key === "Enter") {
 sendMessage()

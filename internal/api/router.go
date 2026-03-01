@@ -11,7 +11,7 @@ import (
 )
 
 // SetupRouter 初始化 Gin 路由，并将数据库句柄注入到上下文中
-func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, objStorage serverstorage.ObjectStorage, bucket string) *gin.Engine {
+func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
@@ -35,13 +35,18 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	api.POST("/auth/refresh", auth.Refresh)
 	api.POST("/auth/logout", middleware.JWTAuth(authCfg.JWTSecret), auth.Logout)
 
-	userHandler := handler.NewUserHandler(db)
+	userHandler := handler.NewUserHandler(db, fileCfg, avatarCfg, objStorage, bucket)
 	friends := api.Group("/friends", middleware.JWTAuth(authCfg.JWTSecret))
 	friends.POST("/add", userHandler.AddFriend)
 	friends.POST("/remove", userHandler.RemoveFriend)
 	friends.GET("/list", userHandler.ListFriends)
 	friends.GET("/requests/incoming", userHandler.ListIncomingFriendRequests)
 	friends.POST("/requests/respond", userHandler.RespondFriendRequest)
+
+	users := api.Group("/users", middleware.JWTAuth(authCfg.JWTSecret))
+	users.POST("/me/avatar", userHandler.UploadAvatar)
+	users.GET("/:user_id/avatar/url", userHandler.GetAvatarURL)
+	users.GET("/:user_id/avatar/thumb/url", userHandler.GetAvatarThumbURL)
 
 	groupHandler := handler.NewGroupHandler(db)
 	groups := api.Group("/groups", middleware.JWTAuth(authCfg.JWTSecret))
