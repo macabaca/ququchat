@@ -1,0 +1,150 @@
+import React, { useState } from 'react';
+import { 
+  MinusOutlined, 
+  BorderOutlined, 
+  CloseOutlined, 
+  CompressOutlined,
+  GlobalOutlined,
+  QuestionCircleOutlined,
+  SafetyCertificateOutlined,
+  UserOutlined,
+  LogoutOutlined,
+  CopyOutlined
+} from '@ant-design/icons';
+import { Button, Dropdown, MenuProps, Space, message } from 'antd';
+import { useNavigate } from 'react-router-dom';
+import { useAuthStore } from '../../stores/authStore';
+import { useChatStore } from '../../stores/chatStore';
+import { authService } from '../../api/AuthService';
+
+const TitleBar: React.FC = () => {
+  const [isMaximized, setIsMaximized] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const navigate = useNavigate();
+  const { isAuthenticated, user, refreshToken, logout } = useAuthStore();
+  const disconnectWebSocket = useChatStore((state) => state.disconnectWebSocket);
+
+  const handleMinimize = () => {
+    window.electronAPI?.minimize();
+  };
+
+  const handleMaximize = () => {
+    window.electronAPI?.maximize();
+    setIsMaximized(!isMaximized);
+  };
+
+  const handleClose = () => {
+    window.electronAPI?.close();
+  };
+
+  const items: MenuProps['items'] = [
+    { key: '1', label: 'English' },
+    { key: '2', label: '中文 (简体)' },
+  ];
+
+  const userMenuItems: MenuProps['items'] = [
+    { key: 'user_code', label: `用户码：${user?.user_code ?? '-'}`, disabled: true },
+    { key: 'copy_user_code', label: '复制用户码', icon: <CopyOutlined /> },
+    { key: 'logout', label: '退出登录', icon: <LogoutOutlined /> }
+  ];
+
+  const handleCopyUserCode = async () => {
+    const code = user?.user_code;
+    if (!code && code !== 0) {
+      message.error('当前账号没有 user code');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(String(code));
+      message.success('已复制 user code');
+    } catch {
+      message.error('复制失败，请手动记录');
+    }
+  };
+
+  const handleLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      await authService.logout(refreshToken);
+    } catch (e: any) {
+      const msg = e?.error || e?.message || '退出登录失败';
+      message.error(msg);
+    } finally {
+      disconnectWebSocket();
+      logout();
+      localStorage.removeItem('chat-storage');
+      setIsLoggingOut(false);
+      navigate('/login', { replace: true });
+    }
+  };
+
+  return (
+    <div className="title-bar">
+      {/* Left: Logo & Title */}
+      <div className="title-bar-left">
+        <div className="app-logo-container">
+           {/* Replace with actual logo or icon */}
+           <div className="logo-circle">Q</div>
+        </div>
+        <span className="app-title">QuQu Chat</span>
+      </div>
+
+      {/* Center: Navigation Menu (Non-draggable region) */}
+      <div className="title-bar-nav">
+        <div className="nav-item">
+          <SafetyCertificateOutlined />
+          <span>Security</span>
+        </div>
+        <div className="nav-item">
+          <QuestionCircleOutlined />
+          <span>Help</span>
+        </div>
+        <Dropdown menu={{ items }} placement="bottom">
+          <div className="nav-item">
+            <GlobalOutlined />
+            <span>Language</span>
+          </div>
+        </Dropdown>
+      </div>
+
+      {/* Right: Window Controls */}
+      <div className="title-bar-controls">
+        {isAuthenticated && (
+          <Dropdown
+            menu={{
+              items: userMenuItems,
+              onClick: ({ key }) => {
+                if (key === 'copy_user_code') handleCopyUserCode();
+                if (key === 'logout') handleLogout();
+              }
+            }}
+            placement="bottomRight"
+            trigger={['click']}
+          >
+            <div className="title-bar-button" title={user?.user_code ? `${user?.username} (${user.user_code})` : (user?.username || 'User')} style={{ width: 'auto', padding: '0 10px' }}>
+              <Space size={6}>
+                <UserOutlined style={{ fontSize: '12px' }} />
+                <span style={{ fontSize: '12px' }}>
+                  {user?.username || 'User'}
+                  {typeof user?.user_code === 'number' ? ` (${user.user_code})` : ''}
+                </span>
+              </Space>
+            </div>
+          </Dropdown>
+        )}
+        <div className="title-bar-button minimize" onClick={handleMinimize} title="Minimize">
+          <MinusOutlined style={{ fontSize: '12px' }} />
+        </div>
+        <div className="title-bar-button maximize" onClick={handleMaximize} title={isMaximized ? "Restore" : "Maximize"}>
+          {isMaximized ? <CompressOutlined style={{ fontSize: '12px' }} /> : <BorderOutlined style={{ fontSize: '12px' }} />}
+        </div>
+        <div className="title-bar-button close" onClick={handleClose} title="Close">
+          <CloseOutlined style={{ fontSize: '12px' }} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TitleBar;
