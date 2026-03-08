@@ -8,8 +8,8 @@ import (
 
 	"ququchat/internal/api"
 	"ququchat/internal/config"
-	models "ququchat/internal/models"
 	database "ququchat/internal/server/db"
+	"ququchat/internal/server/storage"
 )
 
 func main() {
@@ -30,11 +30,37 @@ func main() {
 	} else if err := sqlDB.Ping(); err != nil {
 		log.Fatalf("数据库不可用: %v", err)
 	}
-	db.AutoMigrate(&models.User{}, &models.FriendRequest{}, &models.AuthSession{}, &models.Friendship{}, &models.Attachment{}, &models.Message{}, &models.Room{}, &models.MessageReceipt{}, &models.MessageReaction{}, &models.RoomMember{}, &models.Block{})
+
+	// 自动迁移数据库结构
+	log.Println("正在检查并迁移数据库结构...")
+	if err := database.Migrate(db); err != nil {
+		log.Fatalf("数据库迁移失败: %v", err)
+	}
+	log.Println("数据库迁移完成")
+
+	provider := cfg.Storage.ProviderOrDefault()
+	var objStorage storage.ObjectStorage
+	var bucket string
+	switch provider {
+	case "minio":
+		objStorage, err = storage.InitMinioStorage(cfg.Minio)
+		if err != nil {
+			log.Fatalf("MinIO 连接失败: %v", err)
+		}
+		bucket = cfg.Minio.Bucket
+	case "oss":
+		objStorage, err = storage.InitOSSStorage(cfg.OSS)
+		if err != nil {
+			log.Fatalf("OSS 连接失败: %v", err)
+		}
+		bucket = cfg.OSS.Bucket
+	default:
+		log.Fatalf("不支持的对象存储 provider: %s", provider)
+	}
 
 	authCfg := cfg.Auth.ToSettings()
 
-	r := api.SetupRouter(db, authCfg, cfg.Chat)
+	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

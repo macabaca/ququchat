@@ -229,6 +229,11 @@ li.onclick = function () {
 state.currentFriend = f
       state.currentGroup = null
       $("group-detail-section").style.display = "none"
+      
+      var input = $("chat-input")
+      input.disabled = false
+      input.placeholder = "输入消息..."
+      
       renderFriendList()
 renderGroupList() // update active state
 updateCurrentTarget()
@@ -316,8 +321,18 @@ function renderGroupList() {
     if (state.currentGroup && state.currentGroup.id === g.id) {
       li.classList.add("active")
     }
+    
+    var statusText = ""
+    if (g.status === "dismissed") {
+        statusText = " [已解散]"
+        li.style.color = "#999"
+    } else if (g.status === "left") {
+        statusText = " [已退群]"
+        li.style.color = "#999"
+    }
+
     var left = document.createElement("span")
-    left.textContent = g.name
+    left.textContent = g.name + statusText
     var meta = document.createElement("span")
     meta.className = "meta"
     meta.textContent = "id=" + g.id + " (" + g.member_count + "人)"
@@ -330,14 +345,32 @@ function renderGroupList() {
       state.currentFriend = null
       $("group-detail-section").style.display = "block"
       $("detail-group-name").textContent = g.name + " (ID: " + g.id + ")"
-      fetchGroupMembers(g.id)
+      
+      var input = $("chat-input")
+      if (g.status !== "active") {
+        input.disabled = true
+        input.placeholder = "无法发送消息 (" + (g.status === "dismissed" ? "群已解散" : "已退群") + ")"
+      } else {
+        input.disabled = false
+        input.placeholder = "输入消息..."
+      }
+
+      // Try to fetch members, but load history regardless of success
+      fetchGroupMembers(g.id).catch(function() {
+        // If failed (e.g. 403 because left), clear member list
+        state.currentGroupMembers = []
+        renderGroupMembers([])
+        setStatus($("group-detail-status"), "无法加载成员列表 (非成员)", "error")
+      }).finally(function() {
+        loadGroupHistory()
+      })
+      
       renderFriendList() // update active state
       renderGroupList()
       updateCurrentTarget()
       state.messages = []
       $("chat-box").innerHTML = ""
-      // Group history loading not supported yet
-      appendChatLine("system", "已切换到群聊: " + g.name + " (暂不支持群聊消息收发)", false)
+      appendChatLine("system", "已切换到群聊: " + g.name + statusText, false)
     }
     ul.appendChild(li)
   })
@@ -527,9 +560,21 @@ function appendHistoryMessages(messages) {
 	messages.forEach(function (m) {
 		var isMe = state.user && m.sender_id === state.user.id
 		var sender = isMe ? "我" : "对方"
+
+		if (state.currentGroup && !isMe) {
+			sender = "成员" + m.sender_id.substring(0, 4)
+			if (state.currentGroupMembers) {
+				var mem = state.currentGroupMembers.find(function(u) { return u.user_id === m.sender_id })
+				if (mem) {
+					sender = mem.nickname || mem.username || sender
+				}
+			}
+		}
+
 		appendChatLine(sender, m.content_text || "", isMe, { timestamp: m.created_at })
 		state.messages.push({
 			id: m.id,
+			room_id: m.room_id,
 			sender_id: m.sender_id,
 			content_text: m.content_text || "",
 			created_at: m.created_at
@@ -537,7 +582,7 @@ function appendHistoryMessages(messages) {
 	})
 }
 
-function getEarliestMessageId() {
+function getEarliestMessage() {
 if (!state.messages.length) {
 return null
 }
@@ -547,7 +592,37 @@ for (var i = 1; i < state.messages.length; i++) {
 earliest = state.messages[i]
 }
 }
-return earliest.id || null
+return earliest
+}
+
+function loadGroupHistory() {
+	if (!state.accessToken || !state.user || !state.currentGroup) {
+		return
+	}
+	fetchWithRefresh(apiBase() + "/messages/history/group?group_id=" + encodeURIComponent(state.currentGroup.id), {
+		headers: authHeaders()
+	})
+	.then(function (res) {
+		return res.json().then(function (data) {
+			return { ok: res.ok, data: data }
+		})
+	})
+	.then(function (res) {
+		if (!res.ok) {
+			appendChatLine("system", res.data.error || "加载群聊历史失败", false)
+			return
+		}
+		var list = res.data.messages || []
+		state.messages = []
+		$("chat-box").innerHTML = ""
+		if (!list.length) {
+			return
+		}
+		appendHistoryMessages(list)
+	})
+	.catch(function (err) {
+		appendChatLine("system", "加载群聊历史失败: " + err.message, false)
+	})
 }
 
 function loadLatestHistory() {
@@ -583,16 +658,31 @@ appendChatLine("system", "加载历史失败", false)
 }
 
 function loadMoreHistory() {
-if (!state.accessToken || !state.user || !state.currentFriend) {
-appendChatLine("system", "请先登录并选择好友", false)
+if (!state.accessToken || !state.user || (!state.currentFriend && !state.currentGroup)) {
+appendChatLine("system", "请先登录并选择会话", false)
 return
 }
-var earliestId = getEarliestMessageId()
-if (!earliestId) {
-	loadLatestHistory()
+var earliest = getEarliestMessage()
+if (!earliest) {
+	if (state.currentGroup) {
+		loadGroupHistory()
+	} else {
+		loadLatestHistory()
+	}
 	return
 }
-fetchWithRefresh(apiBase() + "/messages/history/before?message_id=" + encodeURIComponent(earliestId), {
+var roomId = earliest.room_id
+if (!roomId && state.currentGroup) {
+    roomId = state.currentGroup.id
+}
+// For DMs, if historical messages missed room_id (old version), we might fail to send room_id, 
+// but backend will require it. 
+// However, since we just added room_id to state.messages, only newly loaded messages have it.
+// We should probably rely on state if earliest.room_id is missing.
+// But DMs are tricky because state.currentFriend doesn't have room_id.
+// Let's assume message has it because we get it from backend.
+
+fetchWithRefresh(apiBase() + "/messages/history/before?message_id=" + encodeURIComponent(earliest.id) + "&room_id=" + encodeURIComponent(roomId), {
 	headers: authHeaders()
 })
 .then(function (res) {
@@ -632,6 +722,13 @@ if (!state.ws || !state.wsConnected) {
     return
   }
   if (state.currentGroup) {
+    if (state.currentGroup.status !== "active") {
+      appendChatLine("system", "无法发送消息: " + (state.currentGroup.status === "dismissed" ? "群已解散" : "已退群"), false)
+      return
+    }
+    var input = $("chat-input")
+    var text = input.value.trim()
+    if (!text) return
     var payload = {
       type: "group_message",
       room_id: state.currentGroup.id,
@@ -660,9 +757,9 @@ input.value = ""
 }
 
 function fetchGroupMembers(groupId) {
-    if (!state.accessToken) return
+    if (!state.accessToken) return Promise.reject("Not logged in")
     setStatus($("group-detail-status"), "加载成员中...")
-    fetchWithRefresh(apiBase() + "/groups/" + groupId + "/members", {
+    return fetchWithRefresh(apiBase() + "/groups/" + groupId + "/members", {
       headers: authHeaders()
     })
       .then(function (res) {
