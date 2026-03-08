@@ -1,5 +1,7 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs').promises;
+const db = require('./database'); // 引入数据库模块
 
 // 判断是否为开发环境
 const isDev = process.env.NODE_ENV !== 'production';
@@ -33,7 +35,7 @@ function createWindow() {
 
   if (isDev) {
     win.loadURL('http://localhost:5173');
-    // win.webContents.openDevTools(); 
+    win.webContents.openDevTools(); 
   } else {
     win.loadFile(path.join(__dirname, 'dist/index.html'));
   }
@@ -54,9 +56,121 @@ function createWindow() {
   ipcMain.on('window-close', () => {
     win.close();
   });
+
+  // IPC 监听：数据库操作
+  ipcMain.handle('db-execute', async (event, sql, params) => {
+    try {
+      return db.execute(sql, params);
+    } catch (err) {
+      console.error('IPC db-execute error:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('db-query', async (event, sql, params) => {
+    try {
+      return db.query(sql, params);
+    } catch (err) {
+      console.error('IPC db-query error:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('db-query-one', async (event, sql, params) => {
+    try {
+      return db.queryOne(sql, params);
+    } catch (err) {
+      console.error('IPC db-query-one error:', err);
+      throw err;
+    }
+  });
+
+  // IPC 监听：文件系统操作
+  ipcMain.handle('fs-ensure-dir', async (event, dirPath) => {
+    try {
+      await fs.mkdir(dirPath, { recursive: true });
+      return true;
+    } catch (err) {
+      console.error('IPC fs-ensure-dir error:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('fs-save-file', async (event, filePath, buffer) => {
+    try {
+      let nodeBuffer;
+      if (Buffer.isBuffer(buffer)) {
+        nodeBuffer = buffer;
+      } else if (buffer instanceof Uint8Array) {
+        nodeBuffer = Buffer.from(buffer);
+      } else if (buffer instanceof ArrayBuffer) {
+        nodeBuffer = Buffer.from(new Uint8Array(buffer));
+      } else if (buffer?.type === 'Buffer' && Array.isArray(buffer?.data)) {
+        nodeBuffer = Buffer.from(buffer.data);
+      } else {
+        throw new Error(`Unsupported buffer type for fs-save-file: ${typeof buffer}`);
+      }
+
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, nodeBuffer);
+
+      const stat = await fs.stat(filePath);
+      if (!stat || stat.size <= 0) {
+        throw new Error(`File persisted with invalid size: ${filePath}`);
+      }
+      return true;
+    } catch (err) {
+      console.error('IPC fs-save-file error:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('fs-read-file', async (event, filePath) => {
+    try {
+      const data = await fs.readFile(filePath);
+      return data;
+    } catch (err) {
+      console.error('IPC fs-read-file error:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('fs-exists', async (event, filePath) => {
+    try {
+      await fs.access(filePath);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  });
+
+  ipcMain.handle('fs-get-path', async (event, name) => {
+    try {
+      return app.getPath(name);
+    } catch (err) {
+      console.error('IPC fs-get-path error:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('fs-path-join', async (event, ...args) => {
+    try {
+      return path.join(...args);
+    } catch (err) {
+      console.error('IPC fs-path-join error:', err);
+      throw err;
+    }
+  });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  try {
+    await db.initDatabase();
+    console.log('Database initialized');
+  } catch (err) {
+    console.error('Failed to initialize database:', err);
+  }
+
   createWindow();
 
   app.on('activate', () => {

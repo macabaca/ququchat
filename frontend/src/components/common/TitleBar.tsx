@@ -6,12 +6,23 @@ import {
   CompressOutlined,
   GlobalOutlined,
   QuestionCircleOutlined,
-  SafetyCertificateOutlined
+  SafetyCertificateOutlined,
+  UserOutlined,
+  LogoutOutlined,
+  CopyOutlined
 } from '@ant-design/icons';
-import { Button, Dropdown, MenuProps, Space } from 'antd';
+import { Button, Dropdown, MenuProps, Space, message } from 'antd';
+import { useNavigate } from 'react-router-dom';
+import { useAuthStore } from '../../stores/authStore';
+import { useChatStore } from '../../stores/chatStore';
+import { authService } from '../../api/AuthService';
 
 const TitleBar: React.FC = () => {
   const [isMaximized, setIsMaximized] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const navigate = useNavigate();
+  const { isAuthenticated, user, refreshToken, logout } = useAuthStore();
+  const disconnectWebSocket = useChatStore((state) => state.disconnectWebSocket);
 
   const handleMinimize = () => {
     window.electronAPI?.minimize();
@@ -30,6 +41,43 @@ const TitleBar: React.FC = () => {
     { key: '1', label: 'English' },
     { key: '2', label: '中文 (简体)' },
   ];
+
+  const userMenuItems: MenuProps['items'] = [
+    { key: 'user_code', label: `用户码：${user?.user_code ?? '-'}`, disabled: true },
+    { key: 'copy_user_code', label: '复制用户码', icon: <CopyOutlined /> },
+    { key: 'logout', label: '退出登录', icon: <LogoutOutlined /> }
+  ];
+
+  const handleCopyUserCode = async () => {
+    const code = user?.user_code;
+    if (!code && code !== 0) {
+      message.error('当前账号没有 user code');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(String(code));
+      message.success('已复制 user code');
+    } catch {
+      message.error('复制失败，请手动记录');
+    }
+  };
+
+  const handleLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      await authService.logout(refreshToken);
+    } catch (e: any) {
+      const msg = e?.error || e?.message || '退出登录失败';
+      message.error(msg);
+    } finally {
+      disconnectWebSocket();
+      logout();
+      localStorage.removeItem('chat-storage');
+      setIsLoggingOut(false);
+      navigate('/login', { replace: true });
+    }
+  };
 
   return (
     <div className="title-bar">
@@ -62,6 +110,29 @@ const TitleBar: React.FC = () => {
 
       {/* Right: Window Controls */}
       <div className="title-bar-controls">
+        {isAuthenticated && (
+          <Dropdown
+            menu={{
+              items: userMenuItems,
+              onClick: ({ key }) => {
+                if (key === 'copy_user_code') handleCopyUserCode();
+                if (key === 'logout') handleLogout();
+              }
+            }}
+            placement="bottomRight"
+            trigger={['click']}
+          >
+            <div className="title-bar-button" title={user?.user_code ? `${user?.username} (${user.user_code})` : (user?.username || 'User')} style={{ width: 'auto', padding: '0 10px' }}>
+              <Space size={6}>
+                <UserOutlined style={{ fontSize: '12px' }} />
+                <span style={{ fontSize: '12px' }}>
+                  {user?.username || 'User'}
+                  {typeof user?.user_code === 'number' ? ` (${user.user_code})` : ''}
+                </span>
+              </Space>
+            </div>
+          </Dropdown>
+        )}
         <div className="title-bar-button minimize" onClick={handleMinimize} title="Minimize">
           <MinusOutlined style={{ fontSize: '12px' }} />
         </div>

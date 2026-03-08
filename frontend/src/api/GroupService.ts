@@ -5,7 +5,8 @@ import {
     GetGroupResponse, 
     ListMyGroupsResponse, 
     GroupMemberActionRequest, 
-    GroupMembersResponse 
+    GroupMembersResponse,
+    GroupAdminActionResponse
 } from "../types/api";
 
 export const groupService = {
@@ -39,5 +40,9 @@ export const groupService = {
 
     getGroupMembers: async (groupId: string): Promise<GroupMembersResponse> => {
         return await apiClient.get(`/groups/${groupId}/members`);
+    },
+
+    addAdmins: async (groupId: string, userIds: string[]): Promise<GroupAdminActionResponse> => {
+        return await apiClient.post(`/groups/${groupId}/admins/add`, { user_ids: userIds });
     }
 };

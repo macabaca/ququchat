@@ -18,6 +18,9 @@ export interface User {
 // 好友信息 (Friend List Response)
 export interface Friend extends User {
     // Friend specific fields if any, usually just User details
+    room_id: string;
+    status?: string;
+    nickname?: string;
 }
 
 // 群组表
@@ -27,6 +30,7 @@ export interface Group {
     owner_id: string;
     member_count: number;
     my_role?: 'owner' | 'admin' | 'member';
+    status?: 'active' | 'left' | 'dismissed';
     created_at: string;
     updated_at?: string;
 }
@@ -56,13 +60,25 @@ export interface FriendRequest {
 // 消息
 export interface Message {
     id?: string; // Optional for pending messages
+    room_id?: string;    // For group messages
+    sequence_id?: number;
+
     type: 'friend_message' | 'group_message';
     from_user_id?: string;
     to_user_id?: string; // For friend messages
-    room_id?: string;    // For group messages
+
     content: string;
     timestamp?: number; // Unix timestamp
+
+    created_at?: number;
+
     status?: 'sending' | 'sent' | 'failed'; // Frontend status
+    
+    // File/Image specific
+    attachment_id?: string;
+    thumb_attachment_id?: string;
+    is_image?: boolean;
+    cache_path?: string | null;
 }
 
 export interface Conversation {

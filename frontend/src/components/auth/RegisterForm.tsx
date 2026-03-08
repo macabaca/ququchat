@@ -1,6 +1,6 @@
 import React from 'react';
 import { Form, Input, Button, message, Spin } from 'antd';
-import { UserOutlined, LockOutlined, MailOutlined, PhoneOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, MailOutlined, PhoneOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/authStore';
 import { RegisterRequest } from '../../types/api';
@@ -34,6 +34,12 @@ const RegisterForm: React.FC = () => {
     return (
         <Spin spinning={isLoading} tip="Creating account...">
             <div style={{ position: 'relative' }}>
+                <Button 
+                    type="text" 
+                    icon={<ArrowLeftOutlined style={{ fontSize: '20px', color: '#666' }} />} 
+                    onClick={() => navigate('/login')} 
+                    style={{ position: 'absolute', left: -10, top: 0, zIndex: 1 }}
+                />
                 <div style={{ textAlign: 'center', marginBottom: 24 }}>
                     <h2 style={{ fontSize: '24px', fontWeight: 600, color: '#333', marginBottom: '8px' }}>Create an Account</h2>
                     <p style={{ color: '#8c8c8c' }}>Join QuQu Chat today</p>

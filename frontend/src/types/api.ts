@@ -96,3 +96,37 @@ export interface GroupMemberActionRequest {
 export interface GroupMembersResponse {
     members: GroupMember[];
 }
+
+export interface GroupAdminActionResponse {
+    message: string;
+    updated_count: number;
+}
+
+export interface GetHistoryResponse {
+    messages: import("./models").Message[];
+}
+
+export interface Attachment {
+    id: string;
+    uploader_user_id: string;
+    file_name: string;
+    storage_key: string;
+    mime_type: string;
+    size_bytes: number;
+    hash: string;
+    storage_provider: string;
+    image_width?: number;
+    image_height?: number;
+    thumb_attachment_id?: string;
+    thumb_width?: number;
+    thumb_height?: number;
+    created_at: string;
+}
+
+export interface UploadFileResponse {
+    attachment: Attachment;
+}
+
+export interface GetFileUrlResponse {
+    url: string;
+}

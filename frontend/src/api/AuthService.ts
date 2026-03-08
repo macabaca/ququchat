@@ -1,7 +1,8 @@
 import apiClient from "./apiClient";
 import {
-   LoginRequest, LoginResponse, LoginError,
-   RegisterRequest, RegisterResponse, RegisterError 
+   LoginRequest, LoginResponse,
+   RegisterRequest, RegisterResponse,
+   LogoutResponse
 } from '../types/api'
 import { REQUEST_URI } from "../configs/config";
 
@@ -20,6 +21,16 @@ export const authService = {
             throw new Error('Invalid URI');
         }
         const data = await apiClient.post<RegisterResponse>(uri, credentials)
+        
+        return data;
+    },
+    logout: async (refreshToken?: string | null): Promise<LogoutResponse> => {
+        const uri = REQUEST_URI.get('logout');
+        if (uri === undefined) {
+            throw new Error('Invalid URI');
+        }
+        const payload = refreshToken ? { refresh_token: refreshToken } : undefined;
+        const data = await apiClient.post<LogoutResponse>(uri, payload);
         return data;
     }
 }

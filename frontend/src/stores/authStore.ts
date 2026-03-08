@@ -66,11 +66,15 @@ export const useAuthStore = create<AuthState>()(
                 set({ isLoading: true, error: null });
                 try {
                     const response = await authService.register(credentials);
+                    console.log(response);
+                    
                     set({ isLoading: false });
                     // 控制台打印响应便于调试
                     console.log('注册成功，用户信息: ', response.user);
                     return response;
                 } catch (error: any) {
+                    console.log(error);
+                    
                     const errorMessage = error.error || '注册失败, 该用户名已被注册';
                     set({
                         error: errorMessage,
