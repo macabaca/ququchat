@@ -4,3 +4,4 @@ frontend/dist/
 frontend/document/
 cmd.exe
 cmd/
+.gitignore
