@@ -35,4 +35,3 @@ ququchat.log
 frontend/node_modules/
 frontend/.vite/
 cmd.exe
-.gitignore
