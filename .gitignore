@@ -32,10 +32,7 @@ internal/config/config.yaml
 # Local config (contains secrets)
 internal/config/config.yaml
 ququchat.log
-<<<<<<< HEAD
 frontend/node_modules/
 frontend/.vite/
 cmd.exe
-=======
 ququchat.pid
->>>>>>> b64cdbe (除去pid文件)
