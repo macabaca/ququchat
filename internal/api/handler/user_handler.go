@@ -1,22 +1,41 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"ququchat/internal/config"
 	"ququchat/internal/models"
+	serverstorage "ququchat/internal/server/storage"
+	filesvc "ququchat/internal/service/file"
 )
 
 type UserHandler struct {
-	db *gorm.DB
+	db        *gorm.DB
+	fileSvc   *filesvc.Service
+	avatarCfg config.Avatar
 }
 
-func NewUserHandler(db *gorm.DB) *UserHandler {
-	return &UserHandler{db: db}
+func NewUserHandler(db *gorm.DB, cfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string) *UserHandler {
+	thumb := filesvc.ThumbnailOptions{
+		MaxDimension:   cfg.Thumbnail.MaxDimensionOrDefault(),
+		JPEGQuality:    cfg.Thumbnail.JPEGQualityOrDefault(),
+		RetryCount:     cfg.Thumbnail.RetryCountOrDefault(),
+		RetryDelay:     cfg.Thumbnail.RetryDelayDuration(),
+		MaxSourceBytes: cfg.Thumbnail.MaxSourceBytesOrDefault(),
+	}
+	return &UserHandler{
+		db:        db,
+		fileSvc:   filesvc.NewService(db, objStorage, bucket, cfg.MaxSizeBytes, cfg.RetentionDuration(), thumb),
+		avatarCfg: avatarCfg,
+	}
 }
 
 type AddFriendRequest struct {
@@ -31,6 +50,236 @@ type RemoveFriendRequest struct {
 type RespondFriendRequest struct {
 	RequestID string `json:"request_id"`
 	Action    string `json:"action"`
+}
+
+func userAttachmentResponse(attachment *models.Attachment) gin.H {
+	if attachment == nil {
+		return gin.H{}
+	}
+	return gin.H{
+		"id":                  attachment.ID,
+		"uploader_user_id":    attachment.UploaderUserID,
+		"file_name":           attachment.FileName,
+		"storage_key":         attachment.StorageKey,
+		"mime_type":           attachment.MimeType,
+		"size_bytes":          attachment.SizeBytes,
+		"hash":                attachment.Hash,
+		"storage_provider":    attachment.StorageProvider,
+		"image_width":         attachment.ImageWidth,
+		"image_height":        attachment.ImageHeight,
+		"thumb_attachment_id": attachment.ThumbAttachmentID,
+		"thumb_width":         attachment.ThumbWidth,
+		"thumb_height":        attachment.ThumbHeight,
+		"created_at":          attachment.CreatedAt,
+	}
+}
+
+func (h *UserHandler) UploadAvatar(c *gin.Context) {
+	currentUserID := c.GetString("user_id")
+	if currentUserID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		return
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		file = nil
+	}
+
+	attachment, err := h.fileSvc.UploadAvatar(
+		currentUserID,
+		file,
+		h.avatarCfg.MaxSizeOrDefault(),
+		h.avatarCfg.PermanentOrDefault(),
+		h.avatarCfg.RetentionDuration(),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, filesvc.ErrUserIDRequired):
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		case errors.Is(err, filesvc.ErrFileRequired):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "缺少文件"})
+		case errors.Is(err, filesvc.ErrEmptyFile):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "文件为空"})
+		case errors.Is(err, filesvc.ErrFileTooLarge):
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "文件过大"})
+		case errors.Is(err, filesvc.ErrImageOnly):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "只允许上传图片"})
+		case errors.Is(err, filesvc.ErrMinioClientRequired):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "对象存储未就绪"})
+		case errors.Is(err, filesvc.ErrBucketRequired):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "对象存储配置缺失"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "上传头像失败"})
+		}
+		return
+	}
+
+	var oldKeys []string
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		var u models.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", currentUserID).First(&u).Error; err != nil {
+			return err
+		}
+
+		oldAvatarID := ""
+		if u.AvatarAttachmentID != nil {
+			oldAvatarID = strings.TrimSpace(*u.AvatarAttachmentID)
+		}
+
+		if err := tx.Model(&models.User{}).Where("id = ?", currentUserID).Update("avatar_attachment_id", attachment.ID).Error; err != nil {
+			return err
+		}
+
+		if oldAvatarID != "" && oldAvatarID != attachment.ID {
+			keys, err := h.fileSvc.DeleteAttachmentRecordsTx(tx, currentUserID, oldAvatarID)
+			if err != nil {
+				if errors.Is(err, filesvc.ErrAttachmentNotFound) {
+					return nil
+				}
+				return err
+			}
+			oldKeys = append(oldKeys, keys...)
+		}
+		return nil
+	}); err != nil {
+		_ = h.fileSvc.DeleteAttachment(currentUserID, attachment.ID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新头像失败"})
+		return
+	}
+
+	for _, k := range oldKeys {
+		_ = h.fileSvc.RemoveObjectByKey(k)
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"avatar_attachment_id": attachment.ID,
+		"attachment":           userAttachmentResponse(attachment),
+	})
+}
+
+func (h *UserHandler) GetAvatarURL(c *gin.Context) {
+	currentUserID := c.GetString("user_id")
+	if currentUserID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		return
+	}
+
+	targetUserID := strings.TrimSpace(c.Param("user_id"))
+	if targetUserID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 user_id"})
+		return
+	}
+
+	var target models.User
+	if err := h.db.Where("id = ?", targetUserID).First(&target).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询用户失败"})
+		return
+	}
+
+	if target.AvatarAttachmentID == nil || strings.TrimSpace(*target.AvatarAttachmentID) == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户未设置头像"})
+		return
+	}
+
+	url, err := h.fileSvc.PresignDownload(currentUserID, strings.TrimSpace(*target.AvatarAttachmentID), 15*time.Minute)
+	if err != nil {
+		switch {
+		case errors.Is(err, filesvc.ErrUserIDRequired):
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		case errors.Is(err, filesvc.ErrAttachmentNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "头像不存在"})
+		case errors.Is(err, filesvc.ErrStorageKeyRequired):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "头像缺少存储信息"})
+		case errors.Is(err, filesvc.ErrAttachmentExpired):
+			c.JSON(http.StatusGone, gin.H{"error": "头像已过期"})
+		case errors.Is(err, filesvc.ErrMinioClientRequired):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "对象存储未就绪"})
+		case errors.Is(err, filesvc.ErrBucketRequired):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "对象存储配置缺失"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "生成头像链接失败"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"url": url})
+}
+
+func (h *UserHandler) GetAvatarThumbURL(c *gin.Context) {
+	currentUserID := c.GetString("user_id")
+	if currentUserID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		return
+	}
+
+	targetUserID := strings.TrimSpace(c.Param("user_id"))
+	if targetUserID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 user_id"})
+		return
+	}
+
+	var target models.User
+	if err := h.db.Where("id = ?", targetUserID).First(&target).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询用户失败"})
+		return
+	}
+
+	if target.AvatarAttachmentID == nil || strings.TrimSpace(*target.AvatarAttachmentID) == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户未设置头像"})
+		return
+	}
+
+	avatarID := strings.TrimSpace(*target.AvatarAttachmentID)
+	var attachment models.Attachment
+	if err := h.db.Where("id = ?", avatarID).First(&attachment).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "头像不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询头像失败"})
+		return
+	}
+
+	downloadID := avatarID
+	if attachment.ThumbAttachmentID != nil && strings.TrimSpace(*attachment.ThumbAttachmentID) != "" {
+		downloadID = strings.TrimSpace(*attachment.ThumbAttachmentID)
+	}
+
+	url, err := h.fileSvc.PresignDownload(currentUserID, downloadID, 15*time.Minute)
+	if err != nil {
+		switch {
+		case errors.Is(err, filesvc.ErrUserIDRequired):
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		case errors.Is(err, filesvc.ErrAttachmentNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "头像不存在"})
+		case errors.Is(err, filesvc.ErrStorageKeyRequired):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "头像缺少存储信息"})
+		case errors.Is(err, filesvc.ErrAttachmentExpired):
+			c.JSON(http.StatusGone, gin.H{"error": "头像已过期"})
+		case errors.Is(err, filesvc.ErrMinioClientRequired):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "对象存储未就绪"})
+		case errors.Is(err, filesvc.ErrBucketRequired):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "对象存储配置缺失"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "生成头像链接失败"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"url": url})
 }
 
 func (h *UserHandler) AddFriend(c *gin.Context) {
@@ -71,10 +320,11 @@ func (h *UserHandler) AddFriend(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "已是好友",
 			"friend": gin.H{
-				"id":        target.ID,
-				"user_code": target.UserCode,
-				"username":  target.Username,
-				"status":    target.Status,
+				"id":                   target.ID,
+				"user_code":            target.UserCode,
+				"username":             target.Username,
+				"status":               target.Status,
+				"avatar_attachment_id": target.AvatarAttachmentID,
 			},
 		})
 		return
@@ -91,16 +341,17 @@ func (h *UserHandler) AddFriend(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "已存在待处理的好友请求",
 			"request": gin.H{
-				"id":            existingReq.ID,
-				"from_user_id":  existingReq.FromUserID,
-				"to_user_id":    existingReq.ToUserID,
-				"status":        existingReq.Status,
-				"message":       existingReq.Message,
-				"created_at":    existingReq.CreatedAt,
-				"responded_at":  existingReq.RespondedAt,
-				"target_id":     target.ID,
-				"target_name":   target.Username,
-				"target_status": target.Status,
+				"id":                          existingReq.ID,
+				"from_user_id":                existingReq.FromUserID,
+				"to_user_id":                  existingReq.ToUserID,
+				"status":                      existingReq.Status,
+				"message":                     existingReq.Message,
+				"created_at":                  existingReq.CreatedAt,
+				"responded_at":                existingReq.RespondedAt,
+				"target_id":                   target.ID,
+				"target_name":                 target.Username,
+				"target_status":               target.Status,
+				"target_avatar_attachment_id": target.AvatarAttachmentID,
 			},
 		})
 		return
@@ -228,6 +479,36 @@ func (h *UserHandler) ListFriends(c *gin.Context) {
 		return
 	}
 
+	// Batch find room IDs for these friends
+	roomNames := make([]string, 0, len(friendIDs))
+	for _, fid := range friendIDs {
+		a, b := currentUserID, fid
+		if a > b {
+			a, b = b, a
+		}
+		roomNames = append(roomNames, a+":"+b)
+	}
+
+	var rooms []models.Room
+	if len(roomNames) > 0 {
+		h.db.Where("room_type = ? AND name IN ?", models.RoomTypeDirect, roomNames).Find(&rooms)
+	}
+
+	roomMap := make(map[string]string) // friendID -> roomID
+	for _, r := range rooms {
+		// Name is "id1:id2"
+		parts := strings.Split(r.Name, ":")
+		if len(parts) == 2 {
+			var fid string
+			if parts[0] == currentUserID {
+				fid = parts[1]
+			} else {
+				fid = parts[0]
+			}
+			roomMap[fid] = r.ID
+		}
+	}
+
 	userMap := make(map[string]models.User, len(users))
 	for _, u := range users {
 		userMap[u.ID] = u
@@ -237,10 +518,12 @@ func (h *UserHandler) ListFriends(c *gin.Context) {
 	for _, id := range friendIDs {
 		if u, ok := userMap[id]; ok {
 			resp = append(resp, gin.H{
-				"id":        u.ID,
-				"user_code": u.UserCode,
-				"username":  u.Username,
-				"status":    u.Status,
+				"id":                   u.ID,
+				"user_code":            u.UserCode,
+				"username":             u.Username,
+				"status":               u.Status,
+				"avatar_attachment_id": u.AvatarAttachmentID,
+				"room_id":              roomMap[id],
 			})
 		}
 	}
@@ -288,13 +571,14 @@ func (h *UserHandler) ListIncomingFriendRequests(c *gin.Context) {
 	for _, r := range requests {
 		if u, ok := userMap[r.FromUserID]; ok {
 			resp = append(resp, gin.H{
-				"request_id":     r.ID,
-				"from_user_id":   r.FromUserID,
-				"from_user_code": u.UserCode,
-				"from_username":  u.Username,
-				"message":        r.Message,
-				"status":         r.Status,
-				"created_at":     r.CreatedAt,
+				"request_id":                r.ID,
+				"from_user_id":              r.FromUserID,
+				"from_user_code":            u.UserCode,
+				"from_username":             u.Username,
+				"from_avatar_attachment_id": u.AvatarAttachmentID,
+				"message":                   r.Message,
+				"status":                    r.Status,
+				"created_at":                r.CreatedAt,
 			})
 		}
 	}
@@ -389,6 +673,47 @@ func (h *UserHandler) RespondFriendRequest(c *gin.Context) {
 				return err
 			}
 		}
+
+		// Eagerly create Direct Room and Members
+		name := a + ":" + b
+		var room models.Room
+		if err := tx.Where("room_type = ? AND name = ?", models.RoomTypeDirect, name).First(&room).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				room = models.Room{
+					ID:          uuid.NewString(),
+					RoomType:    models.RoomTypeDirect,
+					Name:        name,
+					OwnerUserID: a,
+					CreatedAt:   now,
+					UpdatedAt:   now,
+				}
+				if err := tx.Create(&room).Error; err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
+		}
+
+		// Ensure Members exist
+		for _, uid := range []string{a, b} {
+			var m models.RoomMember
+			if err := tx.Where("room_id = ? AND user_id = ?", room.ID, uid).First(&m).Error; err != nil {
+				if err == gorm.ErrRecordNotFound {
+					if err := tx.Create(&models.RoomMember{
+						RoomID:   room.ID,
+						UserID:   uid,
+						Role:     models.MemberRoleMember,
+						JoinedAt: now,
+					}).Error; err != nil {
+						return err
+					}
+				} else {
+					return err
+				}
+			}
+		}
+
 		return nil
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "接受好友请求失败"})

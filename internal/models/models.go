@@ -44,18 +44,18 @@ const (
 // 使用字符串 UUID 作为主键，可在应用层或数据库默认生成
 // 如 Postgres 可使用: gorm:"type:uuid;default:gen_random_uuid()"
 type User struct {
-	ID           string    `gorm:"type:char(36);primaryKey" json:"id"`
-	UserCode     int64     `gorm:"autoIncrement;uniqueIndex;not null" json:"user_code"`
-	Username     string    `gorm:"size:64;uniqueIndex;not null" json:"username"`
-	Email        *string   `gorm:"size:255;uniqueIndex" json:"email,omitempty"`
-	Phone        *string   `gorm:"size:32;uniqueIndex" json:"phone,omitempty"`
-	PasswordHash string    `gorm:"size:255;not null" json:"-"`
-	Status       string    `gorm:"size:16;not null;default:active" json:"status"`
-	DisplayName  *string   `gorm:"size:64" json:"display_name,omitempty"`
-	AvatarURL    *string   `gorm:"size:512" json:"avatar_url,omitempty"`
-	Bio          *string   `gorm:"size:1024" json:"bio,omitempty"`
-	CreatedAt    time.Time `gorm:"not null" json:"created_at"`
-	UpdatedAt    time.Time `gorm:"not null" json:"updated_at"`
+	ID                 string    `gorm:"type:char(36);primaryKey" json:"id"`
+	UserCode           int64     `gorm:"autoIncrement;uniqueIndex;not null" json:"user_code"`
+	Username           string    `gorm:"size:64;uniqueIndex;not null" json:"username"`
+	Email              *string   `gorm:"size:255;uniqueIndex" json:"email,omitempty"`
+	Phone              *string   `gorm:"size:32;uniqueIndex" json:"phone,omitempty"`
+	PasswordHash       string    `gorm:"size:255;not null" json:"-"`
+	Status             string    `gorm:"size:16;not null;default:active" json:"status"`
+	DisplayName        *string   `gorm:"size:64" json:"display_name,omitempty"`
+	AvatarAttachmentID *string   `gorm:"type:char(36)" json:"avatar_attachment_id,omitempty"`
+	Bio                *string   `gorm:"size:1024" json:"bio,omitempty"`
+	CreatedAt          time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt          time.Time `gorm:"not null" json:"updated_at"`
 }
 
 // 登录会话/令牌
@@ -138,9 +138,11 @@ type RoomMember struct {
 }
 
 // 消息，采用软删除；Payload 使用 GORM datatypes.JSON
+// 复合唯一索引：(room_id, sequence_id) 保证房间内消息序号唯一且单调递增
+// 辅助索引：(room_id, created_at) 用于基于时间的时间轴查询
 type Message struct {
 	ID              string         `gorm:"type:char(36);primaryKey" json:"id"`
-	RoomID          string         `gorm:"type:char(36);not null;index" json:"room_id"`
+	RoomID          string         `gorm:"type:char(36);not null;uniqueIndex:uidx_room_seq,priority:1;index:idx_room_created_at,priority:1" json:"room_id"`
 	Room            *Room          `gorm:"foreignKey:RoomID;constraint:OnDelete:CASCADE" json:"-"`
 	SenderID        *string        `gorm:"type:char(36);index" json:"sender_id,omitempty"`
 	Sender          *User          `gorm:"foreignKey:SenderID;constraint:OnDelete:SET NULL" json:"-"`
@@ -149,9 +151,11 @@ type Message struct {
 	PayloadJSON     datatypes.JSON `gorm:"type:json" json:"payload_json,omitempty"`
 	AttachmentID    *string        `gorm:"type:char(36)" json:"attachment_id,omitempty"`
 	ParentMessageID *string        `gorm:"type:char(36);index" json:"parent_message_id,omitempty"`
-	CreatedAt       time.Time      `gorm:"not null" json:"created_at"`
-	UpdatedAt       *time.Time     `json:"updated_at,omitempty"`
-	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
+	// SequenceID 房间内单调递增的序号，从1开始
+	SequenceID int64          `gorm:"not null;uniqueIndex:uidx_room_seq,priority:2,sort:desc" json:"sequence_id"`
+	CreatedAt  time.Time      `gorm:"not null;index:idx_room_created_at,priority:2,sort:desc" json:"created_at"`
+	UpdatedAt  *time.Time     `json:"updated_at,omitempty"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 }
 
 // 送达/已读回执，复合主键 (message_id, user_id)
@@ -176,14 +180,21 @@ type MessageReaction struct {
 
 // 附件元数据
 type Attachment struct {
-	ID              string    `gorm:"type:char(36);primaryKey" json:"id"`
-	UploaderUserID  *string   `gorm:"type:char(36);index" json:"uploader_user_id,omitempty"`
-	UploaderUser    *User     `gorm:"foreignKey:UploaderUserID;constraint:OnDelete:SET NULL" json:"-"`
-	URL             *string   `gorm:"size:512" json:"url,omitempty"`
-	StorageKey      *string   `gorm:"size:512" json:"storage_key,omitempty"`
-	MimeType        *string   `gorm:"size:128" json:"mime_type,omitempty"`
-	SizeBytes       *int64    `json:"size_bytes,omitempty"`
-	Hash            *string   `gorm:"size:128" json:"hash,omitempty"`
-	StorageProvider *string   `gorm:"size:64" json:"storage_provider,omitempty"`
-	CreatedAt       time.Time `gorm:"not null" json:"created_at"`
+	ID                string     `gorm:"type:char(36);primaryKey" json:"id"`
+	UploaderUserID    *string    `gorm:"type:char(36);index" json:"uploader_user_id,omitempty"`
+	UploaderUser      *User      `gorm:"foreignKey:UploaderUserID;constraint:OnDelete:SET NULL" json:"-"`
+	URL               *string    `gorm:"size:512" json:"url,omitempty"`
+	FileName          *string    `gorm:"size:255" json:"file_name,omitempty"`
+	StorageKey        *string    `gorm:"size:512" json:"storage_key,omitempty"`
+	MimeType          *string    `gorm:"size:128" json:"mime_type,omitempty"`
+	SizeBytes         *int64     `json:"size_bytes,omitempty"`
+	Hash              *string    `gorm:"size:128" json:"hash,omitempty"`
+	StorageProvider   *string    `gorm:"size:64" json:"storage_provider,omitempty"`
+	ImageWidth        *int       `json:"image_width,omitempty"`
+	ImageHeight       *int       `json:"image_height,omitempty"`
+	ThumbAttachmentID *string    `gorm:"type:char(36)" json:"thumb_attachment_id,omitempty"`
+	ThumbWidth        *int       `json:"thumb_width,omitempty"`
+	ThumbHeight       *int       `json:"thumb_height,omitempty"`
+	ExpiresAt         *time.Time `gorm:"index" json:"expires_at,omitempty"`
+	CreatedAt         time.Time  `gorm:"not null" json:"created_at"`
 }
