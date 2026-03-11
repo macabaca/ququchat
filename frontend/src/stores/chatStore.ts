@@ -43,6 +43,7 @@ interface ChatState {
     leaveGroup: (groupId: string) => Promise<void>;
     
     setActiveConversation: (id: string) => void;
+    clearActiveConversation: () => void;
     sendMessage: (content: string, type: 'text' | 'image' | 'file', attachmentId?: string, thumbId?: string, cachePath?: string) => void;
     
     // Handlers for incoming data
@@ -272,6 +273,9 @@ export const useChatStore = create<ChatState>()(
                 // Load messages from SQLite when conversation becomes active
                 get().loadMessages(id);
                 // Reset unread counts logic here if implemented
+            },
+            clearActiveConversation: () => {
+                set({ activeConversationId: null });
             },
 
             sendMessage: (content: string, type: 'text' | 'image' | 'file' = 'text', attachmentId?: string, thumbId?: string, cachePath?: string) => {

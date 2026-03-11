@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { Layout, Input, List, Avatar, Badge, Tabs, Button, Modal, message, Select, Tag, Tooltip, Dropdown, MenuProps } from 'antd';
-import { UserOutlined, TeamOutlined, SearchOutlined, UserAddOutlined, PlusOutlined } from '@ant-design/icons';
+import { UserOutlined, TeamOutlined, SearchOutlined, UserAddOutlined, PlusOutlined, RobotOutlined } from '@ant-design/icons';
 import { useChatStore } from '../../stores/chatStore';
 import { friendService } from '../../api/FriendService';
+import { useAIChatStore } from '../../stores/aiChatStore';
 
 const { Sider } = Layout;
 const { Search } = Input;
@@ -12,7 +13,7 @@ interface SidebarListItem {
     id: string;
     name: string;
     avatar: string | null | undefined;
-    type: 'friend' | 'group';
+    type: 'friend' | 'group' | 'ai';
     status?: string;
     extra?: string;
     friendUserId?: string;
@@ -24,6 +25,7 @@ const Sidebar: React.FC = () => {
         friends,
         groups,
         setActiveConversation,
+        clearActiveConversation,
         activeConversationId,
         friendRequests,
         fetchFriendRequests,
@@ -31,6 +33,16 @@ const Sidebar: React.FC = () => {
         createGroup,
         inviteGroupMembers
     } = useChatStore();
+    const {
+        conversations: aiConversations,
+        activeConversationId: activeAIConversationId,
+        setActiveConversation: setActiveAIConversation,
+        clearActiveConversation: clearActiveAIConversation,
+        createConversation: createAIConversation,
+        deleteConversation: deleteAIConversation,
+        setAIViewActive,
+        isAIViewActive
+    } = useAIChatStore();
     const [activeTab, setActiveTab] = useState('friends');
     const [isAddFriendModalVisible, setIsAddFriendModalVisible] = useState(false);
     const [isRequestsModalVisible, setIsRequestsModalVisible] = useState(false);
@@ -73,7 +85,19 @@ const Sidebar: React.FC = () => {
         [groups]
     );
 
-    const items = (activeTab === 'friends' ? friendItems : groupItems).filter((item) =>
+    const aiItems = useMemo<SidebarListItem[]>(
+        () =>
+            aiConversations.map((c) => ({
+                id: c.id,
+                name: c.title || 'New Chat',
+                avatar: null,
+                type: 'ai' as const,
+                status: 'active'
+            })),
+        [aiConversations]
+    );
+
+    const items = (activeTab === 'friends' ? friendItems : activeTab === 'groups' ? groupItems : aiItems).filter((item) =>
         item.name.toLowerCase().includes(searchKeyword.trim().toLowerCase())
     );
 
@@ -230,6 +254,34 @@ const Sidebar: React.FC = () => {
         }
     });
 
+    const getAIContextMenu = (item: SidebarListItem): MenuProps => ({
+        items: [
+            {
+                key: 'delete-ai',
+                label: '删除对话',
+                danger: true
+            }
+        ],
+        onClick: ({ key }) => {
+            if (key !== 'delete-ai') return;
+            Modal.confirm({
+                title: '删除对话',
+                content: `确认删除「${item.name}」吗？`,
+                okText: '删除',
+                okButtonProps: { danger: true },
+                cancelText: '取消',
+                onOk: async () => {
+                    try {
+                        await deleteAIConversation(item.id);
+                        message.success('对话已删除');
+                    } catch (error: any) {
+                        message.error(error?.message || error?.error || '删除对话失败');
+                    }
+                }
+            });
+        }
+    });
+
     const renderGroupStatus = (status: string) => {
         if (status === 'left') return <Tag color="orange">已退群</Tag>;
         if (status === 'dismissed') return <Tag color="red">已解散</Tag>;
@@ -241,26 +293,55 @@ const Sidebar: React.FC = () => {
             message.warning('该群不可聊天，请选择正常状态群组');
             return;
         }
+        if (item.type === 'ai') {
+            clearActiveConversation();
+            setActiveAIConversation(item.id);
+            return;
+        }
+        clearActiveAIConversation();
         setActiveConversation(item.id);
+    };
+
+    const handleCreateAIConversation = async () => {
+        clearActiveConversation();
+        try {
+            message.info('正在创建 AI 对话...');
+            const conv = await createAIConversation();
+            setActiveAIConversation(conv.id);
+            setActiveTab('ai');
+            setAIViewActive(true);
+            message.success(`已创建 AI 对话 (${conv.id.slice(0, 8)})`);
+        } catch (error: any) {
+            message.error(error?.message || error?.error || '创建对话失败');
+        }
     };
 
     return (
         <Sider width={300} theme="light" style={{ borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column' }}>
             <div style={{ padding: '16px', display: 'flex', gap: '8px' }}>
                 <Search
-                    placeholder={activeTab === 'friends' ? '搜索好友' : '搜索群组'}
+                    placeholder={activeTab === 'friends' ? '搜索好友' : activeTab === 'groups' ? '搜索群组' : '搜索对话'}
                     prefix={<SearchOutlined />}
                     style={{ flex: 1 }}
                     value={searchKeyword}
                     onChange={(e) => setSearchKeyword(e.target.value)}
                 />
-                <Button icon={<UserAddOutlined />} onClick={() => setIsAddFriendModalVisible(true)} />
-                <Tooltip title="创建群组">
-                    <Button icon={<PlusOutlined />} onClick={() => setIsCreateGroupModalVisible(true)} />
-                </Tooltip>
-                <Badge count={friendRequests.length} size="small">
-                    <Button icon={<UserOutlined />} onClick={openRequestsModal} />
-                </Badge>
+                {activeTab !== 'ai' && (
+                    <>
+                        <Button icon={<UserAddOutlined />} onClick={() => setIsAddFriendModalVisible(true)} />
+                        <Tooltip title="创建群组">
+                            <Button icon={<PlusOutlined />} onClick={() => setIsCreateGroupModalVisible(true)} />
+                        </Tooltip>
+                        <Badge count={friendRequests.length} size="small">
+                            <Button icon={<UserOutlined />} onClick={openRequestsModal} />
+                        </Badge>
+                    </>
+                )}
+                {activeTab === 'ai' && (
+                    <Tooltip title="新建对话">
+                        <Button icon={<PlusOutlined />} onClick={handleCreateAIConversation} />
+                    </Tooltip>
+                )}
             </div>
             
             <Tabs 
@@ -269,10 +350,12 @@ const Sidebar: React.FC = () => {
                 onChange={(key) => {
                     setActiveTab(key);
                     setSearchKeyword('');
+                    setAIViewActive(key === 'ai');
                 }}
                 items={[
                     { key: 'friends', label: '好友', icon: <UserOutlined /> },
                     { key: 'groups', label: '群组', icon: <TeamOutlined /> },
+                    { key: 'ai', label: 'AI 对话', icon: <RobotOutlined /> }
                 ]}
             />
 
@@ -286,14 +369,23 @@ const Sidebar: React.FC = () => {
                                 style={{ 
                                     padding: '12px 16px', 
                                     cursor: 'pointer',
-                                    background: activeConversationId === item.id ? '#e6f7ff' : 'transparent'
+                                    background: (item.type === 'ai' ? activeAIConversationId === item.id : activeConversationId === item.id) ? '#e6f7ff' : 'transparent'
                                 }} 
                                 onClick={() => onClickItem(item)}
                             >
                                 <List.Item.Meta
                                     avatar={
                                         <Badge count={0} dot> {/* Placeholder for unread */}
-                                            <Avatar icon={item.type === 'friend' ? <UserOutlined /> : <TeamOutlined />} src={item.avatar} />
+                                            <Avatar
+                                                icon={
+                                                    item.type === 'friend'
+                                                        ? <UserOutlined />
+                                                        : item.type === 'group'
+                                                        ? <TeamOutlined />
+                                                        : <RobotOutlined />
+                                                }
+                                                src={item.avatar}
+                                            />
                                         </Badge>
                                     }
                                     title={item.name}
@@ -305,11 +397,21 @@ const Sidebar: React.FC = () => {
                                                     <span style={{ marginLeft: 8 }}>{item.extra}</span>
                                                 </span>
                                             )
-                                            : (item.status === 'online' ? <span style={{ color: '#52c41a' }}>在线</span> : '离线')
+                                            : item.type === 'ai'
+                                                ? '智能助手'
+                                                : (item.status === 'online' ? <span style={{ color: '#52c41a' }}>在线</span> : '离线')
                                     }
                                 />
                             </List.Item>
                         );
+
+                        if (item.type === 'ai') {
+                            return (
+                                <Dropdown trigger={['contextMenu']} menu={getAIContextMenu(item)}>
+                                    <div>{listItem}</div>
+                                </Dropdown>
+                            );
+                        }
 
                         if (item.type !== 'friend') {
                             return listItem;

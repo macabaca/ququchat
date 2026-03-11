@@ -240,7 +240,10 @@ const MessageList: React.FC<MessageListProps> = ({ messages }) => {
     const bottomRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        const timer = window.setTimeout(() => {
+            bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 300);
+        return () => window.clearTimeout(timer);
     }, [messages]);
 
     return (

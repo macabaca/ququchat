@@ -46,6 +46,23 @@ export interface RoomStateRow {
     last_synced_at: number;
 }
 
+export interface AIConversationRow {
+    id: string;
+    user_id: string;
+    title: string | null;
+    created_at: number;
+    updated_at: number;
+}
+
+export interface AIMessageRow {
+    id: string;
+    user_id: string;
+    conversation_id: string;
+    role: string;
+    content: string;
+    created_at: number;
+}
+
 // 初始化数据库表结构
 export const initDatabase = async () => {
     const queries = [
@@ -94,11 +111,39 @@ export const initDatabase = async () => {
             last_sequence_id INTEGER DEFAULT 0,
             last_synced_at INTEGER DEFAULT 0,
             FOREIGN KEY(room_id) REFERENCES rooms(id)
-        )`
+        )`,
+        `CREATE TABLE IF NOT EXISTS ai_conversations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT,
+            created_at INTEGER,
+            updated_at INTEGER
+        )`,
+        `CREATE TABLE IF NOT EXISTS ai_messages (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            created_at INTEGER,
+            FOREIGN KEY(conversation_id) REFERENCES ai_conversations(id) ON DELETE CASCADE
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_ai_conversations_user_updated ON ai_conversations(user_id, updated_at)`,
+        `CREATE INDEX IF NOT EXISTS idx_ai_messages_user_conv_time ON ai_messages(user_id, conversation_id, created_at)`
     ];
 
     for (const query of queries) {
         await sqliteClient.execute(query);
+    }
+    const convCols = await sqliteClient.query<{ name: string }>('PRAGMA table_info(ai_conversations)');
+    if (!convCols.some((c) => c.name === 'user_id')) {
+        await sqliteClient.execute("ALTER TABLE ai_conversations ADD COLUMN user_id TEXT DEFAULT 'guest'");
+        await sqliteClient.execute("UPDATE ai_conversations SET user_id = 'guest' WHERE user_id IS NULL");
+    }
+    const msgCols = await sqliteClient.query<{ name: string }>('PRAGMA table_info(ai_messages)');
+    if (!msgCols.some((c) => c.name === 'user_id')) {
+        await sqliteClient.execute("ALTER TABLE ai_messages ADD COLUMN user_id TEXT DEFAULT 'guest'");
+        await sqliteClient.execute("UPDATE ai_messages SET user_id = 'guest' WHERE user_id IS NULL");
     }
     console.log('Database initialized successfully');
 };
@@ -254,5 +299,101 @@ export const roomStateDao = {
 
     async get(roomId: string): Promise<RoomStateRow | null> {
         return await sqliteClient.queryOne<RoomStateRow>('SELECT * FROM room_states WHERE room_id = ?', [roomId]);
+    }
+};
+
+export const aiConversationDao = {
+    async upsert(conversation: AIConversationRow) {
+        const sql = `
+            INSERT INTO ai_conversations (id, user_id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                title = excluded.title,
+                updated_at = excluded.updated_at
+        `;
+        const params = [
+            conversation.id,
+            conversation.user_id,
+            conversation.title,
+            conversation.created_at,
+            conversation.updated_at
+        ];
+        await sqliteClient.execute(sql, params);
+    },
+
+    async getAll(userId: string): Promise<AIConversationRow[]> {
+        return await sqliteClient.query<AIConversationRow>(
+            'SELECT * FROM ai_conversations WHERE user_id = ? ORDER BY updated_at DESC',
+            [userId]
+        );
+    },
+
+    async get(id: string, userId: string): Promise<AIConversationRow | null> {
+        return await sqliteClient.queryOne<AIConversationRow>(
+            'SELECT * FROM ai_conversations WHERE id = ? AND user_id = ?',
+            [id, userId]
+        );
+    },
+
+    async updateTitle(id: string, userId: string, title: string) {
+        await sqliteClient.execute(
+            'UPDATE ai_conversations SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+            [title, Date.now(), id, userId]
+        );
+    },
+
+    async touch(id: string, userId: string) {
+        await sqliteClient.execute('UPDATE ai_conversations SET updated_at = ? WHERE id = ? AND user_id = ?', [
+            Date.now(),
+            id,
+            userId
+        ]);
+    },
+
+    async delete(id: string, userId: string) {
+        await sqliteClient.execute('DELETE FROM ai_conversations WHERE id = ? AND user_id = ?', [id, userId]);
+    }
+};
+
+export const aiMessageDao = {
+    async insert(message: AIMessageRow) {
+        const sql = `
+            INSERT INTO ai_messages (id, user_id, conversation_id, role, content, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `;
+        const params = [
+            message.id,
+            message.user_id,
+            message.conversation_id,
+            message.role,
+            message.content,
+            message.created_at
+        ];
+        await sqliteClient.execute(sql, params);
+    },
+
+    async updateContent(id: string, userId: string, content: string) {
+        await sqliteClient.execute('UPDATE ai_messages SET content = ? WHERE id = ? AND user_id = ?', [
+            content,
+            id,
+            userId
+        ]);
+    },
+
+    async listByConversation(conversationId: string, userId: string): Promise<AIMessageRow[]> {
+        const sql = `
+            SELECT * FROM ai_messages
+            WHERE conversation_id = ? AND user_id = ?
+            ORDER BY created_at ASC
+        `;
+        return await sqliteClient.query<AIMessageRow>(sql, [conversationId, userId]);
+    },
+
+    async deleteByConversation(conversationId: string, userId: string) {
+        await sqliteClient.execute('DELETE FROM ai_messages WHERE conversation_id = ? AND user_id = ?', [
+            conversationId,
+            userId
+        ]);
     }
 };

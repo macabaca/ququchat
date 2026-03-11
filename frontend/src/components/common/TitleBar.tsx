@@ -9,17 +9,20 @@ import {
   SafetyCertificateOutlined,
   UserOutlined,
   LogoutOutlined,
-  CopyOutlined
+  CopyOutlined,
+  SettingOutlined
 } from '@ant-design/icons';
 import { Button, Dropdown, MenuProps, Space, message } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/authStore';
 import { useChatStore } from '../../stores/chatStore';
 import { authService } from '../../api/AuthService';
+import ModelConfigModal from '../ai/ModelConfigModal';
 
 const TitleBar: React.FC = () => {
   const [isMaximized, setIsMaximized] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isModelModalOpen, setIsModelModalOpen] = useState(false);
   const navigate = useNavigate();
   const { isAuthenticated, user, refreshToken, logout } = useAuthStore();
   const disconnectWebSocket = useChatStore((state) => state.disconnectWebSocket);
@@ -45,6 +48,7 @@ const TitleBar: React.FC = () => {
   const userMenuItems: MenuProps['items'] = [
     { key: 'user_code', label: `用户码：${user?.user_code ?? '-'}`, disabled: true },
     { key: 'copy_user_code', label: '复制用户码', icon: <CopyOutlined /> },
+    { key: 'model_config', label: '模型配置', icon: <SettingOutlined /> },
     { key: 'logout', label: '退出登录', icon: <LogoutOutlined /> }
   ];
 
@@ -116,6 +120,7 @@ const TitleBar: React.FC = () => {
               items: userMenuItems,
               onClick: ({ key }) => {
                 if (key === 'copy_user_code') handleCopyUserCode();
+                if (key === 'model_config') setIsModelModalOpen(true);
                 if (key === 'logout') handleLogout();
               }
             }}
@@ -143,6 +148,7 @@ const TitleBar: React.FC = () => {
           <CloseOutlined style={{ fontSize: '12px' }} />
         </div>
       </div>
+      <ModelConfigModal open={isModelModalOpen} onClose={() => setIsModelModalOpen(false)} />
     </div>
   );
 };
