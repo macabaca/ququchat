@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, Typography, Button, Drawer, Descriptions, Tag, List, Select, Space, Popconfirm, message } from 'antd';
+import { Layout, Typography, Button, Drawer, Descriptions, Tag, List, Select, Space, Popconfirm, message, Spin } from 'antd';
 import { InfoCircleOutlined, MoreOutlined } from '@ant-design/icons';
 import MessageList from './MessageList';
 import InputArea from './InputArea';
@@ -25,7 +25,8 @@ const ChatWindow: React.FC = () => {
         removeGroupMember,
         addGroupAdmins,
         dismissGroup,
-        leaveGroup
+        leaveGroup,
+        isReconnecting
     } = useChatStore();
     const user = useAuthStore((state) => state.user);
     const [isDrawerOpen, setIsDrawerOpen] = React.useState(false);
@@ -156,14 +157,15 @@ const ChatWindow: React.FC = () => {
                 justifyContent: 'space-between'
             }}>
                 <Title level={4} style={{ margin: 0 }}>{title}</Title>
-                <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {isReconnecting && <Tag color="orange">重连中...</Tag>}
                     <Button type="text" icon={<InfoCircleOutlined />} onClick={openGroupPanel} disabled={!isGroupConversation} />
                     <Button type="text" icon={<MoreOutlined />} />
                 </div>
             </Header>
             <Content style={{ display: 'flex', flexDirection: 'column', background: '#fff' }}>
                 <MessageList messages={currentMessages} />
-                <InputArea onSend={sendMessage} />
+                <InputArea onSend={sendMessage} roomId={activeConversationId} roomName={title} />
             </Content>
             <Drawer
                 title="群管理"
@@ -174,16 +176,18 @@ const ChatWindow: React.FC = () => {
             >
                 {activeGroup ? (
                     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                        <Descriptions bordered size="small" column={1} loading={isLoadingGroupInfo}>
-                            <Descriptions.Item label="群名称">{activeGroupDetails?.name || activeGroup.name}</Descriptions.Item>
-                            <Descriptions.Item label="群ID">{activeGroup.id}</Descriptions.Item>
-                            <Descriptions.Item label="成员数">{activeGroupDetails?.member_count ?? activeGroup.member_count}</Descriptions.Item>
-                            <Descriptions.Item label="我的角色">
-                                <Tag color={myRole === 'owner' ? 'gold' : myRole === 'admin' ? 'blue' : 'default'}>
-                                    {myRole || 'member'}
-                                </Tag>
-                            </Descriptions.Item>
-                        </Descriptions>
+                        <Spin spinning={isLoadingGroupInfo}>
+                            <Descriptions bordered size="small" column={1}>
+                                <Descriptions.Item label="群名称">{activeGroupDetails?.name || activeGroup.name}</Descriptions.Item>
+                                <Descriptions.Item label="群ID">{activeGroup.id}</Descriptions.Item>
+                                <Descriptions.Item label="成员数">{activeGroupDetails?.member_count ?? activeGroup.member_count}</Descriptions.Item>
+                                <Descriptions.Item label="我的角色">
+                                    <Tag color={myRole === 'owner' ? 'gold' : myRole === 'admin' ? 'blue' : 'default'}>
+                                        {myRole || 'member'}
+                                    </Tag>
+                                </Descriptions.Item>
+                            </Descriptions>
+                        </Spin>
 
                         {(myRole === 'owner' || myRole === 'admin') && (
                             <div>

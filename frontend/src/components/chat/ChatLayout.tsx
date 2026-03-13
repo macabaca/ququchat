@@ -11,18 +11,20 @@ import { useAIChatStore } from '../../stores/aiChatStore';
 const ChatLayout: React.FC = () => {
     const { init, disconnectWebSocket } = useChatStore();
     const user = useAuthStore((state) => state.user);
+    const cacheUserAvatar = useAuthStore((state) => state.cacheUserAvatar);
     const resetAndReloadAI = useAIChatStore((state) => state.resetAndReload);
     const isAIViewActive = useAIChatStore((state) => state.isAIViewActive);
 
     useEffect(() => {
-        if (user) {
+        if (user?.id) {
             init();
             resetAndReloadAI();
+            cacheUserAvatar();
         }
         return () => {
             disconnectWebSocket();
         };
-    }, [user, init, resetAndReloadAI, disconnectWebSocket]);
+    }, [user?.id, init, resetAndReloadAI, disconnectWebSocket, cacheUserAvatar]);
 
     return (
         <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>

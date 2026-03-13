@@ -1,5 +1,5 @@
 import { sqliteClient } from './sqliteClient';
-import { User, Message, Room } from '../types/models';
+import { User } from '../types/models';
 
 // 定义数据库表的接口
 export interface UserRow {
@@ -254,6 +254,9 @@ export const messageDao = {
             msg.status
         ];
         await sqliteClient.execute(sql, params);
+    },
+    async deleteById(id: string) {
+        await sqliteClient.execute('DELETE FROM messages WHERE id = ?', [id]);
     },
 
     async getImageCache(): Promise<{ cache_path: string }[]> {

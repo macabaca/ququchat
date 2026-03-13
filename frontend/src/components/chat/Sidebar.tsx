@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Layout, Input, List, Avatar, Badge, Tabs, Button, Modal, message, Select, Tag, Tooltip, Dropdown, MenuProps } from 'antd';
 import { UserOutlined, TeamOutlined, SearchOutlined, UserAddOutlined, PlusOutlined, RobotOutlined } from '@ant-design/icons';
 import { useChatStore } from '../../stores/chatStore';
 import { friendService } from '../../api/FriendService';
 import { useAIChatStore } from '../../stores/aiChatStore';
+import { localFileService } from '../../api/LocalFileService';
 
 const { Sider } = Layout;
 const { Search } = Input;
@@ -40,8 +41,7 @@ const Sidebar: React.FC = () => {
         clearActiveConversation: clearActiveAIConversation,
         createConversation: createAIConversation,
         deleteConversation: deleteAIConversation,
-        setAIViewActive,
-        isAIViewActive
+        setAIViewActive
     } = useAIChatStore();
     const [activeTab, setActiveTab] = useState('friends');
     const [isAddFriendModalVisible, setIsAddFriendModalVisible] = useState(false);
@@ -56,20 +56,53 @@ const Sidebar: React.FC = () => {
     const [isLoadingRequests, setIsLoadingRequests] = useState(false);
     const [respondingRequestId, setRespondingRequestId] = useState<string | null>(null);
     const [searchKeyword, setSearchKeyword] = useState('');
+    const [avatarUrlByUserId, setAvatarUrlByUserId] = useState<Record<string, string>>({});
+
+    useEffect(() => {
+        let active = true;
+        const loadAvatarUrls = async () => {
+            const entries: Array<[string, string]> = [];
+            for (const friend of friends) {
+                if (!friend.id) continue;
+                if (friend.avatarThumbLocalPath) {
+                    const localUrl = await localFileService.getLocalFileUrl(friend.avatarThumbLocalPath);
+                    if (localUrl) {
+                        entries.push([friend.id, localUrl]);
+                        continue;
+                    }
+                }
+                if (friend.avatarURL) {
+                    entries.push([friend.id, friend.avatarURL]);
+                }
+            }
+            if (!active) return;
+            setAvatarUrlByUserId((prev) => {
+                const next = { ...prev };
+                for (const [id, url] of entries) {
+                    next[id] = url;
+                }
+                return next;
+            });
+        };
+        loadAvatarUrls();
+        return () => {
+            active = false;
+        };
+    }, [friends]);
 
     const friendItems = useMemo<SidebarListItem[]>(
         () =>
             friends.map((f) => ({
                 id: f.room_id,
                 name: f.nickname || f.username,
-                avatar: f.avatarURL,
+                avatar: avatarUrlByUserId[f.id] || f.avatarURL,
                 type: 'friend' as const,
                 status: f.status,
                 extra: '',
                 friendUserId: f.id,
                 friendUserCode: f.user_code
             })),
-        [friends]
+        [friends, avatarUrlByUserId]
     );
 
     const groupItems = useMemo<SidebarListItem[]>(
@@ -296,6 +329,8 @@ const Sidebar: React.FC = () => {
         if (item.type === 'ai') {
             clearActiveConversation();
             setActiveAIConversation(item.id);
+            setAIViewActive(true);
+            setActiveTab('ai');
             return;
         }
         clearActiveAIConversation();

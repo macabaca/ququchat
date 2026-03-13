@@ -1,15 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { List, Avatar, Typography, Image, Button, Modal } from 'antd';
+import { List, Avatar, Button, Modal } from 'antd';
 import { UserOutlined, FileOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined } from '@ant-design/icons';
 import { Message } from '../../types/models';
 import { useAuthStore } from '../../stores/authStore';
 import { fileService } from '../../api/FileService';
+import { useChatStore } from '../../stores/chatStore';
+import { localFileService } from '../../api/LocalFileService';
 
 interface MessageListProps {
     messages: Message[];
 }
 
-const MessageItem: React.FC<{ msg: Message; isMe: boolean }> = ({ msg, isMe }) => {
+const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }> = ({ msg, isMe, avatarUrl }) => {
     const [thumbUrl, setThumbUrl] = useState<string>('');
     const [downloadUrl, setDownloadUrl] = useState<string>('');
     const [isModalVisible, setIsModalVisible] = useState(false);
@@ -43,7 +45,8 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean }> = ({ msg, isMe }) =
                 // 1.5 Local Cache
                 window.electronAPI.fs.readFile(msg.cache_path)
                     .then((buffer) => {
-                        const blob = new Blob([buffer]);
+                        const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+                        const blob = new Blob([arrayBuffer]);
                         const url = URL.createObjectURL(blob);
                         setThumbUrl(url);
                     })
@@ -59,7 +62,8 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean }> = ({ msg, isMe }) =
             if (msg.cache_path && window.electronAPI) {
                 window.electronAPI.fs.readFile(msg.cache_path)
                     .then((buffer) => {
-                        const blob = new Blob([buffer]);
+                        const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+                        const blob = new Blob([arrayBuffer]);
                         const url = URL.createObjectURL(blob);
                         setDownloadUrl(url);
                     })
@@ -219,7 +223,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean }> = ({ msg, isMe }) =
                 maxWidth: '70%',
                 alignItems: 'flex-start'
             }}>
-                <Avatar icon={<UserOutlined />} style={{ margin: isMe ? '0 0 0 8px' : '0 8px 0 0' }} />
+                <Avatar src={avatarUrl} icon={<UserOutlined />} style={{ margin: isMe ? '0 0 0 8px' : '0 8px 0 0' }} />
                 <div style={{
                     background: isMe ? '#1890ff' : '#fff',
                     color: isMe ? '#fff' : '#000',
@@ -237,7 +241,9 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean }> = ({ msg, isMe }) =
 
 const MessageList: React.FC<MessageListProps> = ({ messages }) => {
     const user = useAuthStore((state) => state.user);
+    const friends = useChatStore((state) => state.friends);
     const bottomRef = useRef<HTMLDivElement>(null);
+    const [avatarUrlByUserId, setAvatarUrlByUserId] = useState<Record<string, string>>({});
 
     useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -246,13 +252,61 @@ const MessageList: React.FC<MessageListProps> = ({ messages }) => {
         return () => window.clearTimeout(timer);
     }, [messages]);
 
+    useEffect(() => {
+        let active = true;
+        const loadAvatarUrls = async () => {
+            const entries: Array<[string, string]> = [];
+            if (user?.id) {
+                if (user.avatarThumbLocalPath) {
+                    const localUrl = await localFileService.getLocalFileUrl(user.avatarThumbLocalPath);
+                    if (localUrl) {
+                        entries.push([user.id, localUrl]);
+                    }
+                } else if (user.avatarURL) {
+                    entries.push([user.id, user.avatarURL]);
+                }
+            }
+            for (const friend of friends) {
+                if (!friend.id) continue;
+                if (friend.avatarThumbLocalPath) {
+                    const localUrl = await localFileService.getLocalFileUrl(friend.avatarThumbLocalPath);
+                    if (localUrl) {
+                        entries.push([friend.id, localUrl]);
+                        continue;
+                    }
+                }
+                if (friend.avatarURL) {
+                    entries.push([friend.id, friend.avatarURL]);
+                }
+            }
+            if (!active) return;
+            setAvatarUrlByUserId((prev) => {
+                const next = { ...prev };
+                for (const [id, url] of entries) {
+                    next[id] = url;
+                }
+                return next;
+            });
+        };
+        loadAvatarUrls();
+        return () => {
+            active = false;
+        };
+    }, [user?.id, user?.avatarThumbLocalPath, user?.avatarURL, friends]);
+
     return (
         <div style={{ flex: 1, overflowY: 'auto', padding: '20px', background: '#f5f5f5' }}>
             <List
                 dataSource={messages}
                 split={false}
                 rowKey={(msg) => msg.id || `${msg.room_id || ''}-${msg.timestamp || ''}-${msg.content}`}
-                renderItem={(msg) => <MessageItem msg={msg} isMe={msg.from_user_id === user?.id} />}
+                renderItem={(msg) => (
+                    <MessageItem
+                        msg={msg}
+                        isMe={msg.from_user_id === user?.id}
+                        avatarUrl={msg.from_user_id ? avatarUrlByUserId[msg.from_user_id] : undefined}
+                    />
+                )}
             />
             <div ref={bottomRef} />
         </div>

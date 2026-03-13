@@ -1,6 +1,10 @@
 import { atom } from 'jotai';
 import { db } from '../api/db';
-import { Room, Message } from '../types/models';
+import { Message } from '../types/models';
+
+type Room = {
+    id: string;
+};
 
 // source atoms
 export const roomListAtom = atom<Room[]>([]);
@@ -38,11 +42,13 @@ export const loadMessagedFromDBAtom = atom(
             .equals(roomID)
             .sortBy('createdAt');       // 按时间排序
 
+        const cache = get(messagesCacheAtom);
+
         // 更新内存缓存
-        set(messagesCacheAtom, (prevCache) => ({
-            ...prevCache,
+        set(messagesCacheAtom, {
+            ...cache,
             [roomID]: messages
-        }));
+        });
     }
 );
 
@@ -58,13 +64,14 @@ export const saveMessageAtom = atom(
         }
 
         const cache = get(messagesCacheAtom);
-        const roomMessages = cache[message.roomID] || [];
+        const roomId = message.room_id ?? (message as any).roomID;
+        if (!roomId) return;
+        const roomMessages = cache[roomId] || [];
 
-        // 检查消息是否已在缓存中
         if (!roomMessages.find(msg => msg.id === message.id)) {
             set(messagesCacheAtom, {
                 ...cache,
-                [message.roomID]: [...roomMessages, message],
+                [roomId]: [...roomMessages, message],
             });
         }
     }

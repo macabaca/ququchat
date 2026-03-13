@@ -11,6 +11,16 @@ export const localFileService = {
         const fileName = isThumb ? `${attachmentId}_thumb` : attachmentId;
         return await window.electronAPI.fs.pathJoin(userDir, fileName);
     },
+    buildUserAvatarCachePath: async (userId: string, isThumb: boolean = false): Promise<string> => {
+        if (!window.electronAPI) return '';
+        if (!userId) {
+            throw new Error('buildUserAvatarCachePath requires valid userId');
+        }
+        const userDataPath = await window.electronAPI.fs.getPath('appData');
+        const userDir = await window.electronAPI.fs.pathJoin(userDataPath, 'avatars', userId);
+        const fileName = isThumb ? 'avatar_thumb' : 'avatar';
+        return await window.electronAPI.fs.pathJoin(userDir, fileName);
+    },
 
     // Save uploaded file bytes directly to user private directory
     saveUploadedFileToUserDir: async (file: File, userCode: string, attachmentId?: string): Promise<string> => {
@@ -45,6 +55,42 @@ export const localFileService = {
         }
 
         return targetPath;
+    },
+    downloadAndSaveAvatarUrl: async (userId: string, url: string, isThumb: boolean = false): Promise<string> => {
+        if (!window.electronAPI) return '';
+        if (!userId) {
+            throw new Error('downloadAndSaveAvatarUrl requires valid userId');
+        }
+        if (!url) {
+            throw new Error('downloadAndSaveAvatarUrl requires valid url');
+        }
+
+        const userDataPath = await window.electronAPI.fs.getPath('appData');
+        const userDir = await window.electronAPI.fs.pathJoin(userDataPath, 'avatars', userId);
+        await window.electronAPI.fs.ensureDir(userDir);
+        const filePath = await localFileService.buildUserAvatarCachePath(userId, isThumb);
+
+        const exists = await window.electronAPI.fs.exists(filePath);
+        if (exists) {
+            return filePath;
+        }
+
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`Failed to download avatar: ${response.statusText}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        if (bytes.byteLength === 0) {
+            throw new Error('Downloaded empty avatar');
+        }
+        await window.electronAPI.fs.saveFile(filePath, bytes);
+
+        const persisted = await window.electronAPI.fs.exists(filePath);
+        if (!persisted) {
+            throw new Error(`Avatar was not persisted locally: ${filePath}`);
+        }
+        return filePath;
     },
 
     // Download and save file to local filesystem
@@ -155,7 +201,8 @@ export const localFileService = {
             if (!exists) return null;
 
             const buffer = await window.electronAPI.fs.readFile(filePath);
-            const blob = new Blob([buffer]);
+            const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+            const blob = new Blob([arrayBuffer]);
             return URL.createObjectURL(blob);
         } catch (error) {
             console.error('LocalFileService getLocalFileUrl error:', error);

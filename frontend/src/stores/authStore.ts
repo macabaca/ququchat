@@ -1,8 +1,9 @@
 import { create } from 'zustand';
-import { createJSONStorage, persist, StateStorage } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import { User } from "../types/models"
 import { LoginRequest, RegisterRequest, RegisterResponse } from '../types/api';
 import { authService } from '../api/AuthService';
+import { localFileService } from '../api/LocalFileService';
 
 // 定义 Store 的状态和操作
 interface AuthState {
@@ -20,12 +21,14 @@ interface AuthState {
     login: (credentials: LoginRequest) => Promise<void>;
     register: (credentials: RegisterRequest) => Promise<RegisterResponse>;
     logout: () => void;
+    cacheUserAvatar: () => Promise<void>;
+    updateAvatar: (file: File) => Promise<void>;
 }
 
 // 创建 store
 export const useAuthStore = create<AuthState>()(
     persist(
-        (set) => ({
+        (set, get) => ({
             accessToken: null,
             refreshToken: null,
             user: null,
@@ -52,6 +55,7 @@ export const useAuthStore = create<AuthState>()(
                         isLoading: false,
                         error: null,
                     });
+                    await get().cacheUserAvatar();
                 } catch (error: any) {
                     const errMessage = error.error || '登录失败, 请检查您的凭据';
                     set({
@@ -93,6 +97,38 @@ export const useAuthStore = create<AuthState>()(
                     error: null,
                 });
             },
+            cacheUserAvatar: async () => {
+                const currentUser = get().user;
+                if (!currentUser?.id || !window.electronAPI) return;
+                try {
+                    const [origRes, thumbRes] = await Promise.all([
+                        authService.getAvatarUrl(currentUser.id),
+                        authService.getAvatarThumbUrl(currentUser.id)
+                    ]);
+                    const [origPath, thumbPath] = await Promise.all([
+                        localFileService.downloadAndSaveAvatarUrl(currentUser.id, origRes.url, false),
+                        localFileService.downloadAndSaveAvatarUrl(currentUser.id, thumbRes.url, true)
+                    ]);
+                    set((state) => {
+                        if (!state.user || state.user.id !== currentUser.id) return {};
+                        return {
+                            user: {
+                                ...state.user,
+                                avatarLocalPath: origPath || state.user.avatarLocalPath || null,
+                                avatarThumbLocalPath: thumbPath || state.user.avatarThumbLocalPath || null
+                            }
+                        };
+                    });
+                } catch (error) {
+                    console.warn('cacheUserAvatar failed', error);
+                }
+            },
+            updateAvatar: async (file: File) => {
+                const currentUser = get().user;
+                if (!currentUser?.id) return;
+                await authService.uploadAvatar(file);
+                await get().cacheUserAvatar();
+            }
         }),
         {
             name: 'auth-storage', // name of the item in the storage (must be unique)

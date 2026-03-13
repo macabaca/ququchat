@@ -37,9 +37,8 @@ export const fileService = {
         const initRes = await apiClient.post<InitiateMultipartResponse>('/files/multipart/start', {
             file_name: file.name,
             mime_type: file.type
-        });
+        }) as unknown as InitiateMultipartResponse;
         
-        // Use 'id' from response as attachment_id per user instruction
         const { upload_id, storage_key, id, attachment_id } = initRes;
         const finalAttachmentId = id || attachment_id;
 
@@ -82,7 +81,7 @@ export const fileService = {
             file_name: file.name,
             mime_type: file.type
             // expected_sha256: optional
-        });
+        }) as unknown as UploadFileResponse;
 
         return completeRes;
     },

@@ -127,6 +127,11 @@ export interface UploadFileResponse {
     attachment: Attachment;
 }
 
+export interface UploadAvatarResponse {
+    avatar_attachment_id: string;
+    attachment: Attachment;
+}
+
 export interface GetFileUrlResponse {
     url: string;
 }

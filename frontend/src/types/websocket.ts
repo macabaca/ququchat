@@ -1,4 +1,3 @@
-import { Message } from "./models"
 
 // 客户端 -> 服务器
 export interface WsClientMsg_SendMessage {

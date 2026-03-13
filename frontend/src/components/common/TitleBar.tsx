@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   MinusOutlined, 
   BorderOutlined, 
@@ -12,19 +12,23 @@ import {
   CopyOutlined,
   SettingOutlined
 } from '@ant-design/icons';
-import { Button, Dropdown, MenuProps, Space, message } from 'antd';
+import { Button, Dropdown, MenuProps, Space, message, Modal, Upload, Avatar } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/authStore';
 import { useChatStore } from '../../stores/chatStore';
 import { authService } from '../../api/AuthService';
 import ModelConfigModal from '../ai/ModelConfigModal';
+import { localFileService } from '../../api/LocalFileService';
 
 const TitleBar: React.FC = () => {
   const [isMaximized, setIsMaximized] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
+  const [isAvatarModalOpen, setIsAvatarModalOpen] = useState(false);
+  const [isAvatarUploading, setIsAvatarUploading] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState<string>('');
   const navigate = useNavigate();
-  const { isAuthenticated, user, refreshToken, logout } = useAuthStore();
+  const { isAuthenticated, user, refreshToken, logout, updateAvatar } = useAuthStore();
   const disconnectWebSocket = useChatStore((state) => state.disconnectWebSocket);
 
   const handleMinimize = () => {
@@ -49,6 +53,7 @@ const TitleBar: React.FC = () => {
     { key: 'user_code', label: `用户码：${user?.user_code ?? '-'}`, disabled: true },
     { key: 'copy_user_code', label: '复制用户码', icon: <CopyOutlined /> },
     { key: 'model_config', label: '模型配置', icon: <SettingOutlined /> },
+    { key: 'update_avatar', label: '更新头像' },
     { key: 'logout', label: '退出登录', icon: <LogoutOutlined /> }
   ];
 
@@ -82,6 +87,29 @@ const TitleBar: React.FC = () => {
       navigate('/login', { replace: true });
     }
   };
+
+  useEffect(() => {
+    let active = true;
+    const loadAvatar = async () => {
+      if (!user) {
+        setAvatarUrl('');
+        return;
+      }
+      if (user.avatarThumbLocalPath) {
+        const localUrl = await localFileService.getLocalFileUrl(user.avatarThumbLocalPath);
+        if (!active) return;
+        if (localUrl) {
+          setAvatarUrl(localUrl);
+          return;
+        }
+      }
+      setAvatarUrl(user.avatarURL || '');
+    };
+    loadAvatar();
+    return () => {
+      active = false;
+    };
+  }, [user?.id, user?.avatarThumbLocalPath, user?.avatarURL]);
 
   return (
     <div className="title-bar">
@@ -121,6 +149,7 @@ const TitleBar: React.FC = () => {
               onClick: ({ key }) => {
                 if (key === 'copy_user_code') handleCopyUserCode();
                 if (key === 'model_config') setIsModelModalOpen(true);
+                if (key === 'update_avatar') setIsAvatarModalOpen(true);
                 if (key === 'logout') handleLogout();
               }
             }}
@@ -129,7 +158,7 @@ const TitleBar: React.FC = () => {
           >
             <div className="title-bar-button" title={user?.user_code ? `${user?.username} (${user.user_code})` : (user?.username || 'User')} style={{ width: 'auto', padding: '0 10px' }}>
               <Space size={6}>
-                <UserOutlined style={{ fontSize: '12px' }} />
+                <Avatar src={avatarUrl || undefined} size={20} icon={<UserOutlined />} />
                 <span style={{ fontSize: '12px' }}>
                   {user?.username || 'User'}
                   {typeof user?.user_code === 'number' ? ` (${user.user_code})` : ''}
@@ -138,6 +167,40 @@ const TitleBar: React.FC = () => {
             </div>
           </Dropdown>
         )}
+      <Modal
+        open={isAvatarModalOpen}
+        title="更新头像"
+        onCancel={() => {
+          if (isAvatarUploading) return;
+          setIsAvatarModalOpen(false);
+        }}
+        footer={null}
+        destroyOnClose
+      >
+        <Upload
+          accept="image/*"
+          showUploadList={false}
+          beforeUpload={async (file) => {
+            if (isAvatarUploading) return false;
+            setIsAvatarUploading(true);
+            try {
+              await updateAvatar(file as File);
+              message.success('头像已更新');
+              setIsAvatarModalOpen(false);
+            } catch (e: any) {
+              const msg = e?.error || e?.message || '头像更新失败';
+              message.error(msg);
+            } finally {
+              setIsAvatarUploading(false);
+            }
+            return false;
+          }}
+        >
+          <Button loading={isAvatarUploading} type="primary" block>
+            选择图片上传
+          </Button>
+        </Upload>
+      </Modal>
         <div className="title-bar-button minimize" onClick={handleMinimize} title="Minimize">
           <MinusOutlined style={{ fontSize: '12px' }} />
         </div>

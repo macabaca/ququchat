@@ -1,14 +1,29 @@
 import Dexie, { Table } from 'dexie';
-import { Message, Room, User, FriendShip, RoomMember } from '../types/models'
+import { Message, User } from '../types/models'
+
+type RoomRecord = {
+    id: string;
+    roomType: string;
+};
+
+type FriendShipRecord = {
+    id: string;
+    userIDA: string;
+    useriDB: string;
+};
+
+type RoomMemberRecord = {
+    roomID: string;
+    userID: string;
+};
 
 // 定义本地数据库
 export class LocalDatabase extends Dexie {
     public messages!: Table<Message, string>;
-    public rooms!: Table<Room, string>;
+    public rooms!: Table<RoomRecord, string>;
     public users!: Table<User, number>;
-    public friendships!: Table<FriendShip, string>;
-    // roomMembers 使用复合主键
-    public roomMembers!: Table<RoomMember, [string, string]>;
+    public friendships!: Table<FriendShipRecord, string>;
+    public roomMembers!: Table<RoomMemberRecord, [string, string]>;
 
     constructor() {
         super('ChatDatabase');

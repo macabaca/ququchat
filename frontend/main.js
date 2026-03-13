@@ -4,7 +4,7 @@ const fs = require('fs').promises;
 const db = require('./database'); // 引入数据库模块
 
 // 判断是否为开发环境
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = !app.isPackaged;
 
 function createWindow() {
   const preloadPath = path.join(app.getAppPath(), 'electron', 'preload.js');

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Modal, Form, Input, Select, InputNumber } from 'antd';
+import { Modal, Form, Input, InputNumber } from 'antd';
 import { useAIChatStore } from '../../stores/aiChatStore';
 
 interface ModelConfigModalProps {
@@ -27,7 +27,7 @@ const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ open, onClose }) =>
         setConfig({
             baseUrl: values.baseUrl,
             model: values.model,
-            apiKey: values.apiKey || null,
+            apiKey: values.apiKey || '',
             temperature: values.temperature
         });
         onClose();

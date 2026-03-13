@@ -6,7 +6,9 @@ import { groupService } from '../api/GroupService';
 import { WebSocketService } from '../api/WebSocketService';
 import { useAuthStore } from './authStore';
 import { messageService } from '../api/MessageService';
-import { messageDao, roomStateDao, MessageRow } from '../api/db_sqlite';
+import { messageDao, roomStateDao } from '../api/db_sqlite';
+import { authService } from '../api/AuthService';
+import { localFileService } from '../api/LocalFileService';
 
 interface ChatState {
     friends: Friend[];
@@ -19,6 +21,7 @@ interface ChatState {
     messages: Record<string, Message[]>; // conversationId -> messages
     
     isConnected: boolean;
+    isReconnecting: boolean;
     isLoading: boolean;
     error: string | null;
 
@@ -69,6 +72,7 @@ export const useChatStore = create<ChatState>()(
             messages: {},
             
             isConnected: false,
+            isReconnecting: false,
             isLoading: false,
             error: null,
             
@@ -107,7 +111,8 @@ export const useChatStore = create<ChatState>()(
 
                 const ws = new WebSocketService(token);
                 ws.addMessageHandler(get().handleIncomingMessage);
-                ws.addStatusHandler((isConnected) => set({ isConnected }));
+                ws.addStatusHandler((isConnected) => set((state) => ({ isConnected, isReconnecting: isConnected ? false : state.isReconnecting })));
+                ws.addReconnectHandler((isReconnecting) => set({ isReconnecting }));
                 ws.connect();
                 set({ wsService: ws });
             },
@@ -116,14 +121,39 @@ export const useChatStore = create<ChatState>()(
                 const ws = get().wsService;
                 if (ws) {
                     ws.disconnect();
-                    set({ wsService: null, isConnected: false });
+                    set({ wsService: null, isConnected: false, isReconnecting: false });
                 }
             },
 
             fetchFriends: async () => {
                 try {
                     const response = await friendService.listFriends();
-                    set({ friends: response.friends });
+                    let nextFriends = response.friends;
+                    if (window.electronAPI) {
+                        nextFriends = await Promise.all(
+                            response.friends.map(async (friend) => {
+                                if (!friend.id) return friend;
+                                try {
+                                    const [thumbRes, origRes] = await Promise.all([
+                                        authService.getAvatarThumbUrl(friend.id),
+                                        authService.getAvatarUrl(friend.id)
+                                    ]);
+                                    const [thumbPath, origPath] = await Promise.all([
+                                        localFileService.downloadAndSaveAvatarUrl(friend.id, thumbRes.url, true),
+                                        localFileService.downloadAndSaveAvatarUrl(friend.id, origRes.url, false)
+                                    ]);
+                                    return {
+                                        ...friend,
+                                        avatarThumbLocalPath: thumbPath || friend.avatarThumbLocalPath || null,
+                                        avatarLocalPath: origPath || friend.avatarLocalPath || null
+                                    };
+                                } catch {
+                                    return friend;
+                                }
+                            })
+                        );
+                    }
+                    set({ friends: nextFriends });
                 } catch (error: any) {
                     const msg = error?.error || error?.message || '获取好友列表失败';
                     set({ error: msg });
@@ -350,10 +380,7 @@ export const useChatStore = create<ChatState>()(
                     }
                 });
 
-                // Persist optimistic message immediately to SQLite, including local cache_path
-                messageService.saveMessage(newMessage).catch((e) => {
-                    console.error('Failed to persist outgoing message', e);
-                });
+                // Do not persist optimistic temp messages to SQLite
             },
 
             handleIncomingMessage: async (message: Message) => {
@@ -399,6 +426,13 @@ export const useChatStore = create<ChatState>()(
                         }
                         if (!message.thumb_attachment_id && matchedTemp?.thumb_attachment_id) {
                             message.thumb_attachment_id = matchedTemp.thumb_attachment_id;
+                        }
+                        if (matchedTemp?.id && typeof matchedTemp.id === 'string' && matchedTemp.id.startsWith('temp-')) {
+                            try {
+                                await messageDao.deleteById(matchedTemp.id);
+                            } catch (e) {
+                                console.warn('Failed to delete temp message from sqlite', e);
+                            }
                         }
                     }
                 }

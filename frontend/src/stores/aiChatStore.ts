@@ -5,7 +5,7 @@ import { llmService, LLMMessage, LLMMessageRole } from '../api/LLMService';
 import { useAuthStore } from './authStore';
 
 interface AIConfig {
-    apiKey: string | null;
+    apiKey: string;
     baseUrl: string;
     model: string;
     temperature: number;
@@ -35,7 +35,7 @@ interface AIChatState {
 }
 
 const defaultConfig: AIConfig = {
-    apiKey: null,
+    apiKey: '',
     baseUrl: 'https://api.openai.com',
     model: 'gpt-4o-mini',
     temperature: 0.7
@@ -69,7 +69,8 @@ const getPersistedConfig = (userId: string): AIConfig => {
         const parsed = JSON.parse(raw);
         const cfg = parsed?.state?.config;
         if (!cfg) return defaultConfig;
-        return { ...defaultConfig, ...cfg };
+        const apiKey = typeof cfg?.apiKey === 'string' ? cfg.apiKey : '';
+        return { ...defaultConfig, ...cfg, apiKey };
     } catch {
         return defaultConfig;
     }
@@ -300,12 +301,9 @@ export const useAIChatStore = create<AIChatState>()(
     )
 );
 
-let lastUserId = getUserId();
-useAuthStore.subscribe(
-    (state) => state.user?.id || 'guest',
-    async (userId) => {
-        if (userId === lastUserId) return;
-        lastUserId = userId;
-        await useAIChatStore.getState().resetAndReload();
-    }
-);
+useAuthStore.subscribe(async (state, prev) => {
+    const userId = state.user?.id || 'guest';
+    const prevUserId = prev.user?.id || 'guest';
+    if (userId === prevUserId) return;
+    await useAIChatStore.getState().resetAndReload();
+});

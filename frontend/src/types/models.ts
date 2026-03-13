@@ -9,6 +9,8 @@ export interface User {
     displayName?: string | null;
     nickname?: string | null; // Added based on friend docs response
     avatarURL?: string | null;
+    avatarLocalPath?: string | null;
+    avatarThumbLocalPath?: string | null;
     bio?: string | null;
     status?: string; // 'active'
     createdAt: string; // Date strings from JSON

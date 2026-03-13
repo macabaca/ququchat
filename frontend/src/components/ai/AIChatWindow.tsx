@@ -6,6 +6,82 @@ const { Header, Content } = Layout;
 const { Title, Text } = Typography;
 const { TextArea } = Input;
 
+const MessageContent: React.FC<{ content: string; role: string; model?: string }> = ({ content, role, model }) => {
+    const { thought, cleanContent } = React.useMemo(() => {
+        if (role !== 'assistant') return { thought: null, cleanContent: content };
+
+        const startTag = '<think>';
+        const endTag = '</think>';
+        const startIndex = content.indexOf(startTag);
+
+        // Special handling for DeepSeek-R1-Distill-Qwen-7B which might miss the opening <think> tag
+        if (startIndex === -1) {
+            // Check if we have a closing tag without an opening tag
+            const endIndex = content.indexOf(endTag);
+            if (endIndex !== -1 && model === 'deepseek-ai/DeepSeek-R1-Distill-Qwen-7B') {
+                 const thought = content.substring(0, endIndex);
+                 const after = content.substring(endIndex + endTag.length).trim();
+                 return { thought, cleanContent: after };
+            }
+            
+            return { thought: null, cleanContent: content };
+        }
+
+        const endIndex = content.indexOf(endTag, startIndex);
+
+        if (endIndex === -1) {
+            // Streaming: thinking in progress
+            const thought = content.substring(startIndex + startTag.length);
+            const before = content.substring(0, startIndex).trim();
+            return { thought, cleanContent: before };
+        }
+
+        // Thinking complete
+        const thought = content.substring(startIndex + startTag.length, endIndex);
+        const after = content.substring(endIndex + endTag.length).trim();
+        const before = content.substring(0, startIndex).trim();
+        // Combine text before and after (in case there's text before <think>)
+        return { thought, cleanContent: [before, after].filter(Boolean).join('\n') };
+    }, [content, role]);
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {thought && (
+                <details 
+                    style={{ 
+                        fontSize: '0.9em',
+                        color: '#666',
+                        border: '1px solid #eee',
+                        borderRadius: 8,
+                        background: '#fafafa',
+                        overflow: 'hidden'
+                    }}
+                >
+                    <summary style={{ 
+                        cursor: 'pointer', 
+                        padding: '6px 12px',
+                        userSelect: 'none',
+                        background: '#f5f5f5',
+                        fontWeight: 500
+                    }}>
+                        深度思考过程
+                    </summary>
+                    <div style={{ 
+                        padding: '8px 12px', 
+                        whiteSpace: 'pre-wrap',
+                        borderTop: '1px solid #eee',
+                        maxHeight: '300px',
+                        overflowY: 'auto'
+                    }}>
+                        {thought}
+                    </div>
+                </details>
+            )}
+            <div style={{ whiteSpace: 'pre-wrap' }}>{cleanContent || (thought ? '' : content)}</div>
+        </div>
+    );
+};
+
 const AIChatWindow: React.FC = () => {
     const {
         activeConversationId,
@@ -17,6 +93,7 @@ const AIChatWindow: React.FC = () => {
         setActiveConversation,
         deleteConversation
     } = useAIChatStore();
+    const config = useAIChatStore((state) => state.config);
     const [input, setInput] = useState('');
     const [isSending, setIsSending] = useState(false);
     const listRef = useRef<HTMLDivElement | null>(null);
@@ -124,10 +201,10 @@ const AIChatWindow: React.FC = () => {
                                     padding: '10px 12px',
                                     borderRadius: 8,
                                     background: msg.role === 'user' ? '#e6f7ff' : '#f5f5f5',
-                                    whiteSpace: 'pre-wrap'
+                                    // whiteSpace: 'pre-wrap' // Moved to MessageContent
                                 }}
                             >
-                                {msg.content || ''}
+                                <MessageContent content={msg.content || ''} role={msg.role} model={activeConversation ? config.model : undefined} />
                             </div>
                         </div>
                     ))}

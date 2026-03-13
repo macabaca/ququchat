@@ -1,4 +1,4 @@
-import axios, {InternalAxiosRequestConfig, AxiosResponse, AxiosError} from 'axios'
+import axios, { InternalAxiosRequestConfig, AxiosError } from 'axios'
 import { BASE_URL, WHITE_LIST } from "../configs/config"
 import { useAuthStore } from '../stores/authStore';
 import { RefreshResponse, ApiError } from '../types/api';
@@ -9,7 +9,7 @@ const apiClient = axios.create({
     baseURL: BASE_URL
 });
 
-// 检查URI是否在白名单中，如何在白名单中，不用检查 JWT
+// 检查URI是否在白名单中，如果在白名单中，不用检查 JWT
 function isInWhiteList(uri: string): boolean {
     return WHITE_LIST.includes(uri);
 }
