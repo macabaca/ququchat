@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -199,8 +200,10 @@ func (h *WsHandler) Handle(c *gin.Context) {
 	}
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
+		log.Printf("ws upgrade failed user=%s ip=%s err=%v", userID, c.ClientIP(), err)
 		return
 	}
+	log.Printf("ws connected user=%s ip=%s", userID, c.ClientIP())
 	client := &Client{
 		hub:    h.hub,
 		conn:   conn,
@@ -226,6 +229,11 @@ func (c *Client) readLoop(h *WsHandler) {
 	for {
 		_, data, err := c.conn.ReadMessage()
 		if err != nil {
+			if ce, ok := err.(*websocket.CloseError); ok {
+				log.Printf("ws read close user=%s code=%d text=%s", c.userID, ce.Code, ce.Text)
+			} else {
+				log.Printf("ws read error user=%s err=%v", c.userID, err)
+			}
 			break
 		}
 		var msg IncomingMessage
@@ -414,14 +422,25 @@ func (c *Client) writeLoop() {
 			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			if !ok {
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				log.Printf("ws write closed user=%s", c.userID)
 				return
 			}
 			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				if ce, ok := err.(*websocket.CloseError); ok {
+					log.Printf("ws write close user=%s code=%d text=%s", c.userID, ce.Code, ce.Text)
+				} else {
+					log.Printf("ws write error user=%s err=%v", c.userID, err)
+				}
 				return
 			}
 		case <-ticker.C:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				if ce, ok := err.(*websocket.CloseError); ok {
+					log.Printf("ws ping close user=%s code=%d text=%s", c.userID, ce.Code, ce.Text)
+				} else {
+					log.Printf("ws ping error user=%s err=%v", c.userID, err)
+				}
 				return
 			}
 		}

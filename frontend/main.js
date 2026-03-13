@@ -33,9 +33,20 @@ function createWindow() {
   // 移除默认菜单
   win.setMenu(null);
 
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error('[Electron Main] did-fail-load', { errorCode, errorDescription, validatedURL });
+  });
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[Electron Main] render-process-gone', details);
+  });
+
+  if (process.env.ELECTRON_ENABLE_LOGGING === '1') {
+    win.webContents.openDevTools({ mode: 'detach' });
+  }
+
   if (isDev) {
     win.loadURL('http://localhost:5173');
-    // win.webContents.openDevTools(); 
   } else {
     win.loadFile(path.join(__dirname, 'dist/index.html'));
   }

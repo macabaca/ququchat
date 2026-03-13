@@ -107,7 +107,12 @@ export const useChatStore = create<ChatState>()(
             connectWebSocket: () => {
                 const token = useAuthStore.getState().accessToken;
                 if (!token) return;
-                if (get().wsService) return;
+                const existing = get().wsService;
+                if (existing) {
+                    existing.updateToken(token);
+                    existing.connect();
+                    return;
+                }
 
                 const ws = new WebSocketService(token);
                 ws.addMessageHandler(get().handleIncomingMessage);
@@ -637,3 +642,13 @@ export const useChatStore = create<ChatState>()(
         }
     )
 );
+
+useAuthStore.subscribe((state, prevState) => {
+    if (state.accessToken === prevState.accessToken) return;
+    const chat = useChatStore.getState();
+    if (state.accessToken) {
+        chat.connectWebSocket();
+    } else {
+        chat.disconnectWebSocket();
+    }
+});

@@ -22,6 +22,13 @@ export class WebSocketService {
     private readonly MAX_RECONNECT_DELAY = 30000;
     private shouldReconnect = true;
 
+    private buildUrl(token: string) {
+        const base = new URL(BASE_URL);
+        const wsProtocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsBase = `${wsProtocol}//${base.host}`;
+        return `${wsBase}/ws?token=${encodeURIComponent(token)}`;
+    }
+
     constructor(token: string) {
         // Convert HTTP Base URL to WS URL
         // e.g., https://api.com/api/v1 -> wss://api.com/ws
@@ -32,10 +39,7 @@ export class WebSocketService {
         // Let's assume for now we replace protocol and append /ws based on typical setups
         // Or we can parse BASE_URL. 
         // Let's try to derive it intelligently.
-        const base = new URL(BASE_URL);
-        const wsProtocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsBase = `${wsProtocol}//${base.host}`;
-        this.url = `${wsBase}/ws?token=${encodeURIComponent(token)}`;
+        this.url = this.buildUrl(token);
     }
 
     public connect() {
@@ -68,8 +72,8 @@ export class WebSocketService {
             }
         };
 
-        this.ws.onclose = () => {
-            console.log('WebSocket Closed');
+        this.ws.onclose = (event) => {
+            console.log('WebSocket Closed', event.code, event.reason, event.wasClean);
             this.notifyStatus(false);
             this.stopHeartbeat();
             this.scheduleReconnect();
@@ -96,12 +100,26 @@ export class WebSocketService {
         }
     }
 
+    public updateToken(token: string) {
+        const nextUrl = this.buildUrl(token);
+        if (this.url === nextUrl) return;
+        this.url = nextUrl;
+        if (this.ws) {
+            if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+                this.ws.close();
+            } else if (this.ws.readyState === WebSocket.CLOSED) {
+                this.connect();
+            }
+        } else if (this.shouldReconnect) {
+            this.connect();
+        }
+    }
+
     public sendMessage(message: any) {
         if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(message));
         } else {
             console.warn('WebSocket not connected, cannot send message');
-            // Queueing could be implemented here
         }
     }
 
