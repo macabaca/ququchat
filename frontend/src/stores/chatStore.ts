@@ -96,6 +96,7 @@ export const useChatStore = create<ChatState>()(
                     ];
                     await Promise.allSettled(syncPromises);
 
+                    console.log('[WS][entry:init] connectWebSocket');
                     get().connectWebSocket();
                 } catch (error: any) {
                     set({ error: error?.error || error?.message || '初始化聊天数据失败' });
@@ -106,14 +107,19 @@ export const useChatStore = create<ChatState>()(
 
             connectWebSocket: () => {
                 const token = useAuthStore.getState().accessToken;
-                if (!token) return;
+                if (!token) {
+                    console.log('[WS][connect] no token');
+                    return;
+                }
                 const existing = get().wsService;
                 if (existing) {
+                    console.log('[WS][connect] reuse existing wsService');
                     existing.updateToken(token);
                     existing.connect();
                     return;
                 }
 
+                console.log('[WS][connect] create new wsService');
                 const ws = new WebSocketService(token);
                 ws.addMessageHandler(get().handleIncomingMessage);
                 ws.addStatusHandler((isConnected) => set((state) => ({ isConnected, isReconnecting: isConnected ? false : state.isReconnecting })));
@@ -647,8 +653,14 @@ useAuthStore.subscribe((state, prevState) => {
     if (state.accessToken === prevState.accessToken) return;
     const chat = useChatStore.getState();
     if (state.accessToken) {
-        chat.connectWebSocket();
+        if (chat.wsService) {
+            console.log('[WS][entry:auth] accessToken changed -> connectWebSocket');
+            chat.connectWebSocket();
+        } else {
+            console.log('[WS][entry:auth] accessToken changed -> skip (wsService not ready)');
+        }
     } else {
+        console.log('[WS][entry:auth] accessToken cleared -> disconnectWebSocket');
         chat.disconnectWebSocket();
     }
 });

@@ -28,10 +28,11 @@ const TransitionWrapper = ({ children, ...props }: any) => {
 
 const PageTransition: React.FC<PageTransitionProps> = ({ children }) => {
   const location = useLocation();
+  // console.log('[PageTransition]', JSON.stringify({ pathname: location.pathname, key: location.key }));
 
   return (
     <TransitionGroup component={null}>
-      <TransitionWrapper key={location.key}>
+      <TransitionWrapper key={location.pathname}>
         {/* 
           Clone the children (Routes) and pass the CURRENT location 
           so that when this component is exiting, it still renders 

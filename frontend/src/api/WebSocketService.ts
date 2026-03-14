@@ -44,7 +44,7 @@ export class WebSocketService {
 
     public connect() {
         this.shouldReconnect = true;
-        if (this.ws?.readyState === WebSocket.OPEN) return;
+        if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) return;
 
         console.log('Connecting to WebSocket:', this.url);
         this.ws = new WebSocket(this.url);
@@ -206,6 +206,7 @@ export class WebSocketService {
         this.reconnectTimeout = setTimeout(() => {
             this.reconnectAttempts++;
             this.reconnectTimeout = null;
+            console.log('[WS][entry:reconnect] scheduleReconnect -> connect');
             this.connect();
         }, delay);
     }

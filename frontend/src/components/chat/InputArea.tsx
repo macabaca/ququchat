@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Input, Button, Upload, message, Progress, Space } from 'antd';
-import { SendOutlined, PaperClipOutlined, PictureOutlined } from '@ant-design/icons';
+import { SendOutlined, PaperClipOutlined, PictureOutlined, CloseCircleOutlined, FileOutlined } from '@ant-design/icons';
 import { fileService } from '../../api/FileService';
 import { localFileService } from '../../api/LocalFileService';
 import { useAuthStore } from '../../stores/authStore';
@@ -24,6 +24,7 @@ const { TextArea } = Input;
 
 const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
     const [value, setValue] = useState('');
+    const [pendingFile, setPendingFile] = useState<{ file: File; type: 'image' | 'file' } | null>(null);
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -33,6 +34,10 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
     const aiConfig = useAIChatStore((state) => state.config);
 
     const handleSend = () => {
+        if (pendingFile) {
+            processUpload();
+            return;
+        }
         if (!value.trim()) return;
         onSend(value, 'text');
         setValue('');
@@ -123,7 +128,45 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
         }
     };
 
-    const handleUpload = async (file: File, type: 'image' | 'file') => {
+    const handleFileSelect = (file: File, type: 'image' | 'file') => {
+        setPendingFile({ file, type });
+        setValue('');
+        return false;
+    };
+
+    const handleCancelFile = () => {
+        setPendingFile(null);
+        setValue('');
+    };
+
+    const handlePaste = (e: React.ClipboardEvent) => {
+        if (e.clipboardData.items) {
+            for (let i = 0; i < e.clipboardData.items.length; i++) {
+                const item = e.clipboardData.items[i];
+                if (item.kind === 'file') {
+                    const file = item.getAsFile();
+                    if (file) {
+                        e.preventDefault();
+                        const isImage = file.type.startsWith('image/');
+                        // 给粘贴的图片生成一个带时间戳的文件名，避免重名
+                        let fileToUpload = file;
+                        if (isImage && file.name === 'image.png') {
+                            const ext = file.type.split('/')[1] || 'png';
+                            const timestamp = new Date().getTime();
+                            fileToUpload = new File([file], `pasted_image_${timestamp}.${ext}`, { type: file.type });
+                        }
+                        
+                        handleFileSelect(fileToUpload, isImage ? 'image' : 'file');
+                        return;
+                    }
+                }
+            }
+        }
+    };
+
+    const processUpload = async () => {
+        if (!pendingFile) return;
+        const { file, type } = pendingFile;
         setUploading(true);
         setUploadProgress(0);
         try {
@@ -152,6 +195,8 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
             // Pass attachment_id / thumb_attachment_id / cache_path for local-first rendering and SQLite persistence
             onSend(contentForSend, type, attachmentId, response.attachment?.thumb_attachment_id, cachePath);
             message.success('Upload successful');
+            setPendingFile(null);
+            setValue('');
         } catch (error) {
             message.error('Upload failed');
             console.error(error);
@@ -159,7 +204,6 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
             setUploading(false);
             setUploadProgress(0);
         }
-        return false; // Prevent auto upload by antd
     };
 
     return (
@@ -167,7 +211,7 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
             <div style={{ marginBottom: '8px', display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <Upload
                     showUploadList={false}
-                    beforeUpload={(file) => handleUpload(file, 'image')}
+                    beforeUpload={(file) => handleFileSelect(file, 'image')}
                     accept="image/*"
                     disabled={uploading}
                 >
@@ -175,7 +219,7 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
                 </Upload>
                 <Upload
                     showUploadList={false}
-                    beforeUpload={(file) => handleUpload(file, 'file')}
+                    beforeUpload={(file) => handleFileSelect(file, 'file')}
                     disabled={uploading}
                 >
                     <Button type="text" icon={<PaperClipOutlined />} loading={uploading} />
@@ -197,20 +241,84 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
                     </Space>
                 </div>
             )}
-            <TextArea
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Type a message..."
-                autoSize={{ minRows: 2, maxRows: 6 }}
-                style={{ border: 'none', resize: 'none', boxShadow: 'none' }}
-            />
+            {pendingFile ? (
+                <div style={{
+                    border: '1px solid #d9d9d9',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    margin: '8px 0',
+                    background: '#fafafa',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', overflow: 'hidden' }}>
+                        {pendingFile.type === 'image' ? (
+                            <div style={{
+                                width: '48px',
+                                height: '48px',
+                                borderRadius: '4px',
+                                overflow: 'hidden',
+                                border: '1px solid #f0f0f0',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                background: '#fff'
+                            }}>
+                                <img
+                                    src={URL.createObjectURL(pendingFile.file)}
+                                    alt="preview"
+                                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                    onLoad={(e) => URL.revokeObjectURL(e.currentTarget.src)}
+                                />
+                            </div>
+                        ) : (
+                            <div style={{
+                                width: '48px',
+                                height: '48px',
+                                borderRadius: '4px',
+                                background: '#f5f5f5',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '24px',
+                                color: '#999'
+                            }}>
+                                <FileOutlined />
+                            </div>
+                        )}
+                        <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                            <span style={{ fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>
+                                {pendingFile.file.name}
+                            </span>
+                            <span style={{ fontSize: '12px', color: '#999' }}>
+                                {(pendingFile.file.size / 1024).toFixed(1)} KB
+                            </span>
+                        </div>
+                    </div>
+                    <Button
+                        type="text"
+                        icon={<CloseCircleOutlined style={{ fontSize: '16px', color: '#999' }} />}
+                        onClick={handleCancelFile}
+                    />
+                </div>
+            ) : (
+                <TextArea
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    placeholder="Type a message..."
+                    autoSize={{ minRows: 2, maxRows: 6 }}
+                    style={{ border: 'none', resize: 'none', boxShadow: 'none' }}
+                />
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
                 <Space>
                     <Button onClick={handleSuggest} loading={isSuggesting} danger={!!aiError}>
                         {aiError ? 'AI 回复失败' : 'AI 回复'}
                     </Button>
-                    <Button type="primary" onClick={handleSend} icon={<SendOutlined />}>
+                    <Button type="primary" onClick={handleSend} icon={<SendOutlined />} loading={uploading}>
                         Send
                     </Button>
                 </Space>

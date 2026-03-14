@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import TitleBar from '../common/TitleBar';
 import { Layout } from 'antd';
 import Sidebar from './Sidebar';
@@ -12,17 +12,25 @@ const ChatLayout: React.FC = () => {
     const { init, disconnectWebSocket } = useChatStore();
     const user = useAuthStore((state) => state.user);
     const cacheUserAvatar = useAuthStore((state) => state.cacheUserAvatar);
+    const initUserIdRef = useRef<string | null>(null);
     const resetAndReloadAI = useAIChatStore((state) => state.resetAndReload);
     const isAIViewActive = useAIChatStore((state) => state.isAIViewActive);
 
     useEffect(() => {
-        if (user?.id) {
+        console.log('[ChatLayout] effect start', { userId: user?.id });
+        if (user?.id && initUserIdRef.current !== user.id) {
+            initUserIdRef.current = user.id;
             init();
             resetAndReloadAI();
             cacheUserAvatar();
         }
         return () => {
-            disconnectWebSocket();
+            console.log('[ChatLayout] effect cleanup', { userId: user?.id });
+            const currentUserId = useAuthStore.getState().user?.id;
+            if (!currentUserId) {
+                disconnectWebSocket();
+                initUserIdRef.current = null;
+            }
         };
     }, [user?.id, init, resetAndReloadAI, disconnectWebSocket, cacheUserAvatar]);
 
