@@ -449,6 +449,10 @@ func (h *UserHandler) RemoveFriend(c *gin.Context) {
 		return
 	}
 
+	if h.hub != nil {
+		h.hub.SendSystemEventToUsers([]string{currentUserID, target.ID}, "friend_list_updated")
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "已删除好友"})
 }
 
