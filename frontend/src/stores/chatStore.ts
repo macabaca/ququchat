@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { Friend, Group, Message, FriendRequest, Conversation, GroupMember } from '../types/models';
+import { WsServerEvent } from '../types/websocket';
 import { friendService } from '../api/FriendService';
 import { groupService } from '../api/GroupService';
 import { WebSocketService } from '../api/WebSocketService';
@@ -124,6 +125,17 @@ export const useChatStore = create<ChatState>()(
                 ws.addMessageHandler(get().handleIncomingMessage);
                 ws.addStatusHandler((isConnected) => set((state) => ({ isConnected, isReconnecting: isConnected ? false : state.isReconnecting })));
                 ws.addReconnectHandler((isReconnecting) => set({ isReconnecting }));
+                ws.addSystemEventHandler((event: WsServerEvent) => {
+                    if (event.event === 'friend_list_changed' || event.event === 'friend_list_updated' || event.event === 'friend_request_accepted') {
+                        void get().fetchFriends();
+                    }
+                    if (event.event === 'friend_request_changed' || event.event === 'friend_request_created' || event.event === 'friend_request_accepted') {
+                        void get().fetchFriendRequests();
+                    }
+                    if (event.event === 'group_list_changed' || event.event === 'group_list_updated' || event.event === 'group_member_added' || event.event === 'group_member_removed') {
+                        void get().fetchGroups();
+                    }
+                });
                 ws.connect();
                 set({ wsService: ws });
             },

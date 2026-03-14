@@ -12,11 +12,12 @@ import (
 )
 
 type GroupHandler struct {
-	db *gorm.DB
+	db  *gorm.DB
+	hub *Hub
 }
 
-func NewGroupHandler(db *gorm.DB) *GroupHandler {
-	return &GroupHandler{db: db}
+func NewGroupHandler(db *gorm.DB, hub *Hub) *GroupHandler {
+	return &GroupHandler{db: db, hub: hub}
 }
 
 type CreateGroupRequest struct {
@@ -234,13 +235,20 @@ func (h *GroupHandler) DismissGroup(c *gin.Context) {
 
 	now := time.Now()
 	// Soft delete the room
+	memberIDs, err := h.activeMemberIDs(room.ID)
+	if err != nil {
+		memberIDs = nil
+	}
+
 	if err := h.db.Model(&room).Update("deleted_at", now).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "解散群失败"})
 		return
 	}
-	// Optionally mark all members as left
 	if err := h.db.Model(&models.RoomMember{}).Where("room_id = ?", room.ID).Update("left_at", now).Error; err != nil {
-		// Log error but don't fail the request since room is already deleted
+	}
+
+	if h.hub != nil && len(memberIDs) > 0 {
+		h.hub.SendSystemEventToUsers(memberIDs, "group_list_updated")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "群已解散"})
@@ -294,6 +302,7 @@ func (h *GroupHandler) AddMembers(c *gin.Context) {
 
 	now := time.Now()
 	var addedCount int
+	addedUserIDs := make([]string, 0, len(req.UserIDs))
 	for _, uid := range req.UserIDs {
 		// Check if already member
 		var existing models.RoomMember
@@ -308,6 +317,7 @@ func (h *GroupHandler) AddMembers(c *gin.Context) {
 					"invite_by": currentUserID,
 				})
 				addedCount++
+				addedUserIDs = append(addedUserIDs, uid)
 			}
 			continue
 		} else if err != gorm.ErrRecordNotFound {
@@ -324,6 +334,18 @@ func (h *GroupHandler) AddMembers(c *gin.Context) {
 		}
 		if err := h.db.Create(&newMember).Error; err == nil {
 			addedCount++
+			addedUserIDs = append(addedUserIDs, uid)
+		}
+	}
+
+	if h.hub != nil && len(addedUserIDs) > 0 {
+		memberIDs, err := h.activeMemberIDs(groupID)
+		notifyIDs := memberIDs
+		if err != nil || len(notifyIDs) == 0 {
+			notifyIDs = addedUserIDs
+		}
+		if len(notifyIDs) > 0 {
+			h.hub.SendSystemEventToUsers(notifyIDs, "group_member_added")
 		}
 	}
 
@@ -385,6 +407,29 @@ func (h *GroupHandler) RemoveMember(c *gin.Context) {
 		return
 	}
 
+	if h.hub != nil {
+		memberIDs, err := h.activeMemberIDs(groupID)
+		if err != nil {
+			memberIDs = nil
+		}
+		notifyIDs := memberIDs
+		if req.UserID != "" {
+			found := false
+			for _, uid := range notifyIDs {
+				if uid == req.UserID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				notifyIDs = append(notifyIDs, req.UserID)
+			}
+		}
+		if len(notifyIDs) > 0 {
+			h.hub.SendSystemEventToUsers(notifyIDs, "group_member_removed")
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "成员已移除"})
 }
 
@@ -421,7 +466,40 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 		return
 	}
 
+	if h.hub != nil {
+		memberIDs, err := h.activeMemberIDs(groupID)
+		if err != nil {
+			memberIDs = nil
+		}
+		notifyIDs := memberIDs
+		found := false
+		for _, uid := range notifyIDs {
+			if uid == currentUserID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			notifyIDs = append(notifyIDs, currentUserID)
+		}
+		if len(notifyIDs) > 0 {
+			h.hub.SendSystemEventToUsers(notifyIDs, "group_member_removed")
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "已退出群"})
+}
+
+func (h *GroupHandler) activeMemberIDs(groupID string) ([]string, error) {
+	var members []models.RoomMember
+	if err := h.db.Select("user_id").Where("room_id = ? AND left_at IS NULL", groupID).Find(&members).Error; err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(members))
+	for _, m := range members {
+		ids = append(ids, m.UserID)
+	}
+	return ids, nil
 }
 
 func (h *GroupHandler) ListGroupMembers(c *gin.Context) {

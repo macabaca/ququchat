@@ -1,9 +1,11 @@
 import { BASE_URL } from "../configs/config";
 import { Message } from "../types/models";
+import { WsServerEvent, WsServerHeartbeat, WsServerMsg } from "../types/websocket";
 
 type MessageHandler = (message: Message) => void;
 type StatusHandler = (isConnected: boolean) => void;
 type ReconnectHandler = (isReconnecting: boolean) => void;
+type SystemEventHandler = (event: WsServerEvent) => void;
 
 export class WebSocketService {
     private ws: WebSocket | null = null;
@@ -11,6 +13,7 @@ export class WebSocketService {
     private messageHandlers: MessageHandler[] = [];
     private statusHandlers: StatusHandler[] = [];
     private reconnectHandlers: ReconnectHandler[] = [];
+    private systemEventHandlers: SystemEventHandler[] = [];
     
     private pingInterval: NodeJS.Timeout | null = null;
     private pongTimeout: NodeJS.Timeout | null = null;
@@ -60,13 +63,17 @@ export class WebSocketService {
         this.ws.onmessage = (event) => {
             this.markPongReceived();
             try {
-                const data = JSON.parse(event.data);
-                if (data?.type === 'pong') return;
-                if (data?.type === 'ping') {
+                const data = JSON.parse(event.data) as WsServerMsg;
+                if ((data as WsServerHeartbeat)?.type === 'pong') return;
+                if ((data as WsServerHeartbeat)?.type === 'ping') {
                     this.ws?.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
                     return;
                 }
-                this.notifyMessage(data);
+                if ((data as WsServerEvent)?.type === 'system_event') {
+                    this.notifySystemEvent(data as WsServerEvent);
+                    return;
+                }
+                this.notifyMessage(data as Message);
             } catch (e) {
                 console.error('Failed to parse WS message', e);
             }
@@ -139,8 +146,20 @@ export class WebSocketService {
         this.reconnectHandlers.push(handler);
     }
 
+    public addSystemEventHandler(handler: SystemEventHandler) {
+        this.systemEventHandlers.push(handler);
+    }
+
+    public removeSystemEventHandler(handler: SystemEventHandler) {
+        this.systemEventHandlers = this.systemEventHandlers.filter(h => h !== handler);
+    }
+
     private notifyMessage(message: Message) {
         this.messageHandlers.forEach(handler => handler(message));
+    }
+
+    private notifySystemEvent(event: WsServerEvent) {
+        this.systemEventHandlers.forEach(handler => handler(event));
     }
 
     private notifyStatus(isConnected: boolean) {

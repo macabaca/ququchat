@@ -35,7 +35,8 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	api.POST("/auth/refresh", auth.Refresh)
 	api.POST("/auth/logout", middleware.JWTAuth(authCfg.JWTSecret), auth.Logout)
 
-	userHandler := handler.NewUserHandler(db, fileCfg, avatarCfg, objStorage, bucket)
+	hub := handler.NewHub()
+	userHandler := handler.NewUserHandler(db, fileCfg, avatarCfg, objStorage, bucket, hub)
 	friends := api.Group("/friends", middleware.JWTAuth(authCfg.JWTSecret))
 	friends.POST("/add", userHandler.AddFriend)
 	friends.POST("/remove", userHandler.RemoveFriend)
@@ -48,7 +49,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	users.GET("/:user_id/avatar/url", userHandler.GetAvatarURL)
 	users.GET("/:user_id/avatar/thumb/url", userHandler.GetAvatarThumbURL)
 
-	groupHandler := handler.NewGroupHandler(db)
+	groupHandler := handler.NewGroupHandler(db, hub)
 	groups := api.Group("/groups", middleware.JWTAuth(authCfg.JWTSecret))
 	groups.POST("/create", groupHandler.CreateGroup)
 	groups.GET("/:group_id", groupHandler.GetGroupDetail)
@@ -77,7 +78,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	files.POST("/multipart/complete", fileHandler.CompleteMultipartUpload)
 	files.POST("/multipart/abort", fileHandler.AbortMultipartUpload)
 
-	wsHandler := handler.NewWsHandler(db)
+	wsHandler := handler.NewWsHandler(db, hub)
 	r.GET("/ws", middleware.JWTAuthFromHeaderOrQuery(authCfg.JWTSecret), wsHandler.Handle)
 
 	return r

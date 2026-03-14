@@ -21,9 +21,10 @@ type UserHandler struct {
 	db        *gorm.DB
 	fileSvc   *filesvc.Service
 	avatarCfg config.Avatar
+	hub       *Hub
 }
 
-func NewUserHandler(db *gorm.DB, cfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string) *UserHandler {
+func NewUserHandler(db *gorm.DB, cfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string, hub *Hub) *UserHandler {
 	thumb := filesvc.ThumbnailOptions{
 		MaxDimension:   cfg.Thumbnail.MaxDimensionOrDefault(),
 		JPEGQuality:    cfg.Thumbnail.JPEGQualityOrDefault(),
@@ -35,6 +36,7 @@ func NewUserHandler(db *gorm.DB, cfg config.File, avatarCfg config.Avatar, objSt
 		db:        db,
 		fileSvc:   filesvc.NewService(db, objStorage, bucket, cfg.MaxSizeBytes, cfg.RetentionDuration(), thumb),
 		avatarCfg: avatarCfg,
+		hub:       hub,
 	}
 }
 
@@ -392,6 +394,10 @@ func (h *UserHandler) AddFriend(c *gin.Context) {
 		return
 	}
 
+	if h.hub != nil {
+		h.hub.SendSystemEventToUser(target.ID, "friend_request_created")
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "好友请求已发送",
 		"request": gin.H{
@@ -722,6 +728,11 @@ func (h *UserHandler) RespondFriendRequest(c *gin.Context) {
 
 	fr.Status = models.FriendRequestAccepted
 	fr.RespondedAt = &now
+
+	if h.hub != nil {
+		h.hub.SendSystemEventToUsers([]string{fr.FromUserID, fr.ToUserID}, "friend_request_accepted")
+		h.hub.SendSystemEventToUsers([]string{fr.FromUserID, fr.ToUserID}, "friend_list_updated")
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "已接受好友请求",

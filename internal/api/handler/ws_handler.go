@@ -30,10 +30,13 @@ type WsHandler struct {
 	hub *Hub
 }
 
-func NewWsHandler(db *gorm.DB) *WsHandler {
+func NewWsHandler(db *gorm.DB, hub *Hub) *WsHandler {
+	if hub == nil {
+		hub = NewHub()
+	}
 	return &WsHandler{
 		db:  db,
-		hub: NewHub(),
+		hub: hub,
 	}
 }
 
@@ -58,6 +61,11 @@ type GroupMessage struct {
 	Data    []byte
 }
 
+type SystemEvent struct {
+	Type  string `json:"type"`
+	Event string `json:"event"`
+}
+
 func NewHub() *Hub {
 	h := &Hub{
 		clients:       make(map[*Client]bool),
@@ -69,6 +77,25 @@ func NewHub() *Hub {
 	}
 	go h.run()
 	return h
+}
+
+func (h *Hub) SendSystemEventToUser(userID string, event string) {
+	if userID == "" {
+		return
+	}
+	h.SendSystemEventToUsers([]string{userID}, event)
+}
+
+func (h *Hub) SendSystemEventToUsers(userIDs []string, event string) {
+	if h == nil || len(userIDs) == 0 || event == "" {
+		return
+	}
+	data, err := json.Marshal(SystemEvent{Type: "system_event", Event: event})
+	if err != nil {
+		log.Printf("failed to marshal system_event: %v", err)
+		return
+	}
+	h.broadcast <- GroupMessage{UserIDs: userIDs, Data: data}
 }
 
 func (h *Hub) run() {
