@@ -38,9 +38,14 @@ export const useAuthStore = create<AuthState>()(
             error: null,
 
             setAccessToken: (token: string) => {
+                const prev = get().accessToken;
+                console.log('[Auth][setAccessToken]', { prev: !!prev, next: !!token });
                 set({ accessToken: token })
             },
             setTokens: (accessToken: string, refreshToken: string) => {
+                const prevAccess = get().accessToken;
+                const prevRefresh = get().refreshToken;
+                console.log('[Auth][setTokens]', { prevAccess: !!prevAccess, prevRefresh: !!prevRefresh, nextAccess: !!accessToken, nextRefresh: !!refreshToken });
                 set({ accessToken, refreshToken, isAuthenticated: true })
             },
             login: async (credentials: LoginRequest) => {
@@ -89,6 +94,8 @@ export const useAuthStore = create<AuthState>()(
             },
 
             logout: () => {
+                const snapshot = get();
+                console.log('[Auth][logout]', { hasAccess: !!snapshot.accessToken, hasRefresh: !!snapshot.refreshToken, userId: snapshot.user?.id, stack: new Error().stack });
                 set({
                     accessToken: null,
                     refreshToken: null,

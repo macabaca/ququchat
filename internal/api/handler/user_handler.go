@@ -656,6 +656,10 @@ func (h *UserHandler) RespondFriendRequest(c *gin.Context) {
 	}
 
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("from_user_id = ? AND to_user_id = ? AND status = ? AND id <> ?", fr.FromUserID, fr.ToUserID, models.FriendRequestAccepted, fr.ID).
+			Delete(&models.FriendRequest{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Model(&fr).Updates(map[string]interface{}{
 			"status":       models.FriendRequestAccepted,
 			"responded_at": &now,
@@ -705,7 +709,6 @@ func (h *UserHandler) RespondFriendRequest(c *gin.Context) {
 			}
 		}
 
-		// Ensure Members exist
 		for _, uid := range []string{a, b} {
 			var m models.RoomMember
 			if err := tx.Where("room_id = ? AND user_id = ?", room.ID, uid).First(&m).Error; err != nil {
@@ -722,6 +725,11 @@ func (h *UserHandler) RespondFriendRequest(c *gin.Context) {
 					return err
 				}
 			}
+		}
+
+		if err := tx.Where("from_user_id = ? AND to_user_id = ? AND status = ? AND id <> ?", fr.FromUserID, fr.ToUserID, models.FriendRequestAccepted, fr.ID).
+			Delete(&models.FriendRequest{}).Error; err != nil {
+			return err
 		}
 
 		return nil

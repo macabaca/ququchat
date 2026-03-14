@@ -80,6 +80,7 @@ const TitleBar: React.FC = () => {
       const msg = e?.error || e?.message || '退出登录失败';
       message.error(msg);
     } finally {
+      console.log('[Auth][logout] manual logout via TitleBar');
       disconnectWebSocket();
       logout();
       localStorage.removeItem('chat-storage');

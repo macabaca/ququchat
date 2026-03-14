@@ -27,6 +27,7 @@ export const friendService = {
     },
 
     respondToRequest: async (data: RespondFriendRequestRequest): Promise<RespondFriendRequestResponse> => {
+        console.log('[FriendRequest] api respondToRequest', JSON.stringify({ requestId: data.request_id, action: data.action }));
         return await apiClient.post('/friends/requests/respond', data);
     }
 };

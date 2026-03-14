@@ -166,17 +166,26 @@ const Sidebar: React.FC = () => {
     };
 
     const handleRespondRequest = async (requestId: string, accept: boolean) => {
-        if (!requestId) return;
-        if (respondingRequestId) return;
+        if (!requestId) {
+            console.warn('[FriendRequest] respond blocked: empty requestId');
+            return;
+        }
+        if (respondingRequestId) {
+            console.warn('[FriendRequest] respond blocked: already responding', { respondingRequestId, requestId });
+            return;
+        }
+        console.log('[FriendRequest] respond start', JSON.stringify({ requestId, accept }));
         setRespondingRequestId(requestId);
         try {
             await friendService.respondToRequest({ request_id: requestId, action: accept ? 'accept' : 'reject' });
+            console.log('[FriendRequest] respond success', JSON.stringify({ requestId, accept }));
             message.success(accept ? '已同意好友请求' : '已拒绝好友请求');
             await fetchFriendRequests();
             if (accept) {
                 await fetchFriends();
             }
         } catch (error: any) {
+            console.warn('[FriendRequest] respond failed', JSON.stringify({ requestId, accept, error: error?.error || error?.message || error }));
             const errorMsg = error?.error || error?.message || '处理好友请求失败';
             message.error(errorMsg);
         } finally {

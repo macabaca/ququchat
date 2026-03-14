@@ -23,6 +23,10 @@ apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
             config.headers.Authorization = `Bearer ${token}`;
         }
     }
+    if (uri.includes('/friends/requests/respond')) {
+        const authHeader = (config.headers as any)?.Authorization;
+        console.log('[FriendRequest] request respond', JSON.stringify({ hasAuth: !!authHeader }));
+    }
     return config;
 },
 (error: AxiosError) => {
@@ -51,6 +55,9 @@ apiClient.interceptors.response.use(
     },
     async (error: AxiosError<ApiError>) => {
         const originalRequest = error.config as (InternalAxiosRequestConfig & {_retry?: boolean });
+        if (originalRequest?.url?.includes('/friends/requests/respond')) {
+            console.warn('[FriendRequest] respond error', JSON.stringify({ status: error.response?.status, error: error.response?.data || error.message }));
+        }
         const { logout, refreshToken, setTokens } = useAuthStore.getState();
         if (originalRequest?._retry) {
             return Promise.reject(error.response?.data || error.message);
@@ -77,6 +84,7 @@ apiClient.interceptors.response.use(
         isRefreshing = true;
 
         if (!refreshToken) {
+            console.warn('[Auth][refresh] missing refreshToken -> logout', { status: error.response?.status, error: error.response?.data || error.message });
             logout();
             isRefreshing = false;
             return Promise.reject(error.response?.data);
@@ -104,8 +112,8 @@ apiClient.interceptors.response.use(
             // 重试原始请求
             return apiClient(originalRequest);
         } catch (refreshError: any) {
-            // 刷新失败
             processQueue(refreshError, null);
+            console.warn('[Auth][refresh] refresh failed -> logout', { error: refreshError.response?.data || refreshError.message });
             logout();
 
             return Promise.reject(refreshError.response?.data || refreshError.message);

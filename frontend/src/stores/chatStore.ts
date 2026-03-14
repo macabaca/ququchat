@@ -198,7 +198,11 @@ export const useChatStore = create<ChatState>()(
             fetchFriendRequests: async () => {
                 try {
                     const response = await friendService.listIncomingRequests();
-                    set({ friendRequests: response.requests });
+                    const nextRequests = response.requests.map((req: any) => {
+                        const id = req.id ?? req.request_id;
+                        return id ? { ...req, id } : req;
+                    });
+                    set({ friendRequests: nextRequests });
                 } catch (error: any) {
                     const msg = error?.error || error?.message || '获取好友请求失败';
                     set({ error: msg });
