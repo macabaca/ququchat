@@ -370,6 +370,14 @@ setStatus($("friend-status"), err.message, "error")
 })
 }
 
+function getFriendStatusInfo(friend) {
+var isActive = friend && friend.status === "active"
+return {
+text: isActive ? "在线" : "离线",
+className: isActive ? "friend-presence online" : "friend-presence offline"
+}
+}
+
 function renderFriendList() {
 var ul = $("friend-list")
 ul.innerHTML = ""
@@ -387,10 +395,15 @@ var name = document.createElement("span")
 name.textContent = f.username
 left.appendChild(avatar)
 left.appendChild(name)
+var statusInfo = getFriendStatusInfo(f)
+var status = document.createElement("span")
+status.className = statusInfo.className
+status.textContent = statusInfo.text
 var meta = document.createElement("span")
 meta.className = "meta"
 meta.textContent = "id=" + f.id + " code=" + f.user_code
 var right = document.createElement("span")
+right.appendChild(status)
 right.appendChild(meta)
 li.appendChild(left)
 li.appendChild(right)
@@ -793,7 +806,11 @@ data = JSON.parse(raw)
 appendChatLine("system", "收到非JSON消息: " + raw, false)
 return
 }
-if (data.type === "friend_message") {
+if (data.type === "system_event") {
+    if (data.event === "friend_list_updated" || data.event === "friend_list_changed" || data.event === "friend_request_accepted") {
+      refreshFriends()
+    }
+  } else if (data.type === "friend_message") {
     var isMe = state.user && data.from_user_id === state.user.id
     var prefix = isMe ? "我" : "对方"
     // Only display if current target is this friend
