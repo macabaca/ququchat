@@ -38,6 +38,12 @@ func main() {
 	}
 	log.Println("数据库迁移完成")
 
+	affected, err := database.ResetAllUsersOffline(db)
+	if err != nil {
+		log.Fatalf("重置用户状态失败: %v", err)
+	}
+	log.Printf("用户状态重置完成，影响行数: %d", affected)
+
 	provider := cfg.Storage.ProviderOrDefault()
 	var objStorage storage.ObjectStorage
 	var bucket string
