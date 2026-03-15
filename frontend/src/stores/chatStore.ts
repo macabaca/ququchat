@@ -20,6 +20,9 @@ interface ChatState {
     conversations: Conversation[]; // Derived or managed list of active chats
     activeConversationId: string | null;
     messages: Record<string, Message[]>; // conversationId -> messages
+    unreadCountByConversation: Record<string, number>;
+    latestUnreadMessageIdByConversation: Record<string, string>;
+    earliestUnreadMessageIdByConversation: Record<string, string>;
     
     isConnected: boolean;
     isReconnecting: boolean;
@@ -48,13 +51,14 @@ interface ChatState {
     
     setActiveConversation: (id: string) => void;
     clearActiveConversation: () => void;
+    markConversationRead: (roomId: string) => void;
     sendMessage: (content: string, type: 'text' | 'image' | 'file', attachmentId?: string, thumbId?: string, cachePath?: string) => void;
     
     // Handlers for incoming data
     handleIncomingMessage: (message: Message) => void;
 
             // Load messages from SQLite
-    loadMessages: (roomId: string) => Promise<void>;
+    loadMessages: (roomId: string, limit?: number, offset?: number, mode?: 'replace' | 'prepend') => Promise<number>;
 
     // Incremental Sync
     syncRoomMessages: (roomId: string) => Promise<void>;
@@ -71,6 +75,9 @@ export const useChatStore = create<ChatState>()(
             conversations: [],
             activeConversationId: null,
             messages: {},
+            unreadCountByConversation: {},
+            latestUnreadMessageIdByConversation: {},
+            earliestUnreadMessageIdByConversation: {},
             
             isConnected: false,
             isReconnecting: false,
@@ -334,6 +341,20 @@ export const useChatStore = create<ChatState>()(
             clearActiveConversation: () => {
                 set({ activeConversationId: null });
             },
+            markConversationRead: (roomId: string) => {
+                set((state) => {
+                    const unread = { ...state.unreadCountByConversation, [roomId]: 0 };
+                    const latest = { ...state.latestUnreadMessageIdByConversation };
+                    const earliest = { ...state.earliestUnreadMessageIdByConversation };
+                    delete latest[roomId];
+                    delete earliest[roomId];
+                    return {
+                        unreadCountByConversation: unread,
+                        latestUnreadMessageIdByConversation: latest,
+                        earliestUnreadMessageIdByConversation: earliest
+                    };
+                });
+            },
 
             sendMessage: (content: string, type: 'text' | 'image' | 'file' = 'text', attachmentId?: string, thumbId?: string, cachePath?: string) => {
                 const { activeConversationId, friends, groups, wsService, messages } = get();
@@ -498,6 +519,7 @@ export const useChatStore = create<ChatState>()(
                     room_id: conversationId,
                     status: 'sent'
                 };
+                const shouldTrackUnread = !!myId && normalizedMessage.from_user_id !== myId && get().activeConversationId !== conversationId;
 
                 if (myId && normalizedMessage.from_user_id === myId) {
                     if (matchedTempIndex !== -1) {
@@ -539,18 +561,37 @@ export const useChatStore = create<ChatState>()(
                     if (normalizedMessage.id && current.some((m) => m.id === normalizedMessage.id)) {
                         return state;
                     }
-                    return {
+                    const nextState: Partial<ChatState> = {
                         messages: {
                             ...state.messages,
                             [conversationId]: [...current, normalizedMessage]
                         }
                     };
+                    if (shouldTrackUnread) {
+                        nextState.unreadCountByConversation = {
+                            ...state.unreadCountByConversation,
+                            [conversationId]: (state.unreadCountByConversation[conversationId] || 0) + 1
+                        };
+                        if (normalizedMessage.id) {
+                            nextState.latestUnreadMessageIdByConversation = {
+                                ...state.latestUnreadMessageIdByConversation,
+                                [conversationId]: normalizedMessage.id
+                            };
+                            if (!state.earliestUnreadMessageIdByConversation[conversationId]) {
+                                nextState.earliestUnreadMessageIdByConversation = {
+                                    ...state.earliestUnreadMessageIdByConversation,
+                                    [conversationId]: normalizedMessage.id
+                                };
+                            }
+                        }
+                    }
+                    return nextState as ChatState;
                 });
             },
 
-            loadMessages: async (roomId: string) => {
+            loadMessages: async (roomId: string, limit: number = 50, offset: number = 0, mode: 'replace' | 'prepend' = 'replace') => {
                 try {
-                    const rows = await messageDao.getByRoomId(roomId, 50, 0);
+                    const rows = await messageDao.getByRoomId(roomId, limit, offset);
                     const loadedMessages: Message[] = rows.map(row => {
                         let msg: Message;
                         if (row.payload_json) {
@@ -596,14 +637,29 @@ export const useChatStore = create<ChatState>()(
                         return msg;
                     }).reverse();
 
-                    set(state => ({
-                        messages: {
-                            ...state.messages,
-                            [roomId]: loadedMessages
+                    set(state => {
+                        const current = state.messages[roomId] || [];
+                        if (mode === 'prepend') {
+                            const exists = new Set(current.map((m) => m.id));
+                            const toPrepend = loadedMessages.filter((m) => !exists.has(m.id));
+                            return {
+                                messages: {
+                                    ...state.messages,
+                                    [roomId]: [...toPrepend, ...current]
+                                }
+                            };
                         }
-                    }));
+                        return {
+                            messages: {
+                                ...state.messages,
+                                [roomId]: loadedMessages
+                            }
+                        };
+                    });
+                    return loadedMessages.length;
                 } catch (e) {
                     console.error("Failed to load messages from SQLite", e);
+                    return 0;
                 }
             },
 
@@ -625,6 +681,9 @@ export const useChatStore = create<ChatState>()(
 
                     // 3. Persist to SQLite
                     let maxSeq = lastSequenceId;
+                    let unreadIncrement = 0;
+                    let latestUnreadMessageId = '';
+                    let earliestUnreadMessageId = '';
                     for (const msg of newMessages) {
                         if (msg.sequence_id && msg.sequence_id > maxSeq) {
                             maxSeq = msg.sequence_id;
@@ -633,6 +692,13 @@ export const useChatStore = create<ChatState>()(
                         const savedRow = await messageService.saveMessage(msg);
                         if (savedRow.cache_path) {
                             msg.cache_path = savedRow.cache_path;
+                        }
+                        unreadIncrement += 1;
+                        if (msg.id) {
+                            latestUnreadMessageId = msg.id;
+                            if (!earliestUnreadMessageId) {
+                                earliestUnreadMessageId = msg.id;
+                            }
                         }
                     }
 
@@ -643,7 +709,32 @@ export const useChatStore = create<ChatState>()(
                         last_synced_at: Date.now()
                     });
 
-                    // 5. Reload messages from SQLite to ensure consistency and get cache paths
+                    // 5. Increment unread for all newly synced messages
+                    if (unreadIncrement > 0) {
+                        set((state) => {
+                            const nextState: Partial<ChatState> = {
+                                unreadCountByConversation: {
+                                    ...state.unreadCountByConversation,
+                                    [roomId]: (state.unreadCountByConversation[roomId] || 0) + unreadIncrement
+                                }
+                            };
+                            if (latestUnreadMessageId) {
+                                nextState.latestUnreadMessageIdByConversation = {
+                                    ...state.latestUnreadMessageIdByConversation,
+                                    [roomId]: latestUnreadMessageId
+                                };
+                            }
+                            if (earliestUnreadMessageId && !state.earliestUnreadMessageIdByConversation[roomId]) {
+                                nextState.earliestUnreadMessageIdByConversation = {
+                                    ...state.earliestUnreadMessageIdByConversation,
+                                    [roomId]: earliestUnreadMessageId
+                                };
+                            }
+                            return nextState as ChatState;
+                        });
+                    }
+
+                    // 6. Reload messages from SQLite to ensure consistency and get cache paths
                     await get().loadMessages(roomId);
 
                 } catch (e) {
@@ -655,11 +746,12 @@ export const useChatStore = create<ChatState>()(
             name: 'chat-storage',
             storage: createJSONStorage(() => localStorage),
             partialize: (state) => ({ 
-                // Only persist these fields
                 friends: state.friends, 
                 groups: state.groups,
                 conversations: state.conversations,
-                // messages: state.messages // Messages are now loaded from SQLite
+                unreadCountByConversation: state.unreadCountByConversation,
+                latestUnreadMessageIdByConversation: state.latestUnreadMessageIdByConversation,
+                earliestUnreadMessageIdByConversation: state.earliestUnreadMessageIdByConversation
             }),
         }
     )

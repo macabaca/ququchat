@@ -32,7 +32,8 @@ const Sidebar: React.FC = () => {
         fetchFriendRequests,
         fetchFriends,
         createGroup,
-        inviteGroupMembers
+        inviteGroupMembers,
+        unreadCountByConversation
     } = useChatStore();
     const {
         conversations: aiConversations,
@@ -419,7 +420,7 @@ const Sidebar: React.FC = () => {
                             >
                                 <List.Item.Meta
                                     avatar={
-                                        <Badge count={0} dot> {/* Placeholder for unread */}
+                                        <Badge count={item.type === 'ai' ? 0 : (unreadCountByConversation[item.id] || 0)} overflowCount={99} size="small">
                                             <Avatar
                                                 icon={
                                                     item.type === 'friend'
@@ -443,7 +444,7 @@ const Sidebar: React.FC = () => {
                                             )
                                             : item.type === 'ai'
                                                 ? '智能助手'
-                                                : (item.status === 'online' ? <span style={{ color: '#52c41a' }}>在线</span> : '离线')
+                                                : (item.status === 'active' ? <span style={{ color: '#52c41a' }}>在线</span> : '离线')
                                     }
                                 />
                             </List.Item>

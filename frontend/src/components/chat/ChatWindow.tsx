@@ -1,6 +1,6 @@
 import React from 'react';
 import { Layout, Typography, Button, Drawer, Descriptions, Tag, List, Select, Space, Popconfirm, message, Spin, Dropdown, Input, Modal } from 'antd';
-import { InfoCircleOutlined, MoreOutlined, CopyOutlined, FileOutlined, FileImageOutlined, DownloadOutlined } from '@ant-design/icons';
+import { InfoCircleOutlined, MoreOutlined, CopyOutlined, FileOutlined, FileImageOutlined, DownloadOutlined, AimOutlined, CloseOutlined } from '@ant-design/icons';
 import MessageList from './MessageList';
 import InputArea from './InputArea';
 import { useChatStore } from '../../stores/chatStore';
@@ -20,6 +20,7 @@ const ChatWindow: React.FC = () => {
         groups,
         messages,
         sendMessage,
+        loadMessages,
         fetchGroupDetails,
         fetchGroupMembers,
         activeGroupDetails,
@@ -29,7 +30,10 @@ const ChatWindow: React.FC = () => {
         addGroupAdmins,
         dismissGroup,
         leaveGroup,
-        isReconnecting
+        isReconnecting,
+        unreadCountByConversation,
+        earliestUnreadMessageIdByConversation,
+        markConversationRead
     } = useChatStore();
     const user = useAuthStore((state) => state.user);
     const [isDrawerOpen, setIsDrawerOpen] = React.useState(false);
@@ -41,23 +45,24 @@ const ChatWindow: React.FC = () => {
     const [historyKeyword, setHistoryKeyword] = React.useState('');
     const [historyRows, setHistoryRows] = React.useState<MessageRow[]>([]);
     const [isHistoryLoading, setIsHistoryLoading] = React.useState(false);
+    const [historyOffset, setHistoryOffset] = React.useState(0);
+    const [historyHasMore, setHistoryHasMore] = React.useState(true);
     const [selectedHistoryRow, setSelectedHistoryRow] = React.useState<MessageRow | null>(null);
     const [historyPreviewUrl, setHistoryPreviewUrl] = React.useState('');
     const [isHistoryPreviewLoading, setIsHistoryPreviewLoading] = React.useState(false);
-
-    if (!activeConversationId) {
-        return (
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ccc' }}>
-                Select a chat to start messaging
-            </div>
-        );
-    }
+    const [historyFocusMessageId, setHistoryFocusMessageId] = React.useState<string | null>(null);
+    const [isHistoryJumping, setIsHistoryJumping] = React.useState(false);
+    const [mainLoadedOffset, setMainLoadedOffset] = React.useState(0);
+    const [mainHasMorePrevious, setMainHasMorePrevious] = React.useState(true);
+    const [isMainLoadingPrevious, setIsMainLoadingPrevious] = React.useState(false);
+    const [unreadHint, setUnreadHint] = React.useState<{ roomId: string; count: number; earliestMessageId: string | null } | null>(null);
 
     // Resolve active chat details
-    const activeFriend = friends.find(f => f.room_id === activeConversationId);
-    const activeGroup = groups.find(g => g.id === activeConversationId);
+    const roomId = activeConversationId || '';
+    const activeFriend = friends.find(f => f.room_id === roomId);
+    const activeGroup = groups.find(g => g.id === roomId);
     const title = (activeFriend?.nickname || activeFriend?.username) || activeGroup?.name || 'Unknown';
-    const currentMessages = messages[activeConversationId] || [];
+    const currentMessages = messages[roomId] || [];
     const isGroupConversation = !!activeGroup;
     const members = activeGroup ? (groupMembersByGroupId[activeGroup.id] || []) : [];
     const myRole = activeGroupDetails?.my_role || members.find((m) => m.user_id === user?.id)?.role || activeGroup?.my_role;
@@ -66,12 +71,80 @@ const ChatWindow: React.FC = () => {
         .filter((friend) => !memberIdSet.has(friend.id))
         .map((friend) => ({ label: friend.nickname || friend.username, value: friend.id }));
 
-    const loadHistoryRows = async (keyword: string) => {
+    const HISTORY_PAGE_SIZE = 50;
+    const MAIN_PAGE_SIZE = 50;
+
+    React.useEffect(() => {
+        setMainLoadedOffset(0);
+        setMainHasMorePrevious(true);
+        setIsMainLoadingPrevious(false);
+    }, [activeConversationId]);
+
+    React.useEffect(() => {
+        if (!activeConversationId || mainLoadedOffset !== 0) return;
+        if (currentMessages.length === 0) {
+            setMainHasMorePrevious(false);
+            return;
+        }
+        setMainLoadedOffset(currentMessages.length);
+        setMainHasMorePrevious(currentMessages.length === MAIN_PAGE_SIZE);
+    }, [activeConversationId, currentMessages.length, mainLoadedOffset]);
+
+    React.useEffect(() => {
+        if (!activeConversationId) {
+            setUnreadHint(null);
+            return;
+        }
+        const count = unreadCountByConversation[activeConversationId] || 0;
+        if (count <= 0) {
+            setUnreadHint(null);
+            return;
+        }
+        const earliestMessageId = earliestUnreadMessageIdByConversation[activeConversationId] || null;
+        setUnreadHint({ roomId: activeConversationId, count, earliestMessageId });
+        markConversationRead(activeConversationId);
+    }, [activeConversationId]);
+
+    const loadPreviousMainMessages = async () => {
+        if (!activeConversationId || isMainLoadingPrevious || !mainHasMorePrevious) return;
+        setIsMainLoadingPrevious(true);
+        try {
+            const loaded = await loadMessages(activeConversationId, MAIN_PAGE_SIZE, mainLoadedOffset, 'prepend');
+            setMainLoadedOffset((prev) => prev + loaded);
+            setMainHasMorePrevious(loaded === MAIN_PAGE_SIZE);
+        } finally {
+            setIsMainLoadingPrevious(false);
+        }
+    };
+
+    const jumpToEarliestUnread = () => {
+        if (unreadHint?.earliestMessageId) {
+            setHistoryFocusMessageId(unreadHint.earliestMessageId);
+        }
+        setUnreadHint(null);
+    };
+
+    const closeUnreadHint = () => {
+        setUnreadHint(null);
+    };
+
+    const loadHistoryRows = async (keyword: string, append: boolean = false) => {
         if (!activeConversationId) return;
+        const nextOffset = append ? historyOffset : 0;
         setIsHistoryLoading(true);
         try {
-            const rows = await messageDao.searchTextByRoomId(activeConversationId, keyword, 200, 0);
-            setHistoryRows(rows);
+            const rows = await messageDao.searchTextByRoomId(activeConversationId, keyword, HISTORY_PAGE_SIZE, nextOffset);
+            if (append) {
+                setHistoryRows((prev) => {
+                    const exists = new Set(prev.map((r) => r.id));
+                    const appended = rows.filter((r) => !exists.has(r.id));
+                    return [...prev, ...appended];
+                });
+            } else {
+                setHistoryRows(rows);
+            }
+            setHistoryOffset(nextOffset + rows.length);
+            setHistoryHasMore(rows.length === HISTORY_PAGE_SIZE);
         } catch (error: any) {
             message.error(error?.message || error?.error || '查询聊天记录失败');
         } finally {
@@ -82,7 +155,9 @@ const ChatWindow: React.FC = () => {
     const openHistoryDrawer = async () => {
         setIsHistoryDrawerOpen(true);
         setHistoryKeyword('');
-        await loadHistoryRows('');
+        setHistoryOffset(0);
+        setHistoryHasMore(true);
+        await loadHistoryRows('', false);
     };
 
     const resolveSenderName = (senderId: string) => {
@@ -173,7 +248,14 @@ const ChatWindow: React.FC = () => {
     const onClickHistorySearch = async (value?: string) => {
         const next = (value ?? historyKeyword).trim();
         setHistoryKeyword(next);
-        await loadHistoryRows(next);
+        setHistoryOffset(0);
+        setHistoryHasMore(true);
+        await loadHistoryRows(next, false);
+    };
+
+    const onClickLoadMoreHistory = async () => {
+        if (isHistoryLoading || !historyHasMore) return;
+        await loadHistoryRows(historyKeyword, true);
     };
 
     const resolveHistoryPreviewUrl = async (row: MessageRow): Promise<string> => {
@@ -247,6 +329,23 @@ const ChatWindow: React.FC = () => {
             message.success('已复制到剪贴板');
         } catch {
             message.error('复制失败');
+        }
+    };
+
+    const jumpToMainMessage = async () => {
+        if (!selectedHistoryRow || !activeConversationId) return;
+        setIsHistoryJumping(true);
+        try {
+            const loaded = await loadMessages(activeConversationId, 2000, 0, 'replace');
+            setMainLoadedOffset(loaded);
+            setMainHasMorePrevious(loaded === 2000);
+            setHistoryFocusMessageId(selectedHistoryRow.id);
+            setSelectedHistoryRow(null);
+            setIsHistoryDrawerOpen(false);
+        } catch {
+            message.error('定位失败');
+        } finally {
+            setIsHistoryJumping(false);
         }
     };
 
@@ -340,6 +439,14 @@ const ChatWindow: React.FC = () => {
         }
     };
 
+    if (!activeConversationId) {
+        return (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ccc' }}>
+                Select a chat to start messaging
+            </div>
+        );
+    }
+
     return (
         <Layout style={{ height: '100%' }}>
             <Header style={{ 
@@ -370,7 +477,24 @@ const ChatWindow: React.FC = () => {
                 </div>
             </Header>
             <Content style={{ display: 'flex', flexDirection: 'column', background: '#fff' }}>
-                <MessageList messages={currentMessages} />
+                {unreadHint && unreadHint.roomId === roomId && (
+                    <div style={{ padding: '8px 16px', borderBottom: '1px solid #f0f0f0', background: '#fffbe6', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <Space size={8} wrap>
+                            <Tag color="red">{unreadHint.count} 条未读</Tag>
+                            <Button size="small" type="link" onClick={jumpToEarliestUnread}>跳到最早未读</Button>
+                        </Space>
+                        <Button type="text" size="small" icon={<CloseOutlined />} onClick={closeUnreadHint} />
+                    </div>
+                )}
+                <MessageList
+                    key={roomId}
+                    messages={currentMessages}
+                    focusMessageId={historyFocusMessageId}
+                    onFocusDone={() => setHistoryFocusMessageId(null)}
+                    canLoadPrevious={mainHasMorePrevious}
+                    isLoadingPrevious={isMainLoadingPrevious}
+                    onLoadPrevious={loadPreviousMainMessages}
+                />
                 <InputArea onSend={sendMessage} roomId={activeConversationId} roomName={title} />
             </Content>
             <Drawer
@@ -472,7 +596,7 @@ const ChatWindow: React.FC = () => {
                         onSearch={onClickHistorySearch}
                     />
                     <List
-                        loading={isHistoryLoading}
+                        loading={isHistoryLoading && historyRows.length === 0}
                         dataSource={historyRows}
                         locale={{ emptyText: historyEmptyText }}
                         rowKey={(row) => row.id}
@@ -495,6 +619,11 @@ const ChatWindow: React.FC = () => {
                             );
                         }}
                     />
+                    {historyRows.length > 0 && (
+                        <Button block onClick={onClickLoadMoreHistory} loading={isHistoryLoading && historyRows.length > 0} disabled={!historyHasMore}>
+                            {historyHasMore ? '加载下一页' : '没有更多了'}
+                        </Button>
+                    )}
                 </Space>
             </Drawer>
 
@@ -506,6 +635,7 @@ const ChatWindow: React.FC = () => {
                 onCancel={() => setSelectedHistoryRow(null)}
                 footer={[
                     <Button key="copy" icon={<CopyOutlined />} onClick={copyHistoryContent}>复制</Button>,
+                    <Button key="jump" icon={<AimOutlined />} loading={isHistoryJumping} onClick={jumpToMainMessage}>定位到主界面</Button>,
                     (selectedHistoryRow?.content_type === 'image' || selectedHistoryRow?.content_type === 'file') ? (
                         <Button key="download" icon={<DownloadOutlined />} loading={isHistoryPreviewLoading} onClick={onDownloadHistoryAttachment}>下载</Button>
                     ) : null,

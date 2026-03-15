@@ -50,7 +50,7 @@ type User struct {
 	Email              *string   `gorm:"size:255;uniqueIndex" json:"email,omitempty"`
 	Phone              *string   `gorm:"size:32;uniqueIndex" json:"phone,omitempty"`
 	PasswordHash       string    `gorm:"size:255;not null" json:"-"`
-	Status             string    `gorm:"size:16;not null;default:active" json:"status"`
+	Status             string    `gorm:"size:16;not null;default:offline" json:"status"`
 	DisplayName        *string   `gorm:"size:64" json:"display_name,omitempty"`
 	AvatarAttachmentID *string   `gorm:"type:char(36)" json:"avatar_attachment_id,omitempty"`
 	Bio                *string   `gorm:"size:1024" json:"bio,omitempty"`

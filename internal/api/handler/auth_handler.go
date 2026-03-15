@@ -147,7 +147,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		Email:        req.Email,
 		Phone:        req.Phone,
 		PasswordHash: string(hash),
-		Status:       "active",
+		Status:       "offline",
 	}
 
 	if err := h.db.Create(&u).Error; err != nil {

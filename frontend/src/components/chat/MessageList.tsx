@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { List, Avatar, Button, Modal, message } from 'antd';
-import { UserOutlined, FileOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined } from '@ant-design/icons';
+import { UserOutlined, FileOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined, DownOutlined } from '@ant-design/icons';
 import { Message } from '../../types/models';
 import { useAuthStore } from '../../stores/authStore';
 import { fileService } from '../../api/FileService';
@@ -9,11 +9,15 @@ import { localFileService } from '../../api/LocalFileService';
 
 interface MessageListProps {
     messages: Message[];
+    focusMessageId?: string | null;
+    onFocusDone?: () => void;
+    canLoadPrevious?: boolean;
+    isLoadingPrevious?: boolean;
+    onLoadPrevious?: () => Promise<void> | void;
 }
 
-const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }> = ({ msg, isMe, avatarUrl }) => {
+const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; isHighlighted?: boolean }> = ({ msg, isMe, avatarUrl, isHighlighted }) => {
     const [thumbUrl, setThumbUrl] = useState<string>('');
-    const [downloadUrl, setDownloadUrl] = useState<string>('');
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [originalUrl, setOriginalUrl] = useState<string>('');
     const [loadingOriginal, setLoadingOriginal] = useState(false);
@@ -36,7 +40,6 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }>
     useEffect(() => {
         const isBlob = typeof msg.content === 'string' && msg.content.startsWith('blob:');
         setThumbUrl('');
-        setDownloadUrl('');
 
         if (isImage) {
             if (isBlob) {
@@ -59,23 +62,6 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }>
                 setThumbUrl(msg.content);
             } 
             // Else: No local cache, no temp URL -> Show placeholder
-        } else if (isFile) {
-            if (msg.cache_path && window.electronAPI) {
-                window.electronAPI.fs.readFile(msg.cache_path)
-                    .then((buffer) => {
-                        const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
-                        const blob = new Blob([arrayBuffer]);
-                        const url = URL.createObjectURL(blob);
-                        setDownloadUrl(url);
-                    })
-                    .catch((err) => {
-                        console.error("Failed to load local file", err);
-                    });
-            } else if (contentIsUrl) {
-                setDownloadUrl(msg.content);
-            } else if (msg.attachment_id) {
-                fileService.getFileUrl(msg.attachment_id).then(res => setDownloadUrl(res.url)).catch(console.error);
-            }
         }
 
     }, [msg.id, msg.thumb_attachment_id, isImage, isFile, msg.content, contentIsUrl, msg.cache_path]);
@@ -268,12 +254,14 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }>
     };
 
     return (
-        <List.Item style={{ 
+        <List.Item id={`chat-msg-${msg.id}`} data-msg-id={msg.id} style={{ 
             display: 'flex', 
             justifyContent: isMe ? 'flex-end' : 'flex-start',
             width: '100%',
             border: 'none',
-            padding: '4px 0'
+            padding: '4px 0',
+            background: isHighlighted ? '#fffbe6' : 'transparent',
+            transition: 'background 0.3s ease'
         }}>
             <div style={{ 
                 display: 'flex', 
@@ -281,7 +269,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }>
                 maxWidth: '70%',
                 alignItems: 'flex-start'
             }}>
-                <Avatar src={avatarUrl} icon={<UserOutlined />} style={{ margin: isMe ? '0 0 0 8px' : '0 8px 0 0' }} />
+                <Avatar src={avatarUrl} icon={<UserOutlined />} style={{ margin: isMe ? '0 0 0 8px' : '0 8px 0 0', flexShrink: 0 }} />
                 <div style={{
                     background: isMe ? '#1890ff' : '#fff',
                     color: isMe ? '#fff' : '#000',
@@ -297,18 +285,41 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }>
     );
 };
 
-const MessageList: React.FC<MessageListProps> = ({ messages }) => {
+const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onFocusDone, canLoadPrevious = false, isLoadingPrevious = false, onLoadPrevious }) => {
     const user = useAuthStore((state) => state.user);
     const friends = useChatStore((state) => state.friends);
     const bottomRef = useRef<HTMLDivElement>(null);
+    const listRef = useRef<HTMLDivElement>(null);
+    const prependAnchorRef = useRef<{ height: number; top: number } | null>(null);
     const [avatarUrlByUserId, setAvatarUrlByUserId] = useState<Record<string, string>>({});
+    const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+    const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+    const [isNearTop, setIsNearTop] = useState(false);
 
     useEffect(() => {
+        if (focusMessageId || !shouldAutoScroll) return;
         const timer = window.setTimeout(() => {
             bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
         }, 300);
         return () => window.clearTimeout(timer);
-    }, [messages]);
+    }, [messages, focusMessageId, shouldAutoScroll]);
+
+    useEffect(() => {
+        if (!focusMessageId) return;
+        const timer = window.setTimeout(() => {
+            const target = document.getElementById(`chat-msg-${focusMessageId}`);
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                setShouldAutoScroll(false);
+                setHighlightedMessageId(focusMessageId);
+                window.setTimeout(() => {
+                    setHighlightedMessageId((prev) => prev === focusMessageId ? null : prev);
+                }, 1800);
+            }
+            onFocusDone?.();
+        }, 80);
+        return () => window.clearTimeout(timer);
+    }, [focusMessageId, messages, onFocusDone]);
 
     useEffect(() => {
         let active = true;
@@ -352,8 +363,45 @@ const MessageList: React.FC<MessageListProps> = ({ messages }) => {
         };
     }, [user?.id, user?.avatarThumbLocalPath, user?.avatarURL, friends]);
 
+    useEffect(() => {
+        if (isLoadingPrevious) return;
+        const el = listRef.current;
+        const anchor = prependAnchorRef.current;
+        if (!el || !anchor) return;
+        const delta = el.scrollHeight - anchor.height;
+        el.scrollTop = anchor.top + Math.max(delta, 0);
+        prependAnchorRef.current = null;
+    }, [messages, isLoadingPrevious]);
+
+    const onScrollMessageList = () => {
+        const el = listRef.current;
+        if (!el) return;
+        const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        setShouldAutoScroll(distanceToBottom <= 80);
+        setIsNearTop(el.scrollTop <= 24);
+    };
+
+    const handleLoadPrevious = async () => {
+        if (!onLoadPrevious || isLoadingPrevious) return;
+        const el = listRef.current;
+        if (el) {
+            prependAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+        }
+        await onLoadPrevious();
+    };
+
+    const handleJumpToBottom = () => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        setShouldAutoScroll(true);
+    };
+
     return (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '20px', background: '#f5f5f5' }}>
+        <div ref={listRef} onScroll={onScrollMessageList} style={{ flex: 1, overflowY: 'auto', padding: '20px', background: '#f5f5f5', position: 'relative' }}>
+            {isNearTop && canLoadPrevious && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+                    <Button onClick={handleLoadPrevious} loading={isLoadingPrevious}>加载上一页</Button>
+                </div>
+            )}
             <List
                 dataSource={messages}
                 split={false}
@@ -363,8 +411,24 @@ const MessageList: React.FC<MessageListProps> = ({ messages }) => {
                         msg={msg}
                         isMe={msg.from_user_id === user?.id}
                         avatarUrl={msg.from_user_id ? avatarUrlByUserId[msg.from_user_id] : undefined}
+                        isHighlighted={highlightedMessageId === msg.id}
                     />
                 )}
+            />
+            <Button
+                type="primary"
+                shape="circle"
+                icon={<DownOutlined />}
+                onClick={handleJumpToBottom}
+                disabled={messages.length === 0}
+                style={{
+                    position: 'fixed',
+                    right: 28,
+                    bottom: 96,
+                    zIndex: 1200,
+                    opacity: 0.58,
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+                }}
             />
             <div ref={bottomRef} />
         </div>
