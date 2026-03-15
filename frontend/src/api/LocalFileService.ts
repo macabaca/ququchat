@@ -151,6 +151,36 @@ export const localFileService = {
         }
     },
 
+    downloadAndSaveAs: async (attachmentId: string, fileName: string): Promise<string> => {
+        if (!window.electronAPI) return '';
+
+        const normalizedName = (fileName || attachmentId || 'download').replace(/[\\/:*?"<>|]/g, '_').trim() || 'download';
+        const dialogResult = await window.electronAPI.fs.showSaveDialog({
+            title: '保存文件',
+            defaultPath: normalizedName
+        });
+        if (dialogResult.canceled || !dialogResult.filePath) return '';
+
+        const urlRes = await fileService.getFileUrl(attachmentId);
+        const response = await fetch(urlRes.url);
+        if (!response.ok) {
+            throw new Error(`Failed to download file: ${response.statusText}`);
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        if (bytes.byteLength === 0) {
+            throw new Error(`Downloaded empty file for attachment ${attachmentId}`);
+        }
+
+        await window.electronAPI.fs.saveFile(dialogResult.filePath, bytes);
+        const persisted = await window.electronAPI.fs.exists(dialogResult.filePath);
+        if (!persisted) {
+            throw new Error(`Local file was not persisted: ${dialogResult.filePath}`);
+        }
+        return dialogResult.filePath;
+    },
+
     downloadAndSaveImage: async (attachmentId: string, userCode: string, isThumb: boolean = true): Promise<string> => {
         console.info('[LocalFileService] downloadAndSaveImage entry', {
             attachmentId,

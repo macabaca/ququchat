@@ -275,6 +275,24 @@ export const messageDao = {
         `;
         return await sqliteClient.query<MessageRow>(sql, [roomId, limit, offset]);
     },
+
+    async searchTextByRoomId(roomId: string, keyword: string, limit: number = 100, offset: number = 0): Promise<MessageRow[]> {
+        const normalizedKeyword = (keyword || '').trim();
+        const likeKeyword = `%${normalizedKeyword}%`;
+        const sql = `
+            SELECT * FROM messages
+            WHERE room_id = ?
+              AND content_type IN ('text', 'image', 'file')
+              AND (
+                    ? = ''
+                    OR COALESCE(content_text, '') LIKE ?
+                    OR COALESCE(payload_json, '') LIKE ?
+                  )
+            ORDER BY sequence_id DESC, created_at DESC
+            LIMIT ? OFFSET ?
+        `;
+        return await sqliteClient.query<MessageRow>(sql, [roomId, normalizedKeyword, likeKeyword, likeKeyword, limit, offset]);
+    },
     
     async getAfterSequence(roomId: string, sequenceId: number): Promise<MessageRow[]> {
          const sql = `

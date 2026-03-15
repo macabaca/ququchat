@@ -14,6 +14,11 @@ export interface IElectronAPI {
     exists: (filePath: string) => Promise<boolean>;
     getPath: (name: string) => Promise<string>;
     pathJoin: (...args: string[]) => Promise<string>;
+    showSaveDialog: (options?: {
+      title?: string;
+      defaultPath?: string;
+      filters?: Array<{ name: string; extensions: string[] }>;
+    }) => Promise<{ canceled: boolean; filePath: string }>;
   };
 }
 

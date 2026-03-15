@@ -15,7 +15,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     readFile: (filePath) => ipcRenderer.invoke('fs-read-file', filePath),
     exists: (filePath) => ipcRenderer.invoke('fs-exists', filePath),
     getPath: (name) => ipcRenderer.invoke('fs-get-path', name),
-    pathJoin: (...args) => ipcRenderer.invoke('fs-path-join', ...args)
+    pathJoin: (...args) => ipcRenderer.invoke('fs-path-join', ...args),
+    showSaveDialog: (options) => ipcRenderer.invoke('fs-show-save-dialog', options)
   }
 });
 

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
 const db = require('./database'); // 引入数据库模块
@@ -169,6 +169,19 @@ function createWindow() {
       return path.join(...args);
     } catch (err) {
       console.error('IPC fs-path-join error:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('fs-show-save-dialog', async (event, options) => {
+    try {
+      const result = await dialog.showSaveDialog(win, options || {});
+      return {
+        canceled: result.canceled,
+        filePath: result.filePath || ''
+      };
+    } catch (err) {
+      console.error('IPC fs-show-save-dialog error:', err);
       throw err;
     }
   });

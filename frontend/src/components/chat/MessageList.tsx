@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { List, Avatar, Button, Modal } from 'antd';
+import { List, Avatar, Button, Modal, message } from 'antd';
 import { UserOutlined, FileOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined } from '@ant-design/icons';
 import { Message } from '../../types/models';
 import { useAuthStore } from '../../stores/authStore';
@@ -17,6 +17,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }>
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [originalUrl, setOriginalUrl] = useState<string>('');
     const [loadingOriginal, setLoadingOriginal] = useState(false);
+    const [isDownloading, setIsDownloading] = useState(false);
 
     const isImage = msg.is_image || (typeof msg.content === 'string' && (msg.content.startsWith('http') || msg.content.startsWith('blob:')) && (msg.content.match(/\.(jpeg|jpg|gif|png|webp)(\?.*)?$/i) != null));
     // For temp messages, we might just have the content as the URL (blob or uploaded URL) even if is_image is not set correctly yet?
@@ -106,6 +107,58 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }>
         }
     };
 
+    const inferDownloadFileName = () => {
+        const source = typeof msg.content === 'string' ? msg.content.trim() : '';
+        const extractName = (value: string) => {
+            if (!value) return '';
+            if (/^https?:\/\//i.test(value)) {
+                try {
+                    const u = new URL(value);
+                    return decodeURIComponent(u.pathname.split('/').pop() || '');
+                } catch {
+                    return '';
+                }
+            }
+            const base = value.split('?')[0].split('#')[0].split(/[\\/]/).pop() || '';
+            try {
+                return decodeURIComponent(base);
+            } catch {
+                return base;
+            }
+        };
+
+        let name = extractName(source);
+        if (!name || /^blob:/i.test(name)) {
+            name = msg.attachment_id || 'download';
+        }
+        name = name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'download';
+        const hasExt = /\.[a-zA-Z0-9]{1,8}$/.test(name);
+        if (!hasExt && isImage) {
+            name = `${name}.png`;
+        }
+        return name;
+    };
+
+    const handleDownload = async () => {
+        if (!msg.attachment_id) {
+            message.warning('缺少附件ID，无法下载');
+            return;
+        }
+        setIsDownloading(true);
+        try {
+            const savedPath = await localFileService.downloadAndSaveAs(msg.attachment_id, inferDownloadFileName());
+            if (!savedPath) {
+                message.info('已取消下载');
+                return;
+            }
+            message.success(`已保存到：${savedPath}`);
+        } catch {
+            message.error('下载失败');
+        } finally {
+            setIsDownloading(false);
+        }
+    };
+
     const renderContent = () => {
         if (isImage) {
             return (
@@ -168,11 +221,11 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }>
                                 key="download" 
                                 type="primary" 
                                 icon={<DownloadOutlined />} 
-                                onClick={() => window.open(originalUrl, '_blank')}
-                                disabled={!originalUrl}
-                                loading={loadingOriginal}
+                                onClick={handleDownload}
+                                disabled={!msg.attachment_id}
+                                loading={isDownloading || loadingOriginal}
                             >
-                                Download Original
+                                下载
                             </Button>
                         ]}
                         width={800}
@@ -196,11 +249,16 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string }>
                     <FileOutlined style={{ fontSize: '24px' }} />
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
                         <span>{filePlaceholder}</span>
-                        {downloadUrl && (
-                            <a href={downloadUrl} target="_blank" rel="noopener noreferrer" style={{ color: isMe ? '#fff' : '#1890ff', textDecoration: 'underline' }}>
-                                <DownloadOutlined /> Download
-                            </a>
-                        )}
+                        <Button
+                            type="link"
+                            icon={<DownloadOutlined />}
+                            onClick={handleDownload}
+                            loading={isDownloading}
+                            disabled={!msg.attachment_id}
+                            style={{ color: isMe ? '#fff' : '#1890ff', padding: 0, height: 'auto' }}
+                        >
+                            下载
+                        </Button>
                     </div>
                 </div>
             );
