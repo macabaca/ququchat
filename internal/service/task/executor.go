@@ -69,6 +69,12 @@ func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) 
 			return Result{}, err
 		}
 		return Result{Text: &text}, nil
+	case TypeAgent:
+		text, err := e.executeAgent(ctx, t)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{Text: &text}, nil
 	default:
 		return Result{}, ErrUnsupportedTask
 	}

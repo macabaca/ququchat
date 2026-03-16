@@ -8,6 +8,7 @@ const (
 	TypeFakeLLM Type = "fake_llm"
 	TypeLLM     Type = "llm"
 	TypeSummary Type = "summary"
+	TypeAgent   Type = "agent"
 )
 
 type Priority int
@@ -40,10 +41,17 @@ type SummaryPayload struct {
 	Prompt string
 }
 
+type AgentPayload struct {
+	Goal           string
+	RecentMessages []string
+	MaxSteps       int
+}
+
 type Payload struct {
 	FakeLLM *FakeLLMPayload
 	LLM     *LLMPayload
 	Summary *SummaryPayload
+	Agent   *AgentPayload
 }
 
 type Result struct {
@@ -79,6 +87,13 @@ func (t *Task) Clone() *Task {
 	if t.Payload.Summary != nil {
 		payloadCopy := *t.Payload.Summary
 		next.Payload.Summary = &payloadCopy
+	}
+	if t.Payload.Agent != nil {
+		payloadCopy := *t.Payload.Agent
+		if t.Payload.Agent.RecentMessages != nil {
+			payloadCopy.RecentMessages = append([]string(nil), t.Payload.Agent.RecentMessages...)
+		}
+		next.Payload.Agent = &payloadCopy
 	}
 	if t.Result.Text != nil {
 		textCopy := *t.Result.Text
