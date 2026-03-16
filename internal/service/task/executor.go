@@ -14,10 +14,18 @@ type Executor interface {
 	Execute(ctx context.Context, t *Task) (Result, error)
 }
 
-type DefaultExecutor struct{}
+type ExecutorOptions struct {
+	LLMClient LLMClient
+}
 
-func NewDefaultExecutor() *DefaultExecutor {
-	return &DefaultExecutor{}
+type DefaultExecutor struct {
+	llmClient LLMClient
+}
+
+func NewDefaultExecutor(opts ExecutorOptions) *DefaultExecutor {
+	return &DefaultExecutor{
+		llmClient: opts.LLMClient,
+	}
 }
 
 func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) {
@@ -36,6 +44,18 @@ func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) 
 			return Result{}, ctx.Err()
 		}
 		text := fmt.Sprintf("fake-llm-response:%s", strings.TrimSpace(t.Payload.FakeLLM.Prompt))
+		return Result{Text: &text}, nil
+	case TypeLLM:
+		if t.Payload.LLM == nil {
+			return Result{}, errors.New("missing llm payload")
+		}
+		if e.llmClient == nil {
+			return Result{}, errors.New("llm client is not configured")
+		}
+		text, err := e.llmClient.Chat(ctx, t.Payload.LLM.Prompt)
+		if err != nil {
+			return Result{}, err
+		}
 		return Result{Text: &text}, nil
 	default:
 		return Result{}, ErrUnsupportedTask

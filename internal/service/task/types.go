@@ -6,6 +6,7 @@ type Type string
 
 const (
 	TypeFakeLLM Type = "fake_llm"
+	TypeLLM     Type = "llm"
 )
 
 type Priority int
@@ -30,8 +31,13 @@ type FakeLLMPayload struct {
 	SleepMs int64
 }
 
+type LLMPayload struct {
+	Prompt string
+}
+
 type Payload struct {
 	FakeLLM *FakeLLMPayload
+	LLM     *LLMPayload
 }
 
 type Result struct {
@@ -59,6 +65,10 @@ func (t *Task) Clone() *Task {
 	if t.Payload.FakeLLM != nil {
 		payloadCopy := *t.Payload.FakeLLM
 		next.Payload.FakeLLM = &payloadCopy
+	}
+	if t.Payload.LLM != nil {
+		payloadCopy := *t.Payload.LLM
+		next.Payload.LLM = &payloadCopy
 	}
 	if t.Result.Text != nil {
 		textCopy := *t.Result.Text

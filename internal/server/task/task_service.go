@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"sync"
-	"time"
 
 	"gorm.io/gorm"
 
@@ -54,6 +53,13 @@ func (s *Service) SubmitFakeLLM(req tasksvc.SubmitFakeLLMRequest) (*tasksvc.Task
 	return s.runtime.SubmitFakeLLM(req)
 }
 
+func (s *Service) SubmitLLM(req tasksvc.SubmitLLMRequest) (*tasksvc.Task, error) {
+	if s == nil || s.runtime == nil {
+		return nil, ErrServiceNotInitialized
+	}
+	return s.runtime.SubmitLLM(req)
+}
+
 func (s *Service) Get(taskID string) (*tasksvc.Task, bool) {
 	if s == nil || s.runtime == nil {
 		return nil, false
@@ -93,13 +99,26 @@ func (s *Service) SubmitCommand(req SubmitCommandRequest, cb TaskCallback) (stri
 			Prompt:   prompt,
 			SleepMs:  800,
 		})
-	} else {
-		t, err = s.runtime.SubmitFakeLLM(tasksvc.SubmitFakeLLMRequest{
-			RequestID: strings.TrimSpace(req.UserID) + "-" + strings.TrimSpace(req.RoomID) + "-" + time.Now().Format("20060102150405.000000000"),
-			Priority:  tasksvc.PriorityNormal,
-			Prompt:    cmd,
-			SleepMs:   800,
+	} else if strings.HasPrefix(cmd, "task:llm") {
+		prompt := strings.TrimSpace(strings.TrimPrefix(cmd, "task:llm"))
+		if prompt == "" {
+			prompt = cmd
+		}
+		t, err = s.runtime.SubmitLLM(tasksvc.SubmitLLMRequest{
+			Priority: tasksvc.PriorityNormal,
+			Prompt:   prompt,
 		})
+	} else if strings.HasPrefix(cmd, "对话") {
+		prompt := strings.TrimSpace(strings.TrimPrefix(cmd, "对话"))
+		if prompt == "" {
+			return "", ErrCommandRequired
+		}
+		t, err = s.runtime.SubmitLLM(tasksvc.SubmitLLMRequest{
+			Priority: tasksvc.PriorityNormal,
+			Prompt:   prompt,
+		})
+	} else {
+		return "", ErrUnsupportedCommand
 	}
 	if err != nil {
 		return "", err

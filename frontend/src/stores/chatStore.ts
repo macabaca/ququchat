@@ -58,6 +58,12 @@ const normalizeTaskResultMessage = (
     };
 };
 
+const shouldIgnoreIncomingMessage = (incoming: Message): boolean => {
+    const raw = incoming as Record<string, any>;
+    const rawType = String(raw?.type || '').trim();
+    return rawType === 'task_created';
+};
+
 interface ChatState {
     friends: Friend[];
     groups: Group[];
@@ -479,6 +485,9 @@ export const useChatStore = create<ChatState>()(
             },
 
             handleIncomingMessage: async (message: Message) => {
+                if (shouldIgnoreIncomingMessage(message)) {
+                    return;
+                }
                 const { friends, groupMembersByGroupId } = get();
                 const myUser = useAuthStore.getState().user;
                 const normalizedIncoming = normalizeTaskResultMessage(message, myUser, friends, groupMembersByGroupId);
@@ -685,7 +694,7 @@ export const useChatStore = create<ChatState>()(
                         }
                         
                         return msg;
-                    }).reverse();
+                    }).filter((msg) => !shouldIgnoreIncomingMessage(msg)).reverse();
 
                     set(state => {
                         const current = state.messages[roomId] || [];

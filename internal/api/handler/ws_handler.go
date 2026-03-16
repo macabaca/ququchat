@@ -381,6 +381,34 @@ func (c *Client) readLoop(h *WsHandler) {
 				continue
 			}
 			if strings.HasPrefix(strings.TrimSpace(msg.Content), "\\") {
+				if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
+					continue
+				}
+				savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content)
+				if err != nil {
+					continue
+				}
+				memberIDs, err := h.getGroupMemberIDs(msg.RoomID)
+				if err != nil {
+					continue
+				}
+				commandOut := OutgoingMessage{
+					ID:         savedMsg.ID,
+					Type:       "group_message",
+					FromUser:   c.userID,
+					RoomID:     msg.RoomID,
+					Content:    msg.Content,
+					Timestamp:  savedMsg.CreatedAt.Unix(),
+					SequenceID: savedMsg.SequenceID,
+				}
+				commandBroadcast, err := json.Marshal(commandOut)
+				if err == nil {
+					c.hub.broadcast <- GroupMessage{
+						RoomID:  msg.RoomID,
+						UserIDs: memberIDs,
+						Data:    commandBroadcast,
+					}
+				}
 				if h.taskService == nil {
 					continue
 				}
@@ -419,6 +447,21 @@ func (c *Client) readLoop(h *WsHandler) {
 				})
 				if err != nil {
 					log.Printf("submit command failed user=%s room=%s err=%v", userID, roomID, err)
+					failedMemberIDs, listErr := h.getGroupMemberIDs(roomID)
+					if listErr != nil {
+						continue
+					}
+					failedPayload, marshalErr := json.Marshal(map[string]interface{}{
+						"type":       "task_result",
+						"room_id":    roomID,
+						"to_user_id": userID,
+						"status":     "failed",
+						"error":      err.Error(),
+						"text":       err.Error(),
+					})
+					if marshalErr == nil {
+						h.hub.SendDataToUsers(failedMemberIDs, failedPayload)
+					}
 					continue
 				}
 				created, marshalErr := json.Marshal(map[string]interface{}{
@@ -426,11 +469,20 @@ func (c *Client) readLoop(h *WsHandler) {
 					"task_id": taskID,
 					"room_id": roomID,
 				})
-				if marshalErr == nil {
-					select {
-					case c.send <- created:
-					default:
+				if marshalErr != nil {
+					created, err = json.Marshal(map[string]interface{}{
+						"type":    "task_result",
+						"room_id": roomID,
+						"status":  "failed",
+						"text":    "task create failed",
+					})
+					if err != nil {
+						continue
 					}
+				}
+				select {
+				case c.send <- created:
+				default:
 				}
 				continue
 			}

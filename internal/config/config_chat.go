@@ -16,6 +16,26 @@ type Task struct {
 	WorkerSize     int `yaml:"worker_size" json:"worker_size"`
 }
 
+type LLM struct {
+	APIKey  string `yaml:"api_key" json:"api_key"`
+	BaseURL string `yaml:"base_url" json:"base_url"`
+	Model   string `yaml:"model" json:"model"`
+}
+
+func (l LLM) BaseURLOrDefault() string {
+	if strings.TrimSpace(l.BaseURL) != "" {
+		return strings.TrimSpace(l.BaseURL)
+	}
+	return "https://api.openai.com/v1"
+}
+
+func (l LLM) ModelOrDefault() string {
+	if strings.TrimSpace(l.Model) != "" {
+		return strings.TrimSpace(l.Model)
+	}
+	return "gpt-4o-mini"
+}
+
 func (t Task) QueueHighCapOrDefault() int {
 	if t.QueueHighCap > 0 {
 		return t.QueueHighCap

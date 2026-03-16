@@ -73,6 +73,9 @@ func main() {
 		QueueNormalCap: cfg.Task.QueueNormalCapOrDefault(),
 		QueueLowCap:    cfg.Task.QueueLowCapOrDefault(),
 		WorkerSize:     cfg.Task.WorkerSizeOrDefault(),
+		LLMAPIKey:      cfg.LLM.APIKey,
+		LLMBaseURL:     cfg.LLM.BaseURLOrDefault(),
+		LLMModel:       cfg.LLM.ModelOrDefault(),
 	})
 	taskService.Start(context.Background())
 

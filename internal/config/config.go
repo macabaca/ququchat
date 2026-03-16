@@ -12,6 +12,7 @@ type Config struct {
 	Auth     Auth     `yaml:"auth" json:"auth"`
 	Chat     Chat     `yaml:"chat" json:"chat"`
 	Task     Task     `yaml:"task" json:"task"`
+	LLM      LLM      `yaml:"llm" json:"llm"`
 	File     File     `yaml:"file" json:"file"`
 	Avatar   Avatar   `yaml:"avatar" json:"avatar"`
 	Storage  Storage  `yaml:"storage" json:"storage"`

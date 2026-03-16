@@ -15,6 +15,10 @@ type RuntimeOptions struct {
 	QueueLowCap    int
 	WorkerSize     int
 	Store          Store
+	LLMClient      LLMClient
+	LLMAPIKey      string
+	LLMBaseURL     string
+	LLMModel       string
 	OnFinish       func(ctx context.Context, doneTask *Task)
 }
 
@@ -30,7 +34,20 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 	if store == nil {
 		store = NewMemoryStore()
 	}
-	exec := NewDefaultExecutor()
+	llmClient := opts.LLMClient
+	if llmClient == nil {
+		if strings.TrimSpace(opts.LLMAPIKey) != "" && strings.TrimSpace(opts.LLMBaseURL) != "" && strings.TrimSpace(opts.LLMModel) != "" {
+			client, err := NewOpenAICompatClient(OpenAICompatOptions{
+				APIKey:  opts.LLMAPIKey,
+				BaseURL: opts.LLMBaseURL,
+				Model:   opts.LLMModel,
+			})
+			if err == nil {
+				llmClient = client
+			}
+		}
+	}
+	exec := NewDefaultExecutor(ExecutorOptions{LLMClient: llmClient})
 	pool := NewPool(queue, store, exec, opts.WorkerSize, opts.OnFinish)
 	return &Runtime{
 		store: store,
@@ -52,6 +69,12 @@ type SubmitFakeLLMRequest struct {
 	Priority  Priority
 	Prompt    string
 	SleepMs   int64
+}
+
+type SubmitLLMRequest struct {
+	RequestID string
+	Priority  Priority
+	Prompt    string
 }
 
 func (r *Runtime) SubmitFakeLLM(req SubmitFakeLLMRequest) (*Task, error) {
@@ -88,4 +111,38 @@ func (r *Runtime) SubmitFakeLLM(req SubmitFakeLLMRequest) (*Task, error) {
 	return t.Clone(), nil
 }
 
+func (r *Runtime) SubmitLLM(req SubmitLLMRequest) (*Task, error) {
+	now := time.Now()
+	taskID := strings.TrimSpace(req.RequestID)
+	if taskID == "" {
+		taskID = uuid.NewString()
+	}
+	t := &Task{
+		ID:        taskID,
+		RequestID: strings.TrimSpace(req.RequestID),
+		Type:      TypeLLM,
+		Priority:  req.Priority,
+		Status:    StatusPending,
+		Payload: Payload{
+			LLM: &LLMPayload{
+				Prompt: strings.TrimSpace(req.Prompt),
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if t.Payload.LLM.Prompt == "" {
+		return nil, ErrInvalidLLMPrompt
+	}
+	if err := r.store.Create(t); err != nil {
+		return nil, err
+	}
+	if err := r.queue.Push(t.Clone()); err != nil {
+		_, _ = r.store.MarkFailed(t.ID, err.Error())
+		return nil, err
+	}
+	return t.Clone(), nil
+}
+
 var ErrInvalidFakeLLMPrompt = errors.New("invalid fake llm prompt")
+var ErrInvalidLLMPrompt = errors.New("invalid llm prompt")
