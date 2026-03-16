@@ -77,6 +77,12 @@ type SubmitLLMRequest struct {
 	Prompt    string
 }
 
+type SubmitSummaryRequest struct {
+	RequestID string
+	Priority  Priority
+	Prompt    string
+}
+
 func (r *Runtime) SubmitFakeLLM(req SubmitFakeLLMRequest) (*Task, error) {
 	now := time.Now()
 	taskID := strings.TrimSpace(req.RequestID)
@@ -144,5 +150,39 @@ func (r *Runtime) SubmitLLM(req SubmitLLMRequest) (*Task, error) {
 	return t.Clone(), nil
 }
 
+func (r *Runtime) SubmitSummary(req SubmitSummaryRequest) (*Task, error) {
+	now := time.Now()
+	taskID := strings.TrimSpace(req.RequestID)
+	if taskID == "" {
+		taskID = uuid.NewString()
+	}
+	t := &Task{
+		ID:        taskID,
+		RequestID: strings.TrimSpace(req.RequestID),
+		Type:      TypeSummary,
+		Priority:  req.Priority,
+		Status:    StatusPending,
+		Payload: Payload{
+			Summary: &SummaryPayload{
+				Prompt: strings.TrimSpace(req.Prompt),
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if t.Payload.Summary.Prompt == "" {
+		return nil, ErrInvalidSummaryPrompt
+	}
+	if err := r.store.Create(t); err != nil {
+		return nil, err
+	}
+	if err := r.queue.Push(t.Clone()); err != nil {
+		_, _ = r.store.MarkFailed(t.ID, err.Error())
+		return nil, err
+	}
+	return t.Clone(), nil
+}
+
 var ErrInvalidFakeLLMPrompt = errors.New("invalid fake llm prompt")
 var ErrInvalidLLMPrompt = errors.New("invalid llm prompt")
+var ErrInvalidSummaryPrompt = errors.New("invalid summary prompt")

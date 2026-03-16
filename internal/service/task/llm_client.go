@@ -111,8 +111,23 @@ func (c *OpenAICompatClient) Chat(ctx context.Context, prompt string) (string, e
 		return "", errors.New("llm response has no choices")
 	}
 	content := strings.TrimSpace(out.Choices[0].Message.Content)
+	content = extractAfterThinkTag(content)
 	if content == "" {
 		return "", errors.New("llm response content is empty")
 	}
 	return content, nil
+}
+
+func extractAfterThinkTag(content string) string {
+	text := strings.TrimSpace(content)
+	const endTag = "</think>"
+	idx := strings.LastIndex(text, endTag)
+	if idx < 0 {
+		return text
+	}
+	after := strings.TrimSpace(text[idx+len(endTag):])
+	if after == "" {
+		return text
+	}
+	return after
 }

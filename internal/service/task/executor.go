@@ -57,6 +57,18 @@ func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) 
 			return Result{}, err
 		}
 		return Result{Text: &text}, nil
+	case TypeSummary:
+		if t.Payload.Summary == nil {
+			return Result{}, errors.New("missing summary payload")
+		}
+		if e.llmClient == nil {
+			return Result{}, errors.New("llm client is not configured")
+		}
+		text, err := e.llmClient.Chat(ctx, t.Payload.Summary.Prompt)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{Text: &text}, nil
 	default:
 		return Result{}, ErrUnsupportedTask
 	}
