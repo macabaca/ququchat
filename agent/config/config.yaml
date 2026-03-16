@@ -1,0 +1,17 @@
+server:
+  addr: ":50051"
+
+worker:
+  size: 4
+
+kafka:
+  brokers:
+    - "127.0.0.1:9092"
+  ingress_topic: "agent.llm.ingress"
+  result_topic: "agent.llm.result"
+  group_id: "agent-llm-consumer"
+
+queue:
+  high_capacity: 256
+  normal_capacity: 512
+  low_capacity: 512

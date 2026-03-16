@@ -78,6 +78,13 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	files.POST("/multipart/complete", fileHandler.CompleteMultipartUpload)
 	files.POST("/multipart/abort", fileHandler.AbortMultipartUpload)
 
+	normalAgentHandler := handler.NewAgentNormalHandler()
+	llmAgentHandler := handler.NewAgentLLMHandler(hub)
+	agent := api.Group("/agent", middleware.JWTAuth(authCfg.JWTSecret))
+	agent.POST("/add", normalAgentHandler.SubmitAddTask)
+	agent.POST("/llm/tasks", llmAgentHandler.SubmitLLMTask)
+	agent.POST("/llm/fake", llmAgentHandler.SubmitFakeLLMTask)
+
 	wsHandler := handler.NewWsHandler(db, hub)
 	r.GET("/ws", middleware.JWTAuthFromHeaderOrQuery(authCfg.JWTSecret), wsHandler.Handle)
 

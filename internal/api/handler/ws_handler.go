@@ -102,6 +102,20 @@ func (h *Hub) SendSystemEventToUsers(userIDs []string, event string) {
 	h.broadcast <- GroupMessage{UserIDs: userIDs, Data: data}
 }
 
+func (h *Hub) SendDataToUser(userID string, data []byte) {
+	if userID == "" {
+		return
+	}
+	h.SendDataToUsers([]string{userID}, data)
+}
+
+func (h *Hub) SendDataToUsers(userIDs []string, data []byte) {
+	if h == nil || len(userIDs) == 0 || len(data) == 0 {
+		return
+	}
+	h.broadcast <- GroupMessage{UserIDs: userIDs, Data: data}
+}
+
 func (h *Hub) run() {
 	for {
 		select {
