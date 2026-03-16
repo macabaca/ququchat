@@ -20,3 +20,22 @@
 
 # Documentation
 document/
+
+# Project local folders
+bash/
+bin/
+documents/
+
+# Local config (contains secrets)
+internal/config/config.yaml
+
+# Local config (contains secrets)
+internal/config/config.yaml
+ququchat.log
+frontend/node_modules/
+frontend/.vite/
+frontend/dist/
+frontend/release/
+frontend/src/configs/config.ts
+cmd.exe
+ququchat.pid

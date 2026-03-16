@@ -86,3 +86,11 @@ func Migrate(db *gorm.DB) error {
 		&models.Attachment{},
 	)
 }
+
+func ResetAllUsersOffline(db *gorm.DB) (int64, error) {
+	result := db.Model(&models.User{}).Where("status <> ?", "offline").Update("status", "offline")
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}

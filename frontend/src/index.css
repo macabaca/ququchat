@@ -1,0 +1,257 @@
+/* Global Resets */
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  overflow: hidden;
+}
+
+body {
+  background-color: #f0f2f5; 
+}
+
+/* =========================================
+   Title Bar / Navigation Header Styles
+   ========================================= */
+.title-bar {
+  height: 60px; /* Taller header as requested */
+  width: 100%;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  /* Ensure the entire title bar is draggable */
+  -webkit-app-region: drag; 
+  user-select: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05); /* Subtle separator shadow */
+  padding: 0 0 0 24px; /* Padding for left content */
+}
+
+/* Left Section: Logo & Title */
+.title-bar-left {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  /* Make sure interactive parts inside are not draggable if needed, but for logo/title it's fine to be draggable */
+  /* If you want logo to be draggable, keep it as is. If it's clickable (like a home link), add no-drag */
+}
+
+.logo-circle {
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, #1677ff 0%, #69b1ff 100%);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  font-size: 18px;
+  margin-right: 12px;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.3);
+}
+
+.app-title {
+  font-size: 18px;
+  color: #1f1f1f;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+
+/* Center Section: Navigation Menu */
+.title-bar-nav {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  /* Important: Make nav items clickable by disabling drag on this region */
+  /* However, to allow dragging in the empty space between items, we should apply no-drag to ITEMS, not the container */
+  /* Reverting to allow drag on container, and no-drag on children */
+  /* -webkit-app-region: no-drag;  <-- REMOVED to allow drag on empty space */
+  margin-left: 48px; /* Spacing from title */
+  flex: 1; /* Push to take available space */
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  margin-right: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #5f6368;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  /* CRITICAL: Make individual items clickable */
+  -webkit-app-region: no-drag; 
+}
+
+.nav-item span {
+  margin-left: 6px;
+}
+
+.nav-item:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+  color: #1677ff;
+}
+
+/* Right Section: Window Controls */
+.title-bar-controls {
+  display: flex;
+  height: 100%;
+  /* Controls container should be no-drag to ensure buttons are hit */
+  -webkit-app-region: no-drag; 
+}
+
+.title-bar-button {
+  width: 50px; /* Wider hit targets */
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  color: #5f6368;
+  transition: background-color 0.2s;
+  /* Redundant if parent is no-drag, but safe */
+  -webkit-app-region: no-drag;
+}
+
+.title-bar-button:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.title-bar-button.close:hover {
+  background-color: #ff4d4f;
+  color: white;
+}
+
+/* =========================================
+   Auth Layout & Page Background
+   ========================================= */
+.auth-layout-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  /* Elegant, soft gradient background */
+  background: radial-gradient(circle at 50% 10%, #ffffff 0%, #f0f2f5 100%);
+  padding: 24px;
+  padding-top: 80px; /* Clear the taller header */
+}
+
+/* Login Card Container */
+.auth-card {
+  width: 100%;
+  max-width: 440px; /* Slightly wider for better spacing */
+  border-radius: 16px;
+  /* Deep, layered shadow for "floating" effect */
+  box-shadow: 
+    0 4px 6px -1px rgba(0, 0, 0, 0.02), 
+    0 10px 15px -3px rgba(0, 0, 0, 0.04),
+    0 20px 25px -5px rgba(0, 0, 0, 0.04);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 1);
+  overflow: hidden;
+  animation: fadeIn 0.6s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Logo section inside card (Optional, since we have top bar, but good for focus) */
+.auth-logo {
+  text-align: center;
+  margin-bottom: 32px;
+  margin-top: 12px;
+}
+
+/* =========================================
+   Form Elements Styling
+   ========================================= */
+.login-form-button {
+  height: 50px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 25px; /* Pill shape */
+  background: linear-gradient(90deg, #1677ff 0%, #3b82f6 100%);
+  border: none;
+  box-shadow: 0 4px 12px rgba(22, 119, 255, 0.25);
+  transition: all 0.3s ease;
+}
+
+.login-form-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(22, 119, 255, 0.35);
+  background: linear-gradient(90deg, #4096ff 0%, #69b1ff 100%);
+}
+
+.login-input {
+  height: 50px;
+  border-radius: 12px;
+  background-color: #f9fafb; /* Slight grey bg for inputs */
+  border: 1px solid #e5e7eb;
+  padding-left: 12px;
+  transition: all 0.3s;
+  font-size: 15px;
+}
+
+.login-input:hover {
+  background-color: #fff;
+  border-color: #bfdbfe;
+}
+
+.login-input:focus {
+  background-color: #fff;
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.1);
+}
+
+.login-input-prefix {
+  color: #9ca3af;
+  font-size: 18px;
+  margin-right: 10px;
+}
+
+/* QR Code Toggle Button */
+.qr-code-toggle {
+  background: #f0f5ff;
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border-top-right-radius: 0;
+  border-bottom-left-radius: 12px;
+  position: absolute;
+  top: 0;
+  right: 0;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.qr-code-toggle:hover {
+  background: #d6e4ff;
+}
+
+.auth-footer-links {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 28px;
+  font-size: 14px;
+  color: #6b7280;
+}

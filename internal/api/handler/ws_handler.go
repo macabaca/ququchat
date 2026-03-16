@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -29,10 +30,16 @@ type WsHandler struct {
 	hub *Hub
 }
 
-func NewWsHandler(db *gorm.DB) *WsHandler {
+func NewWsHandler(db *gorm.DB, hub *Hub) *WsHandler {
+	if hub == nil {
+		hub = NewHub()
+	}
+	if hub.db == nil {
+		hub.db = db
+	}
 	return &WsHandler{
 		db:  db,
-		hub: NewHub(),
+		hub: hub,
 	}
 }
 
@@ -43,6 +50,7 @@ type Hub struct {
 	unregister    chan *Client
 	direct        chan DirectMessage
 	broadcast     chan GroupMessage
+	db            *gorm.DB
 }
 
 type DirectMessage struct {
@@ -55,6 +63,11 @@ type GroupMessage struct {
 	RoomID  string
 	UserIDs []string
 	Data    []byte
+}
+
+type SystemEvent struct {
+	Type  string `json:"type"`
+	Event string `json:"event"`
 }
 
 func NewHub() *Hub {
@@ -70,39 +83,40 @@ func NewHub() *Hub {
 	return h
 }
 
+func (h *Hub) SendSystemEventToUser(userID string, event string) {
+	if userID == "" {
+		return
+	}
+	h.SendSystemEventToUsers([]string{userID}, event)
+}
+
+func (h *Hub) SendSystemEventToUsers(userIDs []string, event string) {
+	if h == nil || len(userIDs) == 0 || event == "" {
+		return
+	}
+	data, err := json.Marshal(SystemEvent{Type: "system_event", Event: event})
+	if err != nil {
+		log.Printf("failed to marshal system_event: %v", err)
+		return
+	}
+	h.broadcast <- GroupMessage{UserIDs: userIDs, Data: data}
+}
+
 func (h *Hub) run() {
 	for {
 		select {
 		case c := <-h.register:
-			h.clients[c] = true
-			if _, ok := h.clientsByUser[c.userID]; !ok {
-				h.clientsByUser[c.userID] = make(map[*Client]bool)
-			}
-			h.clientsByUser[c.userID][c] = true
+			h.handleRegister(c)
 		case c := <-h.unregister:
-			if _, ok := h.clients[c]; ok {
-				delete(h.clients, c)
-				if set, ok := h.clientsByUser[c.userID]; ok {
-					delete(set, c)
-					if len(set) == 0 {
-						delete(h.clientsByUser, c.userID)
-					}
-				}
-				close(c.send)
-			}
+			h.removeClient(c)
 		case msg := <-h.direct:
 			if set, ok := h.clientsByUser[msg.ToUserID]; ok {
 				for c := range set {
 					select {
 					case c.send <- msg.Data:
 					default:
-						close(c.send)
-						delete(h.clients, c)
-						delete(set, c)
+						h.removeClient(c)
 					}
-				}
-				if len(set) == 0 {
-					delete(h.clientsByUser, msg.ToUserID)
 				}
 			}
 			if set, ok := h.clientsByUser[msg.FromUserID]; ok {
@@ -110,13 +124,8 @@ func (h *Hub) run() {
 					select {
 					case c.send <- msg.Data:
 					default:
-						close(c.send)
-						delete(h.clients, c)
-						delete(set, c)
+						h.removeClient(c)
 					}
-				}
-				if len(set) == 0 {
-					delete(h.clientsByUser, msg.FromUserID)
 				}
 			}
 		case msg := <-h.broadcast:
@@ -126,18 +135,77 @@ func (h *Hub) run() {
 						select {
 						case c.send <- msg.Data:
 						default:
-							close(c.send)
-							delete(h.clients, c)
-							delete(set, c)
+							h.removeClient(c)
 						}
-					}
-					if len(set) == 0 {
-						delete(h.clientsByUser, uid)
 					}
 				}
 			}
 		}
 	}
+}
+
+func (h *Hub) handleRegister(c *Client) {
+	h.clients[c] = true
+	set, ok := h.clientsByUser[c.userID]
+	if !ok {
+		set = make(map[*Client]bool)
+		h.clientsByUser[c.userID] = set
+	}
+	set[c] = true
+	if len(set) == 1 {
+		h.updateUserStatus(c.userID, "active")
+	}
+}
+
+func (h *Hub) removeClient(c *Client) {
+	if _, ok := h.clients[c]; !ok {
+		return
+	}
+	delete(h.clients, c)
+	if set, ok := h.clientsByUser[c.userID]; ok {
+		delete(set, c)
+		if len(set) == 0 {
+			delete(h.clientsByUser, c.userID)
+			h.updateUserStatus(c.userID, "offline")
+		}
+	}
+	close(c.send)
+}
+
+func (h *Hub) updateUserStatus(userID, status string) {
+	if h == nil || h.db == nil || userID == "" || status == "" {
+		return
+	}
+	go func() {
+		if err := h.db.Model(&models.User{}).Where("id = ?", userID).Update("status", status).Error; err != nil {
+			log.Printf("ws update user status failed user=%s status=%s err=%v", userID, status, err)
+			return
+		}
+		friendIDs, err := h.listFriendIDs(userID)
+		if err != nil {
+			log.Printf("ws list friends for status update failed user=%s err=%v", userID, err)
+			return
+		}
+		if len(friendIDs) > 0 {
+			h.SendSystemEventToUsers(friendIDs, "friend_list_updated")
+		}
+	}()
+}
+
+func (h *Hub) listFriendIDs(userID string) ([]string, error) {
+	var relations []models.Friendship
+	if err := h.db.Where("user_id_a = ? OR user_id_b = ?", userID, userID).Find(&relations).Error; err != nil {
+		return nil, err
+	}
+	friendIDs := make([]string, 0, len(relations))
+	for _, r := range relations {
+		if r.UserIDA == userID {
+			friendIDs = append(friendIDs, r.UserIDB)
+		} else {
+			friendIDs = append(friendIDs, r.UserIDA)
+		}
+	}
+	return friendIDs, nil
 }
 
 type Client struct {
@@ -199,8 +267,10 @@ func (h *WsHandler) Handle(c *gin.Context) {
 	}
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
+		log.Printf("ws upgrade failed user=%s ip=%s err=%v", userID, c.ClientIP(), err)
 		return
 	}
+	log.Printf("ws connected user=%s ip=%s", userID, c.ClientIP())
 	client := &Client{
 		hub:    h.hub,
 		conn:   conn,
@@ -226,6 +296,11 @@ func (c *Client) readLoop(h *WsHandler) {
 	for {
 		_, data, err := c.conn.ReadMessage()
 		if err != nil {
+			if ce, ok := err.(*websocket.CloseError); ok {
+				log.Printf("ws read close user=%s code=%d text=%s", c.userID, ce.Code, ce.Text)
+			} else {
+				log.Printf("ws read error user=%s err=%v", c.userID, err)
+			}
 			break
 		}
 		var msg IncomingMessage
@@ -414,14 +489,25 @@ func (c *Client) writeLoop() {
 			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			if !ok {
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				log.Printf("ws write closed user=%s", c.userID)
 				return
 			}
 			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				if ce, ok := err.(*websocket.CloseError); ok {
+					log.Printf("ws write close user=%s code=%d text=%s", c.userID, ce.Code, ce.Text)
+				} else {
+					log.Printf("ws write error user=%s err=%v", c.userID, err)
+				}
 				return
 			}
 		case <-ticker.C:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				if ce, ok := err.(*websocket.CloseError); ok {
+					log.Printf("ws ping close user=%s code=%d text=%s", c.userID, ce.Code, ce.Text)
+				} else {
+					log.Printf("ws ping error user=%s err=%v", c.userID, err)
+				}
 				return
 			}
 		}

@@ -2,19 +2,20 @@ package api
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/minio/minio-go/v7"
 	"gorm.io/gorm"
 
 	"ququchat/internal/api/handler"
 	"ququchat/internal/config"
 	"ququchat/internal/middleware"
+	serverstorage "ququchat/internal/server/storage"
 )
 
 // SetupRouter 初始化 Gin 路由，并将数据库句柄注入到上下文中
-func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, minioCfg config.Minio, minioClient *minio.Client) *gin.Engine {
+func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
+	r.Use(middleware.CORS())
 
 	// 简单的 DB 注入中间件
 	r.Use(func(c *gin.Context) {
@@ -34,7 +35,8 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	api.POST("/auth/refresh", auth.Refresh)
 	api.POST("/auth/logout", middleware.JWTAuth(authCfg.JWTSecret), auth.Logout)
 
-	userHandler := handler.NewUserHandler(db)
+	hub := handler.NewHub()
+	userHandler := handler.NewUserHandler(db, fileCfg, avatarCfg, objStorage, bucket, hub)
 	friends := api.Group("/friends", middleware.JWTAuth(authCfg.JWTSecret))
 	friends.POST("/add", userHandler.AddFriend)
 	friends.POST("/remove", userHandler.RemoveFriend)
@@ -42,7 +44,12 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	friends.GET("/requests/incoming", userHandler.ListIncomingFriendRequests)
 	friends.POST("/requests/respond", userHandler.RespondFriendRequest)
 
-	groupHandler := handler.NewGroupHandler(db)
+	users := api.Group("/users", middleware.JWTAuth(authCfg.JWTSecret))
+	users.POST("/me/avatar", userHandler.UploadAvatar)
+	users.GET("/:user_id/avatar/url", userHandler.GetAvatarURL)
+	users.GET("/:user_id/avatar/thumb/url", userHandler.GetAvatarThumbURL)
+
+	groupHandler := handler.NewGroupHandler(db, hub)
 	groups := api.Group("/groups", middleware.JWTAuth(authCfg.JWTSecret))
 	groups.POST("/create", groupHandler.CreateGroup)
 	groups.GET("/:group_id", groupHandler.GetGroupDetail)
@@ -60,7 +67,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	api.GET("/messages/history/latest", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByFriend)
 	api.GET("/messages/history/group", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByGroup)
 
-	fileHandler := handler.NewFileHandler(db, fileCfg, minioClient, minioCfg.Bucket)
+	fileHandler := handler.NewFileHandler(db, fileCfg, objStorage, bucket)
 	files := api.Group("/files", middleware.JWTAuth(authCfg.JWTSecret))
 	files.POST("/upload", fileHandler.Upload)
 	files.GET("/:attachment_id/url", fileHandler.GetDownloadURL)
@@ -71,7 +78,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	files.POST("/multipart/complete", fileHandler.CompleteMultipartUpload)
 	files.POST("/multipart/abort", fileHandler.AbortMultipartUpload)
 
-	wsHandler := handler.NewWsHandler(db)
+	wsHandler := handler.NewWsHandler(db, hub)
 	r.GET("/ws", middleware.JWTAuthFromHeaderOrQuery(authCfg.JWTSecret), wsHandler.Handle)
 
 	return r
