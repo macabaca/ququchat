@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,12 +27,15 @@ const (
 	wsPongWait    = 60 * time.Second
 	wsPingPeriod  = 50 * time.Second
 	wsMaxMsgBytes = 64 * 1024
+	wsRobotUserID = "00000000-0000-0000-0000-00000000a1b2"
 )
 
 type WsHandler struct {
 	db          *gorm.DB
 	hub         *Hub
 	taskService *servertask.Service
+	robotInit   sync.Once
+	robotErr    error
 }
 
 func NewWsHandler(db *gorm.DB, hub *Hub, taskService *servertask.Service) *WsHandler {
@@ -414,7 +418,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				}
 				userID := c.userID
 				roomID := msg.RoomID
-				taskID, err := h.taskService.SubmitCommand(servertask.SubmitCommandRequest{
+				_, err = h.taskService.SubmitCommand(servertask.SubmitCommandRequest{
 					UserID:  userID,
 					RoomID:  roomID,
 					Content: msg.Content,
@@ -422,67 +426,29 @@ func (c *Client) readLoop(h *WsHandler) {
 					if doneTask == nil {
 						return
 					}
-					memberIDs, listErr := h.getGroupMemberIDs(roomID)
-					if listErr != nil {
-						log.Printf("load group members for task result failed room=%s err=%v", roomID, listErr)
+					replyText := ""
+					if doneTask.Result.Text != nil {
+						replyText = strings.TrimSpace(*doneTask.Result.Text)
+					}
+					if replyText == "" && doneTask.ErrorMessage != "" {
+						replyText = doneTask.ErrorMessage
+					}
+					if replyText == "" && doneTask.Status == tasksvc.StatusFailed {
+						replyText = "对话失败"
+					}
+					if strings.TrimSpace(replyText) == "" {
 						return
 					}
-					out := map[string]interface{}{
-						"type":       "task_result",
-						"task_id":    doneTask.ID,
-						"room_id":    roomID,
-						"to_user_id": userID,
-						"status":     doneTask.Status,
-					}
-					if doneTask.Result.Text != nil {
-						out["text"] = *doneTask.Result.Text
-					}
-					if doneTask.ErrorMessage != "" {
-						out["error"] = doneTask.ErrorMessage
-					}
-					b, marshalErr := json.Marshal(out)
-					if marshalErr == nil {
-						h.hub.SendDataToUsers(memberIDs, b)
+					if sendErr := h.sendRobotGroupMessage(roomID, replyText); sendErr != nil {
+						log.Printf("send robot message failed room=%s err=%v", roomID, sendErr)
 					}
 				})
 				if err != nil {
 					log.Printf("submit command failed user=%s room=%s err=%v", userID, roomID, err)
-					failedMemberIDs, listErr := h.getGroupMemberIDs(roomID)
-					if listErr != nil {
-						continue
-					}
-					failedPayload, marshalErr := json.Marshal(map[string]interface{}{
-						"type":       "task_result",
-						"room_id":    roomID,
-						"to_user_id": userID,
-						"status":     "failed",
-						"error":      err.Error(),
-						"text":       err.Error(),
-					})
-					if marshalErr == nil {
-						h.hub.SendDataToUsers(failedMemberIDs, failedPayload)
+					if sendErr := h.sendRobotGroupMessage(roomID, err.Error()); sendErr != nil {
+						log.Printf("send robot submit-failed message failed room=%s err=%v", roomID, sendErr)
 					}
 					continue
-				}
-				created, marshalErr := json.Marshal(map[string]interface{}{
-					"type":    "task_created",
-					"task_id": taskID,
-					"room_id": roomID,
-				})
-				if marshalErr != nil {
-					created, err = json.Marshal(map[string]interface{}{
-						"type":    "task_result",
-						"room_id": roomID,
-						"status":  "failed",
-						"text":    "task create failed",
-					})
-					if err != nil {
-						continue
-					}
-				}
-				select {
-				case c.send <- created:
-				default:
 				}
 				continue
 			}
@@ -704,6 +670,68 @@ func (h *WsHandler) getGroupMemberIDs(roomID string) ([]string, error) {
 		Where("room_id = ? AND left_at IS NULL", roomID).
 		Pluck("user_id", &userIDs).Error
 	return userIDs, err
+}
+
+func (h *WsHandler) ensureRobotUser() error {
+	h.robotInit.Do(func() {
+		var existing models.User
+		if err := h.db.Where("id = ?", wsRobotUserID).First(&existing).Error; err == nil {
+			return
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			h.robotErr = err
+			return
+		}
+		now := time.Now()
+		displayName := "Robot"
+		robot := models.User{
+			ID:           wsRobotUserID,
+			Username:     "__ququchat_robot__",
+			PasswordHash: "__robot__",
+			Status:       "active",
+			DisplayName:  &displayName,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		h.robotErr = h.db.Create(&robot).Error
+	})
+	return h.robotErr
+}
+
+func (h *WsHandler) sendRobotGroupMessage(roomID, content string) error {
+	text := strings.TrimSpace(content)
+	if roomID == "" || text == "" {
+		return nil
+	}
+	if err := h.ensureRobotUser(); err != nil {
+		return err
+	}
+	savedMsg, err := h.saveGroupMessage(roomID, wsRobotUserID, text)
+	if err != nil {
+		return err
+	}
+	memberIDs, err := h.getGroupMemberIDs(roomID)
+	if err != nil {
+		return err
+	}
+	out := OutgoingMessage{
+		ID:         savedMsg.ID,
+		Type:       "group_message",
+		FromUser:   wsRobotUserID,
+		RoomID:     roomID,
+		Content:    text,
+		Timestamp:  savedMsg.CreatedAt.Unix(),
+		SequenceID: savedMsg.SequenceID,
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	h.hub.broadcast <- GroupMessage{
+		RoomID:  roomID,
+		UserIDs: memberIDs,
+		Data:    b,
+	}
+	return nil
 }
 
 func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) (*models.Message, error) {

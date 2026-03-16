@@ -11,59 +11,6 @@ import { messageDao, roomStateDao } from '../api/db_sqlite';
 import { authService } from '../api/AuthService';
 import { localFileService } from '../api/LocalFileService';
 
-const getDisplayNameByUserID = (
-    userID: string,
-    selfUser: ReturnType<typeof useAuthStore.getState>['user'],
-    friends: Friend[],
-    groupMembersByGroupId: Record<string, GroupMember[]>
-): string => {
-    const targetID = (userID || '').trim();
-    if (!targetID) return '未知用户';
-    if (targetID === selfUser?.id) {
-        return selfUser.nickname || selfUser.displayName || selfUser.username || '我';
-    }
-    const friend = friends.find((f) => f.id === targetID);
-    if (friend) {
-        return friend.nickname || friend.displayName || friend.username || targetID;
-    }
-    for (const members of Object.values(groupMembersByGroupId)) {
-        const member = members.find((m) => m.user_id === targetID);
-        if (member) {
-            return member.nickname || member.username || targetID;
-        }
-    }
-    return targetID;
-};
-
-const normalizeTaskResultMessage = (
-    incoming: Message,
-    selfUser: ReturnType<typeof useAuthStore.getState>['user'],
-    friends: Friend[],
-    groupMembersByGroupId: Record<string, GroupMember[]>
-): Message => {
-    const raw = incoming as Record<string, any>;
-    const rawType = String(raw?.type || '').trim();
-    if (rawType !== 'task_result') {
-        return incoming;
-    }
-    const toUserID = typeof raw.to_user_id === 'string' ? raw.to_user_id.trim() : '';
-    const taskText = String(raw.text ?? raw.content ?? '').trim();
-    const nickname = getDisplayNameByUserID(toUserID, selfUser, friends, groupMembersByGroupId);
-    return {
-        ...incoming,
-        type: 'group_message',
-        from_user_id: '',
-        to_user_id: toUserID || incoming.to_user_id,
-        content: `@${nickname}:${taskText}`
-    };
-};
-
-const shouldIgnoreIncomingMessage = (incoming: Message): boolean => {
-    const raw = incoming as Record<string, any>;
-    const rawType = String(raw?.type || '').trim();
-    return rawType === 'task_created';
-};
-
 interface ChatState {
     friends: Friend[];
     groups: Group[];
@@ -485,12 +432,9 @@ export const useChatStore = create<ChatState>()(
             },
 
             handleIncomingMessage: async (message: Message) => {
-                if (shouldIgnoreIncomingMessage(message)) {
-                    return;
-                }
-                const { friends, groupMembersByGroupId } = get();
+                const { friends } = get();
                 const myUser = useAuthStore.getState().user;
-                const normalizedIncoming = normalizeTaskResultMessage(message, myUser, friends, groupMembersByGroupId);
+                const normalizedIncoming = message;
 
                 const myId = myUser?.id;
                 let conversationId = normalizedIncoming.room_id || '';
@@ -679,8 +623,6 @@ export const useChatStore = create<ChatState>()(
                                 status: row.status as any
                             };
                         }
-                        msg = normalizeTaskResultMessage(msg, useAuthStore.getState().user, get().friends, get().groupMembersByGroupId);
-
                         // Ensure cache_path is populated from the row, which is the source of truth for local files
                         if (row.cache_path) {
                             msg.cache_path = row.cache_path;
@@ -694,7 +636,7 @@ export const useChatStore = create<ChatState>()(
                         }
                         
                         return msg;
-                    }).filter((msg) => !shouldIgnoreIncomingMessage(msg)).reverse();
+                    }).reverse();
 
                     set(state => {
                         const current = state.messages[roomId] || [];

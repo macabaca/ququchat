@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { List, Avatar, Button, Modal, message } from 'antd';
 import { UserOutlined, FileOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined, DownOutlined } from '@ant-design/icons';
-import { Message } from '../../types/models';
+import { Message, ROBOT_DISPLAY_NAME, ROBOT_USER_ID } from '../../types/models';
 import { useAuthStore } from '../../stores/authStore';
 import { fileService } from '../../api/FileService';
 import { useChatStore } from '../../stores/chatStore';
@@ -404,6 +404,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onF
 
     const senderNameByUserId = useMemo(() => {
         const map: Record<string, string> = {};
+        map[ROBOT_USER_ID] = ROBOT_DISPLAY_NAME;
         if (user?.id) {
             map[user.id] = user.nickname || user.displayName || user.username || '我';
         }
@@ -435,7 +436,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onF
                         msg={msg}
                         isMe={msg.from_user_id === user?.id}
                         avatarUrl={msg.from_user_id ? avatarUrlByUserId[msg.from_user_id] : undefined}
-                        senderName={msg.from_user_id ? (senderNameByUserId[msg.from_user_id] || `${msg.from_user_id.slice(0, 6)}`) : '未知用户'}
+                        senderName={msg.from_user_id ? (senderNameByUserId[msg.from_user_id] || (msg.from_user_id === ROBOT_USER_ID ? ROBOT_DISPLAY_NAME : `${msg.from_user_id.slice(0, 6)}`)) : '未知用户'}
                         isHighlighted={highlightedMessageId === msg.id}
                     />
                 )}

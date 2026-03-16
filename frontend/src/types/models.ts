@@ -1,3 +1,6 @@
+export const ROBOT_USER_ID = '00000000-0000-0000-0000-00000000a1b2';
+export const ROBOT_DISPLAY_NAME = '机器人';
+
 // 对应 users 表
 export interface User {
     id: string; // Changed to string (uuid) based on auth docs
