@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 
@@ -10,6 +11,8 @@ import (
 	"ququchat/internal/config"
 	database "ququchat/internal/server/db"
 	"ququchat/internal/server/storage"
+	servertask "ququchat/internal/server/task"
+	tasksvc "ququchat/internal/service/task"
 )
 
 func main() {
@@ -65,8 +68,15 @@ func main() {
 	}
 
 	authCfg := cfg.Auth.ToSettings()
+	taskService := servertask.NewService(db, tasksvc.RuntimeOptions{
+		QueueHighCap:   cfg.Task.QueueHighCapOrDefault(),
+		QueueNormalCap: cfg.Task.QueueNormalCapOrDefault(),
+		QueueLowCap:    cfg.Task.QueueLowCapOrDefault(),
+		WorkerSize:     cfg.Task.WorkerSizeOrDefault(),
+	})
+	taskService.Start(context.Background())
 
-	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket)
+	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket, taskService)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

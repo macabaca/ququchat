@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -16,6 +17,8 @@ import (
 	"gorm.io/gorm/clause"
 
 	"ququchat/internal/models"
+	servertask "ququchat/internal/server/task"
+	tasksvc "ququchat/internal/service/task"
 )
 
 const (
@@ -26,11 +29,12 @@ const (
 )
 
 type WsHandler struct {
-	db  *gorm.DB
-	hub *Hub
+	db          *gorm.DB
+	hub         *Hub
+	taskService *servertask.Service
 }
 
-func NewWsHandler(db *gorm.DB, hub *Hub) *WsHandler {
+func NewWsHandler(db *gorm.DB, hub *Hub, taskService *servertask.Service) *WsHandler {
 	if hub == nil {
 		hub = NewHub()
 	}
@@ -38,8 +42,9 @@ func NewWsHandler(db *gorm.DB, hub *Hub) *WsHandler {
 		hub.db = db
 	}
 	return &WsHandler{
-		db:  db,
-		hub: hub,
+		db:          db,
+		hub:         hub,
+		taskService: taskService,
 	}
 }
 
@@ -373,6 +378,60 @@ func (c *Client) readLoop(h *WsHandler) {
 			}
 		} else if msg.Type == "group_message" {
 			if msg.RoomID == "" || msg.Content == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.TrimSpace(msg.Content), "\\") {
+				if h.taskService == nil {
+					continue
+				}
+				userID := c.userID
+				roomID := msg.RoomID
+				taskID, err := h.taskService.SubmitCommand(servertask.SubmitCommandRequest{
+					UserID:  userID,
+					RoomID:  roomID,
+					Content: msg.Content,
+				}, func(cbCtx context.Context, doneTask *tasksvc.Task) {
+					if doneTask == nil {
+						return
+					}
+					memberIDs, listErr := h.getGroupMemberIDs(roomID)
+					if listErr != nil {
+						log.Printf("load group members for task result failed room=%s err=%v", roomID, listErr)
+						return
+					}
+					out := map[string]interface{}{
+						"type":       "task_result",
+						"task_id":    doneTask.ID,
+						"room_id":    roomID,
+						"to_user_id": userID,
+						"status":     doneTask.Status,
+					}
+					if doneTask.Result.Text != nil {
+						out["text"] = *doneTask.Result.Text
+					}
+					if doneTask.ErrorMessage != "" {
+						out["error"] = doneTask.ErrorMessage
+					}
+					b, marshalErr := json.Marshal(out)
+					if marshalErr == nil {
+						h.hub.SendDataToUsers(memberIDs, b)
+					}
+				})
+				if err != nil {
+					log.Printf("submit command failed user=%s room=%s err=%v", userID, roomID, err)
+					continue
+				}
+				created, marshalErr := json.Marshal(map[string]interface{}{
+					"type":    "task_created",
+					"task_id": taskID,
+					"room_id": roomID,
+				})
+				if marshalErr == nil {
+					select {
+					case c.send <- created:
+					default:
+					}
+				}
 				continue
 			}
 			// Check if user is a member of the group and not muted

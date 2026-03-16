@@ -37,6 +37,7 @@ func main() {
 		&models.MessageReceipt{},
 		&models.MessageReaction{},
 		&models.Attachment{},
+		&models.TaskJob{},
 	); err != nil {
 		log.Fatalf("AutoMigrate 失败: %v", err)
 	}

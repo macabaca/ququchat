@@ -84,6 +84,7 @@ func Migrate(db *gorm.DB) error {
 		&models.MessageReceipt{},
 		&models.MessageReaction{},
 		&models.Attachment{},
+		&models.TaskJob{},
 	)
 }
 

@@ -9,6 +9,41 @@ type Chat struct {
 	HistoryLimit int `yaml:"history_limit" json:"history_limit"`
 }
 
+type Task struct {
+	QueueHighCap   int `yaml:"queue_high_cap" json:"queue_high_cap"`
+	QueueNormalCap int `yaml:"queue_normal_cap" json:"queue_normal_cap"`
+	QueueLowCap    int `yaml:"queue_low_cap" json:"queue_low_cap"`
+	WorkerSize     int `yaml:"worker_size" json:"worker_size"`
+}
+
+func (t Task) QueueHighCapOrDefault() int {
+	if t.QueueHighCap > 0 {
+		return t.QueueHighCap
+	}
+	return 256
+}
+
+func (t Task) QueueNormalCapOrDefault() int {
+	if t.QueueNormalCap > 0 {
+		return t.QueueNormalCap
+	}
+	return 512
+}
+
+func (t Task) QueueLowCapOrDefault() int {
+	if t.QueueLowCap > 0 {
+		return t.QueueLowCap
+	}
+	return 256
+}
+
+func (t Task) WorkerSizeOrDefault() int {
+	if t.WorkerSize > 0 {
+		return t.WorkerSize
+	}
+	return 2
+}
+
 type File struct {
 	UploadDir    string    `yaml:"upload_dir" json:"upload_dir"`
 	MaxSizeBytes int64     `yaml:"max_size_bytes" json:"max_size_bytes"`

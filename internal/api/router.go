@@ -8,10 +8,11 @@ import (
 	"ququchat/internal/config"
 	"ququchat/internal/middleware"
 	serverstorage "ququchat/internal/server/storage"
+	servertask "ququchat/internal/server/task"
 )
 
 // SetupRouter 初始化 Gin 路由，并将数据库句柄注入到上下文中
-func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string) *gin.Engine {
+func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string, taskService *servertask.Service) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
@@ -78,14 +79,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	files.POST("/multipart/complete", fileHandler.CompleteMultipartUpload)
 	files.POST("/multipart/abort", fileHandler.AbortMultipartUpload)
 
-	normalAgentHandler := handler.NewAgentNormalHandler()
-	llmAgentHandler := handler.NewAgentLLMHandler(hub)
-	agent := api.Group("/agent", middleware.JWTAuth(authCfg.JWTSecret))
-	agent.POST("/add", normalAgentHandler.SubmitAddTask)
-	agent.POST("/llm/tasks", llmAgentHandler.SubmitLLMTask)
-	agent.POST("/llm/fake", llmAgentHandler.SubmitFakeLLMTask)
-
-	wsHandler := handler.NewWsHandler(db, hub)
+	wsHandler := handler.NewWsHandler(db, hub, taskService)
 	r.GET("/ws", middleware.JWTAuthFromHeaderOrQuery(authCfg.JWTSecret), wsHandler.Handle)
 
 	return r

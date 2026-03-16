@@ -1,0 +1,91 @@
+package tasksvc
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type RuntimeOptions struct {
+	QueueHighCap   int
+	QueueNormalCap int
+	QueueLowCap    int
+	WorkerSize     int
+	Store          Store
+	OnFinish       func(ctx context.Context, doneTask *Task)
+}
+
+type Runtime struct {
+	store Store
+	queue Queue
+	pool  *Pool
+}
+
+func NewRuntime(opts RuntimeOptions) *Runtime {
+	queue := NewMemoryPriorityQueue(opts.QueueHighCap, opts.QueueNormalCap, opts.QueueLowCap)
+	store := opts.Store
+	if store == nil {
+		store = NewMemoryStore()
+	}
+	exec := NewDefaultExecutor()
+	pool := NewPool(queue, store, exec, opts.WorkerSize, opts.OnFinish)
+	return &Runtime{
+		store: store,
+		queue: queue,
+		pool:  pool,
+	}
+}
+
+func (r *Runtime) Start(ctx context.Context) {
+	r.pool.Start(ctx)
+}
+
+func (r *Runtime) Get(taskID string) (*Task, bool) {
+	return r.store.Get(strings.TrimSpace(taskID))
+}
+
+type SubmitFakeLLMRequest struct {
+	RequestID string
+	Priority  Priority
+	Prompt    string
+	SleepMs   int64
+}
+
+func (r *Runtime) SubmitFakeLLM(req SubmitFakeLLMRequest) (*Task, error) {
+	now := time.Now()
+	taskID := strings.TrimSpace(req.RequestID)
+	if taskID == "" {
+		taskID = uuid.NewString()
+	}
+	t := &Task{
+		ID:        taskID,
+		RequestID: strings.TrimSpace(req.RequestID),
+		Type:      TypeFakeLLM,
+		Priority:  req.Priority,
+		Status:    StatusPending,
+		Payload: Payload{
+			FakeLLM: &FakeLLMPayload{
+				Prompt:  strings.TrimSpace(req.Prompt),
+				SleepMs: req.SleepMs,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if t.Payload.FakeLLM.Prompt == "" {
+		return nil, ErrInvalidFakeLLMPrompt
+	}
+	if err := r.store.Create(t); err != nil {
+		return nil, err
+	}
+	if err := r.queue.Push(t.Clone()); err != nil {
+		_, _ = r.store.MarkFailed(t.ID, err.Error())
+		return nil, err
+	}
+	return t.Clone(), nil
+}
+
+var ErrInvalidFakeLLMPrompt = errors.New("invalid fake llm prompt")
