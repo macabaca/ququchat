@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { List, Avatar, Button, Modal, message } from 'antd';
 import { UserOutlined, FileOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined, DownOutlined } from '@ant-design/icons';
 import { Message } from '../../types/models';
@@ -16,7 +16,7 @@ interface MessageListProps {
     onLoadPrevious?: () => Promise<void> | void;
 }
 
-const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; isHighlighted?: boolean }> = ({ msg, isMe, avatarUrl, isHighlighted }) => {
+const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; senderName: string; isHighlighted?: boolean }> = ({ msg, isMe, avatarUrl, senderName, isHighlighted }) => {
     const [thumbUrl, setThumbUrl] = useState<string>('');
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [originalUrl, setOriginalUrl] = useState<string>('');
@@ -269,7 +269,12 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; i
                 maxWidth: '70%',
                 alignItems: 'flex-start'
             }}>
-                <Avatar src={avatarUrl} icon={<UserOutlined />} style={{ margin: isMe ? '0 0 0 8px' : '0 8px 0 0', flexShrink: 0 }} />
+                <div style={{ margin: isMe ? '0 0 0 8px' : '0 8px 0 0', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', maxWidth: 72 }}>
+                    <Avatar src={avatarUrl} icon={<UserOutlined />} />
+                    <span style={{ marginTop: 4, fontSize: 12, color: '#8c8c8c', lineHeight: '16px', textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {senderName}
+                    </span>
+                </div>
                 <div style={{
                     background: isMe ? '#1890ff' : '#fff',
                     color: isMe ? '#fff' : '#000',
@@ -288,6 +293,8 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; i
 const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onFocusDone, canLoadPrevious = false, isLoadingPrevious = false, onLoadPrevious }) => {
     const user = useAuthStore((state) => state.user);
     const friends = useChatStore((state) => state.friends);
+    const activeConversationId = useChatStore((state) => state.activeConversationId);
+    const groupMembersByGroupId = useChatStore((state) => state.groupMembersByGroupId);
     const bottomRef = useRef<HTMLDivElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
     const prependAnchorRef = useRef<{ height: number; top: number } | null>(null);
@@ -395,6 +402,23 @@ const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onF
         setShouldAutoScroll(true);
     };
 
+    const senderNameByUserId = useMemo(() => {
+        const map: Record<string, string> = {};
+        if (user?.id) {
+            map[user.id] = user.nickname || user.displayName || user.username || '我';
+        }
+        for (const friend of friends) {
+            if (!friend.id) continue;
+            map[friend.id] = friend.nickname || friend.displayName || friend.username || friend.id;
+        }
+        const groupMembers = activeConversationId ? (groupMembersByGroupId[activeConversationId] || []) : [];
+        for (const member of groupMembers) {
+            if (!member.user_id) continue;
+            map[member.user_id] = member.nickname || member.username || member.user_id;
+        }
+        return map;
+    }, [user, friends, activeConversationId, groupMembersByGroupId]);
+
     return (
         <div ref={listRef} onScroll={onScrollMessageList} style={{ flex: 1, overflowY: 'auto', padding: '20px', background: '#f5f5f5', position: 'relative' }}>
             {isNearTop && canLoadPrevious && (
@@ -411,6 +435,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onF
                         msg={msg}
                         isMe={msg.from_user_id === user?.id}
                         avatarUrl={msg.from_user_id ? avatarUrlByUserId[msg.from_user_id] : undefined}
+                        senderName={msg.from_user_id ? (senderNameByUserId[msg.from_user_id] || `${msg.from_user_id.slice(0, 6)}`) : '未知用户'}
                         isHighlighted={highlightedMessageId === msg.id}
                     />
                 )}
