@@ -38,7 +38,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
         : (typeof msg.content === 'string' && msg.content.trim() && !contentIsUrl ? msg.content : `File (${msg.attachment_id || 'attachment'})`);
     const isRobotMessage = msg.from_user_id === ROBOT_USER_ID;
     const payloadText = useMemo(() => {
-        const rawPayload = (msg as Message & Record<string, any>).payload_json ?? (msg as Message & Record<string, any>).payload;
+        const rawPayload = msg.payload_json;
         if (!rawPayload) {
             return '';
         }

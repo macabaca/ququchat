@@ -9,7 +9,7 @@ export const messageService = {
     // Save message to local DB and handle file downloads
     saveMessage: async (msg: Message) => {
         const rawMsg = msg as Message & Record<string, any>;
-        const payloadSource = rawMsg.payload_json ?? rawMsg.payload;
+        const payloadSource = rawMsg.payload_json;
         const payload = (() => {
             if (!payloadSource) return {};
             if (typeof payloadSource === 'string') {
@@ -62,10 +62,6 @@ export const messageService = {
         if (!rawMsg.is_image && isImageMessage) {
             rawMsg.is_image = true;
         }
-        if (!rawMsg.payload_json && Object.keys(payload).length > 0) {
-            rawMsg.payload_json = payload;
-        }
-
         // 1. Prepare message row
         const messageRow: MessageRow = {
             id: rawMsg.id || `msg-${Date.now()}`,

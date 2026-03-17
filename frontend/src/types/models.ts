@@ -85,7 +85,6 @@ export interface Message {
     is_image?: boolean;
     cache_path?: string | null;
     payload_json?: Record<string, any> | string | null;
-    payload?: Record<string, any> | string | null;
 }
 
 export interface Conversation {
