@@ -30,13 +30,6 @@ type action struct {
 	Final string `json:"final"`
 }
 
-type criticDecision struct {
-	Verdict     string `json:"verdict"`
-	Feedback    string `json:"feedback"`
-	FinalAnswer string `json:"final_answer"`
-	ErrorReport string `json:"error_report"`
-}
-
 type toolCallRecord struct {
 	Step   int
 	Role   string
@@ -50,6 +43,7 @@ type toolCallRecord struct {
 const (
 	maxStepsDefault = 4
 	maxStepsLimit   = 10
+	roleRetryLimit  = 2
 )
 
 func Execute(ctx context.Context, client ChatClient, input Input) (string, error) {
@@ -76,13 +70,43 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 	logs := make([]toolCallRecord, 0)
 	feedback := ""
 	for step := 1; step <= maxSteps; step++ {
-		plannerRaw, err := client.Chat(ctx, buildPlannerPrompt(goal, recentMessages, feedback, step, maxSteps))
-		if err != nil {
-			return "", errors.New(formatFailureReport(logs, fmt.Sprintf("planner调用失败: %v", err)))
+		nextPlan := plan{}
+		plannerFeedback := strings.TrimSpace(feedback)
+		plannerValidated := false
+		for attempt := 1; attempt <= roleRetryLimit; attempt++ {
+			currentPlannerPrompt := buildPlannerPrompt(goal, recentMessages, plannerFeedback, step, maxSteps)
+			nextPlannerRaw, err := client.Chat(ctx, currentPlannerPrompt)
+			if err != nil {
+				return "", errors.New(formatFailureReport(logs, fmt.Sprintf("planner调用失败: %v", err)))
+			}
+			normalizedPlan, normalizedJSON, validationErrors := validatePlannerOutput(nextPlannerRaw)
+			validateRecord := toolCallRecord{
+				Step:   step,
+				Role:   "Validator",
+				Tool:   "validate_planner_output",
+				Input:  shortText(nextPlannerRaw, 220),
+				Output: shortText(normalizedJSON, 220),
+			}
+			if len(validationErrors) == 0 {
+				validateRecord.Status = "succeeded"
+				if strings.TrimSpace(validateRecord.Output) == "" {
+					validateRecord.Output = "valid"
+				}
+				logs = append(logs, validateRecord)
+				nextPlan = normalizedPlan
+				plannerValidated = true
+				break
+			}
+			validateRecord.Status = "failed"
+			validateRecord.Error = strings.Join(validationErrors, "；")
+			logs = append(logs, validateRecord)
+			plannerFeedback = buildValidationRetryFeedback(feedback, validationErrors)
+			if attempt == roleRetryLimit {
+				return "", errors.New(formatFailureReport(logs, "planner输出格式连续校验失败"))
+			}
 		}
-		nextPlan, err := parsePlan(plannerRaw)
-		if err != nil {
-			return "", errors.New(formatFailureReport(logs, fmt.Sprintf("planner输出无法解析: %v", err)))
+		if !plannerValidated {
+			return "", errors.New(formatFailureReport(logs, "planner输出未通过规则校验"))
 		}
 		toolName := strings.ToLower(strings.TrimSpace(nextPlan.Action.Tool))
 		actionInput := strings.TrimSpace(nextPlan.Action.Input)
@@ -115,42 +139,7 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 		record.Status = "succeeded"
 		record.Output = toolOutput
 		logs = append(logs, record)
-		criticRaw, err := client.Chat(ctx, buildCriticPrompt(goal, nextPlan, toolOutput, feedback, step, maxSteps))
-		if err != nil {
-			return "", errors.New(formatFailureReport(logs, fmt.Sprintf("critic调用失败: %v", err)))
-		}
-		decision, err := parseCriticDecision(criticRaw)
-		if err != nil {
-			return "", errors.New(formatFailureReport(logs, fmt.Sprintf("critic输出无法解析: %v", err)))
-		}
-		verdict := strings.ToLower(strings.TrimSpace(decision.Verdict))
-		if verdict == "finish" {
-			finalAnswer := strings.TrimSpace(decision.FinalAnswer)
-			if finalAnswer == "" {
-				finalAnswer = strings.TrimSpace(toolOutput)
-			}
-			if finalAnswer == "" {
-				finalAnswer = strings.TrimSpace(decision.Feedback)
-			}
-			if finalAnswer == "" {
-				return "", errors.New(formatFailureReport(logs, "critic判定finish但未提供结果"))
-			}
-			return formatSuccessReport(logs, finalAnswer), nil
-		}
-		if verdict == "fail" {
-			errorReport := strings.TrimSpace(decision.ErrorReport)
-			if errorReport == "" {
-				errorReport = strings.TrimSpace(decision.Feedback)
-			}
-			if errorReport == "" {
-				errorReport = "critic判定任务失败"
-			}
-			return "", errors.New(formatFailureReport(logs, errorReport))
-		}
-		feedback = strings.TrimSpace(decision.Feedback)
-		if feedback == "" {
-			feedback = strings.TrimSpace(toolOutput)
-		}
+		feedback = "上一轮工具输出：" + strings.TrimSpace(toolOutput)
 	}
 	return "", errors.New(formatFailureReport(logs, "达到最大循环次数仍未完成"))
 }
@@ -162,32 +151,13 @@ func buildPlannerPrompt(goal string, recentMessages []string, feedback string, s
 	builder.WriteString(goal)
 	builder.WriteString("\n")
 	builder.WriteString("可用工具:\n")
-	builder.WriteString("1) read_recent_messages: 读取最近消息。input可留空或填写数字。\n")
-	builder.WriteString("2) finish: 结束任务并给出最终答案。写入action.final。\n")
-	builder.WriteString("当前步数：")
-	builder.WriteString(strconv.Itoa(step))
-	builder.WriteString("/")
-	builder.WriteString(strconv.Itoa(maxSteps))
-	builder.WriteString("\n")
-	if strings.TrimSpace(feedback) != "" {
-		builder.WriteString("上一轮Critic反馈：")
-		builder.WriteString(strings.TrimSpace(feedback))
+	builder.WriteString(buildPlannerToolSection())
+	builder.WriteString("规则:\n")
+	for _, line := range plannerPromptRuleLines() {
+		builder.WriteString("- ")
+		builder.WriteString(strings.TrimSpace(line))
 		builder.WriteString("\n")
 	}
-	builder.WriteString("最近消息条数：")
-	builder.WriteString(strconv.Itoa(len(recentMessages)))
-	builder.WriteString("\n")
-	builder.WriteString("输出格式:\n")
-	builder.WriteString("{\"thought\":\"...\",\"action\":{\"tool\":\"read_recent_messages|finish\",\"input\":\"...\",\"final\":\"...\"}}\n")
-	return builder.String()
-}
-
-func buildCriticPrompt(goal string, plan plan, toolOutput string, feedback string, step int, maxSteps int) string {
-	builder := strings.Builder{}
-	builder.WriteString("你是Critic。基于Planner动作和工具结果做判定，只输出JSON。\n")
-	builder.WriteString("目标：")
-	builder.WriteString(goal)
-	builder.WriteString("\n")
 	builder.WriteString("当前步数：")
 	builder.WriteString(strconv.Itoa(step))
 	builder.WriteString("/")
@@ -198,37 +168,87 @@ func buildCriticPrompt(goal string, plan plan, toolOutput string, feedback strin
 		builder.WriteString(strings.TrimSpace(feedback))
 		builder.WriteString("\n")
 	}
-	builder.WriteString("Planner动作：")
-	builder.WriteString(strings.TrimSpace(plan.Action.Tool))
+	builder.WriteString("最近消息条数：")
+	builder.WriteString(strconv.Itoa(len(recentMessages)))
 	builder.WriteString("\n")
-	builder.WriteString("工具输出：")
-	builder.WriteString(strings.TrimSpace(toolOutput))
-	builder.WriteString("\n")
-	builder.WriteString("输出格式:\n")
-	builder.WriteString("{\"verdict\":\"continue|finish|fail\",\"feedback\":\"...\",\"final_answer\":\"...\",\"error_report\":\"...\"}\n")
+	builder.WriteString("输出示例1:\n")
+	builder.WriteString("{\"thought\":\"先查看上下文\",\"action\":{\"tool\":\"read_recent_messages\",\"input\":\"8\",\"final\":\"\"}}\n")
+	builder.WriteString("输出示例2:\n")
+	builder.WriteString("{\"thought\":\"信息足够，直接给答案\",\"action\":{\"tool\":\"finish\",\"input\":\"\",\"final\":\"这是最终答案\"}}\n")
 	return builder.String()
 }
 
-func parsePlan(raw string) (plan, error) {
-	var nextPlan plan
-	if err := decodeJSONFromText(raw, &nextPlan); err != nil {
-		return plan{}, err
+func buildValidationRetryFeedback(baseFeedback string, errorsList []string) string {
+	builder := strings.Builder{}
+	if strings.TrimSpace(baseFeedback) != "" {
+		builder.WriteString(strings.TrimSpace(baseFeedback))
+		builder.WriteString("\n")
 	}
-	if strings.TrimSpace(nextPlan.Action.Tool) == "" {
-		return plan{}, errors.New("missing action.tool")
+	builder.WriteString("上一轮规则校验未通过，错误如下：")
+	if len(errorsList) == 0 {
+		builder.WriteString("格式错误")
+	} else {
+		builder.WriteString(strings.Join(errorsList, "；"))
 	}
-	return nextPlan, nil
+	builder.WriteString("。请严格按JSON schema重新输出。schema: ")
+	builder.WriteString(plannerSchemaTemplateText())
+	return builder.String()
 }
 
-func parseCriticDecision(raw string) (criticDecision, error) {
-	var decision criticDecision
-	if err := decodeJSONFromText(raw, &decision); err != nil {
-		return criticDecision{}, err
+func validatePlannerOutput(raw string) (plan, string, []string) {
+	cfg := getPlannerSchemaConfig()
+	candidate, err := extractJSONObjectText(raw)
+	if err != nil {
+		return plan{}, "", []string{err.Error()}
 	}
-	if strings.TrimSpace(decision.Verdict) == "" {
-		return criticDecision{}, errors.New("missing verdict")
+	var root map[string]interface{}
+	if err := json.Unmarshal([]byte(candidate), &root); err != nil {
+		return plan{}, "", []string{"输出不是合法JSON对象"}
 	}
-	return decision, nil
+	errorsList := make([]string, 0)
+	_, topLevelErrors := validateObjectAgainstSchema(root, cfg.TopLevelFields, "")
+	errorsList = append(errorsList, topLevelErrors...)
+	toolRaw := ""
+	input := ""
+	final := ""
+	thought := readStringValue(root, cfg.ThoughtField)
+	actionValue, hasAction := root[cfg.ActionField]
+	actionMap, actionOK := actionValue.(map[string]interface{})
+	if hasAction && actionOK {
+		_, actionErrors := validateObjectAgainstSchema(actionMap, cfg.ActionFields, cfg.ActionField)
+		errorsList = append(errorsList, actionErrors...)
+		toolRaw = readStringValue(actionMap, cfg.ToolField)
+		input = readStringValue(actionMap, cfg.InputField)
+		final = readStringValue(actionMap, cfg.FinalField)
+	}
+	toolName := normalizeToolFromConfig(toolRaw)
+	if strings.TrimSpace(toolRaw) != "" && cfg.DisallowToolCombination && containsToolCombination(toolRaw) {
+		errorsList = append(errorsList, cfg.ActionField+"."+cfg.ToolField+" 不能是组合值")
+	}
+	if cfg.ToolEnumFromConfig && (strings.TrimSpace(toolName) == "" || !isKnownToolName(toolName)) {
+		errorsList = append(errorsList, cfg.ActionField+"."+cfg.ToolField+" 不在允许列表: "+allowedToolNamesCSV())
+	}
+	if strings.TrimSpace(cfg.RequireFinalWhenToolName) != "" &&
+		strings.EqualFold(strings.TrimSpace(toolName), strings.TrimSpace(cfg.RequireFinalWhenToolName)) &&
+		strings.TrimSpace(final) == "" {
+		errorsList = append(errorsList, cfg.ActionField+"."+cfg.ToolField+"="+cfg.RequireFinalWhenToolName+" 时 "+cfg.ActionField+"."+cfg.FinalField+" 必须非空")
+	}
+	if len(errorsList) > 0 {
+		return plan{}, "", errorsList
+	}
+	normalizedPlan := plan{
+		Thought: strings.TrimSpace(thought),
+		Action: action{
+			Tool:  strings.TrimSpace(toolName),
+			Input: strings.TrimSpace(input),
+			Final: strings.TrimSpace(final),
+		},
+	}
+	b, marshalErr := json.Marshal(normalizedPlan)
+	if marshalErr != nil {
+		return plan{}, "", []string{"输出规范化失败"}
+	}
+	return normalizedPlan, string(b), nil
 }
 
 func decodeJSONFromText(raw string, v interface{}) error {
@@ -250,8 +270,108 @@ func decodeJSONFromText(raw string, v interface{}) error {
 	return errors.New("json not found")
 }
 
+func extractJSONObjectText(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("输出为空")
+	}
+	if json.Valid([]byte(trimmed)) {
+		return trimmed, nil
+	}
+	start := strings.Index(trimmed, "{")
+	end := strings.LastIndex(trimmed, "}")
+	if start >= 0 && end > start {
+		candidate := strings.TrimSpace(trimmed[start : end+1])
+		if json.Valid([]byte(candidate)) {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("未找到合法JSON对象")
+}
+
+func readStringField(m map[string]interface{}, key string) (string, bool) {
+	value, ok := m[key]
+	if !ok {
+		return "", false
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	return text, true
+}
+
+func readStringValue(m map[string]interface{}, key string) string {
+	text, ok := readStringField(m, key)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func validateObjectAgainstSchema(root map[string]interface{}, fields []SchemaField, parent string) (map[string]interface{}, []string) {
+	values := make(map[string]interface{}, len(fields))
+	errorsList := make([]string, 0)
+	for _, field := range fields {
+		name := strings.TrimSpace(field.Name)
+		if name == "" {
+			continue
+		}
+		fullName := name
+		if strings.TrimSpace(parent) != "" {
+			fullName = strings.TrimSpace(parent) + "." + name
+		}
+		value, exists := root[name]
+		if !exists {
+			if field.Required {
+				errorsList = append(errorsList, fullName+" 字段缺失")
+			}
+			continue
+		}
+		if !matchesSchemaType(value, field.Type) {
+			errorsList = append(errorsList, fullName+" 不是 "+strings.ToLower(strings.TrimSpace(field.Type)))
+			continue
+		}
+		values[name] = value
+	}
+	return values, errorsList
+}
+
+func matchesSchemaType(value interface{}, expectedType string) bool {
+	switch strings.ToLower(strings.TrimSpace(expectedType)) {
+	case "string":
+		_, ok := value.(string)
+		return ok
+	case "object":
+		_, ok := value.(map[string]interface{})
+		return ok
+	case "array":
+		_, ok := value.([]interface{})
+		return ok
+	case "number":
+		switch value.(type) {
+		case float64, float32, int, int32, int64:
+			return true
+		}
+		return false
+	case "bool", "boolean":
+		_, ok := value.(bool)
+		return ok
+	default:
+		return true
+	}
+}
+
+func containsToolCombination(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return false
+	}
+	return strings.Contains(trimmed, "|") || strings.Contains(trimmed, "/") || strings.Contains(trimmed, ",") || strings.Contains(trimmed, "，") || strings.Contains(trimmed, ";") || strings.Contains(trimmed, "；")
+}
+
 func runTool(toolName string, input string, recentMessages []string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	switch normalizeToolFromConfig(toolName) {
 	case "read_recent_messages":
 		if len(recentMessages) == 0 {
 			return "最近消息为空", nil
@@ -270,7 +390,7 @@ func runTool(toolName string, input string, recentMessages []string) (string, er
 		}
 		return strings.TrimSpace(builder.String()), nil
 	default:
-		return "", fmt.Errorf("unsupported tool: %s", strings.TrimSpace(toolName))
+		return "", fmt.Errorf("unsupported tool: %s (allowed: %s)", strings.TrimSpace(toolName), allowedToolNamesCSV())
 	}
 }
 
