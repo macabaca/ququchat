@@ -32,6 +32,14 @@ type PlannerSchemaConfig struct {
 	RequireFinalWhenToolName string
 }
 
+type AgentIdentityConfig struct {
+	Name         string
+	Role         string
+	Mission      string
+	Capabilities []string
+	Principles   []string
+}
+
 var toolSpecs = []ToolSpec{
 	{
 		Name:           "read_recent_messages",
@@ -46,6 +54,22 @@ var toolSpecs = []ToolSpec{
 		Usage:          "action.tool=finish",
 		InputGuideline: "action.final 必填，action.input 建议为空",
 		Aliases:        []string{"done", "final", "finalize"},
+	},
+}
+
+var agentIdentityConfig = AgentIdentityConfig{
+	Name:    "QuQuChat 群聊助手",
+	Role:    "群聊机器人",
+	Mission: "围绕群聊上下文为群友答疑、总结讨论内容，并在工具能力范围内执行群友提出的任务",
+	Capabilities: []string{
+		"可读取最近群聊消息来理解上下文",
+		"可基于上下文生成清晰、可执行的回复",
+		"可在任务已完成时给出最终答案",
+	},
+	Principles: []string{
+		"优先基于群聊事实回答，不凭空编造",
+		"当上下文不足时先获取消息再回答",
+		"输出需遵守系统定义的JSON格式与工具约束",
 	},
 }
 
@@ -67,6 +91,13 @@ var plannerSchemaConfig = PlannerSchemaConfig{
 	DisallowToolCombination:  true,
 	ToolEnumFromConfig:       true,
 	RequireFinalWhenToolName: "finish",
+}
+
+func getAgentIdentityConfig() AgentIdentityConfig {
+	cfg := agentIdentityConfig
+	cfg.Capabilities = append([]string(nil), agentIdentityConfig.Capabilities...)
+	cfg.Principles = append([]string(nil), agentIdentityConfig.Principles...)
+	return cfg
 }
 
 func listToolSpecs() []ToolSpec {
@@ -156,6 +187,42 @@ func plannerPromptRuleLines() []string {
 	lines = append(lines, "不符合格式会触发硬校验失败并要求重试。")
 	lines = append(lines, "仅输出一个JSON对象，不要输出额外说明。")
 	return lines
+}
+
+func buildAgentIdentityPrompt() string {
+	cfg := getAgentIdentityConfig()
+	builder := strings.Builder{}
+	builder.WriteString("身份设定:\n")
+	builder.WriteString("- 名称：")
+	builder.WriteString(strings.TrimSpace(cfg.Name))
+	builder.WriteString("\n")
+	builder.WriteString("- 角色：")
+	builder.WriteString(strings.TrimSpace(cfg.Role))
+	builder.WriteString("\n")
+	builder.WriteString("- 任务目标：")
+	builder.WriteString(strings.TrimSpace(cfg.Mission))
+	builder.WriteString("\n")
+	if len(cfg.Capabilities) > 0 {
+		builder.WriteString("- 能力边界：\n")
+		for i, item := range cfg.Capabilities {
+			builder.WriteString("  ")
+			builder.WriteString(strconv.Itoa(i + 1))
+			builder.WriteString(") ")
+			builder.WriteString(strings.TrimSpace(item))
+			builder.WriteString("\n")
+		}
+	}
+	if len(cfg.Principles) > 0 {
+		builder.WriteString("- 行为原则：\n")
+		for i, item := range cfg.Principles {
+			builder.WriteString("  ")
+			builder.WriteString(strconv.Itoa(i + 1))
+			builder.WriteString(") ")
+			builder.WriteString(strings.TrimSpace(item))
+			builder.WriteString("\n")
+		}
+	}
+	return builder.String()
 }
 
 func plannerSchemaTemplateText() string {

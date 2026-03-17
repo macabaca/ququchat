@@ -47,10 +47,18 @@ type validationIssue struct {
 	Detail  string
 }
 
+type finalReviewResult struct {
+	Pass        bool     `json:"pass"`
+	Score       int      `json:"score"`
+	Issues      []string `json:"issues"`
+	BetterFinal string   `json:"better_final"`
+}
+
 const (
 	maxStepsDefault = 4
 	maxStepsLimit   = 10
 	roleRetryLimit  = 2
+	finalScorePass  = 70
 )
 
 const (
@@ -161,7 +169,56 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			if finalAnswer == "" {
 				return "", errors.New(formatFailureReport(logs, "planner选择finish但未提供结果"))
 			}
-			return formatSuccessReport(logs, finalAnswer), nil
+			review, reviewErr := evaluateFinalAnswer(ctx, client, goal, recentMessages, logs, finalAnswer)
+			reviewRecord := toolCallRecord{
+				Step:   step,
+				Role:   "FinalJudge",
+				Tool:   "evaluate_final_answer",
+				Input:  shortText(finalAnswer, 220),
+				Output: shortText(formatFinalReviewOutput(review), 220),
+			}
+			if reviewErr != nil {
+				reviewRecord.Status = "failed"
+				reviewRecord.Error = reviewErr.Error()
+				logs = append(logs, reviewRecord)
+			} else {
+				if review.Pass && review.Score >= finalScorePass {
+					reviewRecord.Status = "succeeded"
+					logs = append(logs, reviewRecord)
+					finalCandidate := strings.TrimSpace(review.BetterFinal)
+					if finalCandidate == "" {
+						finalCandidate = finalAnswer
+					}
+					return formatSuccessReport(logs, finalCandidate), nil
+				}
+				reviewRecord.Status = "failed"
+				reviewRecord.Error = buildFinalReviewErrorText(review)
+				logs = append(logs, reviewRecord)
+			}
+			if step < maxSteps {
+				feedback = buildFinalRetryFeedback(goal, finalAnswer, review)
+				continue
+			}
+			synthesized, synthErr := synthesizeFinalAnswer(ctx, client, goal, recentMessages, logs, finalAnswer)
+			synthRecord := toolCallRecord{
+				Step:   step,
+				Role:   "FinalSynthesizer",
+				Tool:   "synthesize_final_answer",
+				Input:  shortText(finalAnswer, 220),
+				Output: shortText(synthesized, 220),
+			}
+			if synthErr != nil {
+				synthRecord.Status = "failed"
+				synthRecord.Error = synthErr.Error()
+				logs = append(logs, synthRecord)
+				return "", errors.New(formatFailureReport(logs, "最终答案质量不足且兜底总结失败"))
+			}
+			synthRecord.Status = "succeeded"
+			logs = append(logs, synthRecord)
+			if strings.TrimSpace(synthesized) == "" {
+				return "", errors.New(formatFailureReport(logs, "最终答案质量不足且兜底总结为空"))
+			}
+			return formatSuccessReport(logs, strings.TrimSpace(synthesized)), nil
 		}
 		toolOutput, toolErr := runTool(toolName, actionInput, recentMessages)
 		record := toolCallRecord{
@@ -187,6 +244,7 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 func buildPlannerPrompt(goal string, recentMessages []string, feedback string, step int, maxSteps int) string {
 	builder := strings.Builder{}
 	builder.WriteString("你是Planner。请为目标选择下一步动作，只输出JSON。\n")
+	builder.WriteString(buildAgentIdentityPrompt())
 	builder.WriteString("目标：")
 	builder.WriteString(goal)
 	builder.WriteString("\n")
@@ -256,6 +314,99 @@ func buildValidationRetryFeedback(baseFeedback string, issues []validationIssue)
 	builder.WriteString("请严格按JSON schema重新输出。schema: ")
 	builder.WriteString(plannerSchemaTemplateText())
 	return builder.String()
+}
+
+func buildFinalRetryFeedback(goal string, candidate string, review finalReviewResult) string {
+	builder := strings.Builder{}
+	builder.WriteString("上一轮给出的final与目标对齐度不足，需要重新规划。\n")
+	builder.WriteString("目标：")
+	builder.WriteString(strings.TrimSpace(goal))
+	builder.WriteString("\n")
+	builder.WriteString("候选final：")
+	builder.WriteString(strings.TrimSpace(candidate))
+	builder.WriteString("\n")
+	builder.WriteString("质量评估：")
+	builder.WriteString(buildFinalReviewErrorText(review))
+	builder.WriteString("\n")
+	builder.WriteString("请先读取足够上下文，再给出直接满足目标的final，不要给泛化客套回复。")
+	return builder.String()
+}
+
+func buildFinalJudgePrompt(goal string, recentMessages []string, logs []toolCallRecord, candidate string) string {
+	builder := strings.Builder{}
+	builder.WriteString("你是FinalJudge。请评估候选final是否真正满足目标，只输出JSON。\n")
+	builder.WriteString("目标：")
+	builder.WriteString(strings.TrimSpace(goal))
+	builder.WriteString("\n")
+	builder.WriteString("候选final：")
+	builder.WriteString(strings.TrimSpace(candidate))
+	builder.WriteString("\n")
+	builder.WriteString("最近消息（节选）：\n")
+	builder.WriteString(buildRecentMessagesSnippet(recentMessages, 10))
+	builder.WriteString("\n")
+	builder.WriteString("执行过程（节选）：\n")
+	builder.WriteString(buildLogSnippet(logs, 8))
+	builder.WriteString("\n")
+	builder.WriteString("评估规则:\n")
+	builder.WriteString("- 如果final直接响应目标、信息充分、无明显跑题，则pass=true。\n")
+	builder.WriteString("- 如果final是泛化寒暄、反问用户、未完成任务，则pass=false。\n")
+	builder.WriteString("- score范围0-100。\n")
+	builder.WriteString("- issues给出具体问题列表。\n")
+	builder.WriteString("- better_final在可改进时给出更好的最终答案文本。\n")
+	builder.WriteString("输出格式:\n")
+	builder.WriteString("{\"pass\":true|false,\"score\":0,\"issues\":[\"...\"],\"better_final\":\"...\"}")
+	return builder.String()
+}
+
+func buildFinalSynthesizerPrompt(goal string, recentMessages []string, logs []toolCallRecord, candidate string) string {
+	builder := strings.Builder{}
+	builder.WriteString("你是FinalSynthesizer。请基于目标与上下文直接生成最终答案。\n")
+	builder.WriteString("目标：")
+	builder.WriteString(strings.TrimSpace(goal))
+	builder.WriteString("\n")
+	builder.WriteString("当前候选final：")
+	builder.WriteString(strings.TrimSpace(candidate))
+	builder.WriteString("\n")
+	builder.WriteString("最近消息（节选）：\n")
+	builder.WriteString(buildRecentMessagesSnippet(recentMessages, 12))
+	builder.WriteString("\n")
+	builder.WriteString("执行过程（节选）：\n")
+	builder.WriteString(buildLogSnippet(logs, 10))
+	builder.WriteString("\n")
+	builder.WriteString("要求:\n")
+	builder.WriteString("- 直接回答目标，不要反问用户。\n")
+	builder.WriteString("- 语言清晰、具体、可执行。\n")
+	builder.WriteString("- 只输出最终答案正文，不要JSON。\n")
+	return builder.String()
+}
+
+func evaluateFinalAnswer(ctx context.Context, client ChatClient, goal string, recentMessages []string, logs []toolCallRecord, candidate string) (finalReviewResult, error) {
+	raw, err := client.Chat(ctx, buildFinalJudgePrompt(goal, recentMessages, logs, candidate))
+	if err != nil {
+		return finalReviewResult{}, err
+	}
+	var review finalReviewResult
+	if err := decodeJSONFromText(raw, &review); err != nil {
+		return finalReviewResult{}, fmt.Errorf("final评估结果不可解析: %w", err)
+	}
+	if review.Score < 0 {
+		review.Score = 0
+	}
+	if review.Score > 100 {
+		review.Score = 100
+	}
+	if !review.Pass && len(review.Issues) == 0 {
+		review.Issues = []string{"未通过但未提供原因"}
+	}
+	return review, nil
+}
+
+func synthesizeFinalAnswer(ctx context.Context, client ChatClient, goal string, recentMessages []string, logs []toolCallRecord, candidate string) (string, error) {
+	raw, err := client.Chat(ctx, buildFinalSynthesizerPrompt(goal, recentMessages, logs, candidate))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(raw), nil
 }
 
 func validatePlannerOutput(raw string) (plan, string, []validationIssue) {
@@ -577,6 +728,94 @@ func parsePositiveInt(s string) int {
 		return n
 	}
 	return 0
+}
+
+func buildFinalReviewErrorText(review finalReviewResult) string {
+	builder := strings.Builder{}
+	builder.WriteString("score=")
+	builder.WriteString(strconv.Itoa(review.Score))
+	builder.WriteString(", pass=")
+	if review.Pass {
+		builder.WriteString("true")
+	} else {
+		builder.WriteString("false")
+	}
+	if len(review.Issues) > 0 {
+		builder.WriteString(", issues=")
+		builder.WriteString(strings.Join(review.Issues, "；"))
+	}
+	return builder.String()
+}
+
+func formatFinalReviewOutput(review finalReviewResult) string {
+	builder := strings.Builder{}
+	builder.WriteString("score=")
+	builder.WriteString(strconv.Itoa(review.Score))
+	builder.WriteString(", pass=")
+	if review.Pass {
+		builder.WriteString("true")
+	} else {
+		builder.WriteString("false")
+	}
+	if strings.TrimSpace(review.BetterFinal) != "" {
+		builder.WriteString(", better_final=")
+		builder.WriteString(shortText(strings.TrimSpace(review.BetterFinal), 120))
+	}
+	return builder.String()
+}
+
+func buildRecentMessagesSnippet(messages []string, max int) string {
+	if len(messages) == 0 {
+		return "无"
+	}
+	if max <= 0 {
+		max = 1
+	}
+	selected := messages
+	if len(selected) > max {
+		selected = selected[len(selected)-max:]
+	}
+	builder := strings.Builder{}
+	for i, line := range selected {
+		builder.WriteString(strconv.Itoa(i + 1))
+		builder.WriteString(". ")
+		builder.WriteString(shortText(strings.TrimSpace(line), 140))
+		builder.WriteString("\n")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func buildLogSnippet(logs []toolCallRecord, max int) string {
+	if len(logs) == 0 {
+		return "无"
+	}
+	if max <= 0 {
+		max = 1
+	}
+	selected := logs
+	if len(selected) > max {
+		selected = selected[len(selected)-max:]
+	}
+	builder := strings.Builder{}
+	for i, log := range selected {
+		builder.WriteString(strconv.Itoa(i + 1))
+		builder.WriteString(") role=")
+		builder.WriteString(strings.TrimSpace(log.Role))
+		builder.WriteString(", tool=")
+		builder.WriteString(strings.TrimSpace(log.Tool))
+		builder.WriteString(", status=")
+		builder.WriteString(strings.TrimSpace(log.Status))
+		if strings.TrimSpace(log.Output) != "" {
+			builder.WriteString(", output=")
+			builder.WriteString(shortText(strings.TrimSpace(log.Output), 120))
+		}
+		if strings.TrimSpace(log.Error) != "" {
+			builder.WriteString(", error=")
+			builder.WriteString(shortText(strings.TrimSpace(log.Error), 120))
+		}
+		builder.WriteString("\n")
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func formatSuccessReport(logs []toolCallRecord, finalAnswer string) string {
