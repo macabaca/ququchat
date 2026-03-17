@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"ququchat/internal/service/task/llmmq"
 )
 
 type RuntimeOptions struct {
@@ -16,6 +18,10 @@ type RuntimeOptions struct {
 	WorkerSize     int
 	Store          Store
 	LLMClient      LLMClient
+	LLMTransport   string
+	LLMMQURL       string
+	LLMMQQueue     string
+	LLMMQTimeout   time.Duration
 	LLMAPIKey      string
 	LLMBaseURL     string
 	LLMModel       string
@@ -36,7 +42,19 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 	}
 	llmClient := opts.LLMClient
 	if llmClient == nil {
-		if strings.TrimSpace(opts.LLMAPIKey) != "" && strings.TrimSpace(opts.LLMBaseURL) != "" && strings.TrimSpace(opts.LLMModel) != "" {
+		if strings.EqualFold(strings.TrimSpace(opts.LLMTransport), "rabbitmq") &&
+			strings.TrimSpace(opts.LLMMQURL) != "" &&
+			strings.TrimSpace(opts.LLMMQQueue) != "" {
+			client, err := llmmq.NewClient(llmmq.ClientOptions{
+				URL:             opts.LLMMQURL,
+				RequestQueue:    opts.LLMMQQueue,
+				ResponseTimeout: opts.LLMMQTimeout,
+			})
+			if err == nil {
+				llmClient = client
+			}
+		}
+		if llmClient == nil && strings.TrimSpace(opts.LLMAPIKey) != "" && strings.TrimSpace(opts.LLMBaseURL) != "" && strings.TrimSpace(opts.LLMModel) != "" {
 			client, err := NewOpenAICompatClient(OpenAICompatOptions{
 				APIKey:  opts.LLMAPIKey,
 				BaseURL: opts.LLMBaseURL,

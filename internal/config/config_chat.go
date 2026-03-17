@@ -17,9 +17,23 @@ type Task struct {
 }
 
 type LLM struct {
-	APIKey  string `yaml:"api_key" json:"api_key"`
-	BaseURL string `yaml:"base_url" json:"base_url"`
-	Model   string `yaml:"model" json:"model"`
+	Transport         string `yaml:"transport" json:"transport"`
+	RPM               int    `yaml:"rpm" json:"rpm"`
+	TPM               int    `yaml:"tpm" json:"tpm"`
+	RabbitMQURL       string `yaml:"rabbitmq_url" json:"rabbitmq_url"`
+	RequestQueue      string `yaml:"request_queue" json:"request_queue"`
+	WorkerSize        int    `yaml:"worker_size" json:"worker_size"`
+	ResponseTimeoutMs int    `yaml:"response_timeout_ms" json:"response_timeout_ms"`
+	APIKey            string `yaml:"api_key" json:"api_key"`
+	BaseURL           string `yaml:"base_url" json:"base_url"`
+	Model             string `yaml:"model" json:"model"`
+}
+
+func (l LLM) TransportOrDefault() string {
+	if strings.TrimSpace(l.Transport) != "" {
+		return strings.TrimSpace(l.Transport)
+	}
+	return "direct"
 }
 
 func (l LLM) BaseURLOrDefault() string {
@@ -34,6 +48,41 @@ func (l LLM) ModelOrDefault() string {
 		return strings.TrimSpace(l.Model)
 	}
 	return "gpt-4o-mini"
+}
+
+func (l LLM) RequestQueueOrDefault() string {
+	if strings.TrimSpace(l.RequestQueue) != "" {
+		return strings.TrimSpace(l.RequestQueue)
+	}
+	return "ququchat.llm.request"
+}
+
+func (l LLM) WorkerSizeOrDefault() int {
+	if l.WorkerSize > 0 {
+		return l.WorkerSize
+	}
+	return 1
+}
+
+func (l LLM) RPMOrDefault() int {
+	if l.RPM > 0 {
+		return l.RPM
+	}
+	return 0
+}
+
+func (l LLM) TPMOrDefault() int {
+	if l.TPM > 0 {
+		return l.TPM
+	}
+	return 0
+}
+
+func (l LLM) ResponseTimeoutOrDefault() time.Duration {
+	if l.ResponseTimeoutMs > 0 {
+		return time.Duration(l.ResponseTimeoutMs) * time.Millisecond
+	}
+	return 60 * time.Second
 }
 
 func (t Task) QueueHighCapOrDefault() int {

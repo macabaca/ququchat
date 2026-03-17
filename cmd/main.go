@@ -13,6 +13,7 @@ import (
 	"ququchat/internal/server/storage"
 	servertask "ququchat/internal/server/task"
 	tasksvc "ququchat/internal/service/task"
+	"ququchat/internal/service/task/llmmq"
 )
 
 func main() {
@@ -73,11 +74,50 @@ func main() {
 		QueueNormalCap: cfg.Task.QueueNormalCapOrDefault(),
 		QueueLowCap:    cfg.Task.QueueLowCapOrDefault(),
 		WorkerSize:     cfg.Task.WorkerSizeOrDefault(),
+		LLMTransport:   cfg.LLM.TransportOrDefault(),
+		LLMMQURL:       cfg.LLM.RabbitMQURL,
+		LLMMQQueue:     cfg.LLM.RequestQueueOrDefault(),
+		LLMMQTimeout:   cfg.LLM.ResponseTimeoutOrDefault(),
 		LLMAPIKey:      cfg.LLM.APIKey,
 		LLMBaseURL:     cfg.LLM.BaseURLOrDefault(),
 		LLMModel:       cfg.LLM.ModelOrDefault(),
 	})
 	taskService.Start(context.Background())
+	if cfg.LLM.TransportOrDefault() == "rabbitmq" {
+		provider, err := tasksvc.NewOpenAICompatClient(tasksvc.OpenAICompatOptions{
+			APIKey:  cfg.LLM.APIKey,
+			BaseURL: cfg.LLM.BaseURLOrDefault(),
+			Model:   cfg.LLM.ModelOrDefault(),
+		})
+		if err != nil {
+			log.Fatalf("初始化 LLM provider 失败: %v", err)
+		}
+		llmPool, err := llmmq.NewPool(llmmq.PoolOptions{
+			URL:          cfg.LLM.RabbitMQURL,
+			RequestQueue: cfg.LLM.RequestQueueOrDefault(),
+			Provider:     provider,
+			Size:         cfg.LLM.WorkerSizeOrDefault(),
+			RPM:          cfg.LLM.RPMOrDefault(),
+			TPM:          cfg.LLM.TPMOrDefault(),
+		})
+		if err != nil {
+			log.Fatalf("初始化 LLM worker pool 失败: %v", err)
+		}
+		if err := llmPool.Start(context.Background()); err != nil {
+			log.Fatalf("启动 LLM worker pool 失败: %v", err)
+		}
+		defer func() {
+			if err := llmPool.Shutdown(context.Background()); err != nil {
+				log.Printf("LLM worker pool 关闭失败: %v", err)
+			}
+		}()
+		log.Printf(
+			"LLM worker pool 已启动，worker 数量: %d, RPM: %d, TPM: %d",
+			cfg.LLM.WorkerSizeOrDefault(),
+			cfg.LLM.RPMOrDefault(),
+			cfg.LLM.TPMOrDefault(),
+		)
+	}
 
 	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket, taskService)
 
