@@ -422,14 +422,11 @@ func (c *Client) readLoop(h *WsHandler) {
 					UserID:  userID,
 					RoomID:  roomID,
 					Content: msg.Content,
-				}, func(cbCtx context.Context, doneTask *tasksvc.Task) {
+				}, func(cbCtx context.Context, doneTask *tasksvc.Task, final string, payload map[string]interface{}) {
 					if doneTask == nil {
 						return
 					}
-					replyText := ""
-					if doneTask.Result.Text != nil {
-						replyText = strings.TrimSpace(*doneTask.Result.Text)
-					}
+					replyText := strings.TrimSpace(final)
 					if replyText == "" && doneTask.ErrorMessage != "" {
 						replyText = doneTask.ErrorMessage
 					}
@@ -439,13 +436,13 @@ func (c *Client) readLoop(h *WsHandler) {
 					if strings.TrimSpace(replyText) == "" {
 						return
 					}
-					if sendErr := h.sendRobotGroupMessage(roomID, replyText); sendErr != nil {
+					if sendErr := h.sendRobotGroupMessage(roomID, replyText, payload); sendErr != nil {
 						log.Printf("send robot message failed room=%s err=%v", roomID, sendErr)
 					}
 				})
 				if err != nil {
 					log.Printf("submit command failed user=%s room=%s err=%v", userID, roomID, err)
-					if sendErr := h.sendRobotGroupMessage(roomID, err.Error()); sendErr != nil {
+					if sendErr := h.sendRobotGroupMessage(roomID, err.Error(), nil); sendErr != nil {
 						log.Printf("send robot submit-failed message failed room=%s err=%v", roomID, sendErr)
 					}
 					continue
@@ -697,7 +694,7 @@ func (h *WsHandler) ensureRobotUser() error {
 	return h.robotErr
 }
 
-func (h *WsHandler) sendRobotGroupMessage(roomID, content string) error {
+func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[string]interface{}) error {
 	text := strings.TrimSpace(content)
 	if roomID == "" || text == "" {
 		return nil
@@ -705,7 +702,11 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string) error {
 	if err := h.ensureRobotUser(); err != nil {
 		return err
 	}
-	savedMsg, err := h.saveGroupMessage(roomID, wsRobotUserID, text)
+	payloadJSON, err := toJSONPayload(payload)
+	if err != nil {
+		return err
+	}
+	savedMsg, err := h.saveMessage(roomID, wsRobotUserID, models.ContentTypeText, &text, nil, payloadJSON)
 	if err != nil {
 		return err
 	}
@@ -732,6 +733,17 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string) error {
 		Data:    b,
 	}
 	return nil
+}
+
+func toJSONPayload(payload map[string]interface{}) (datatypes.JSON, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return datatypes.JSON(b), nil
 }
 
 func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) (*models.Message, error) {

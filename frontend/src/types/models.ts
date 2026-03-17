@@ -84,6 +84,8 @@ export interface Message {
     thumb_attachment_id?: string;
     is_image?: boolean;
     cache_path?: string | null;
+    payload_json?: Record<string, any> | string | null;
+    payload?: Record<string, any> | string | null;
 }
 
 export interface Conversation {

@@ -1,6 +1,9 @@
 package tasksvc
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Type string
 
@@ -55,7 +58,9 @@ type Payload struct {
 }
 
 type Result struct {
-	Text *string
+	Text    *string
+	Final   *string
+	Payload map[string]interface{}
 }
 
 type Task struct {
@@ -99,5 +104,35 @@ func (t *Task) Clone() *Task {
 		textCopy := *t.Result.Text
 		next.Result.Text = &textCopy
 	}
+	if t.Result.Final != nil {
+		finalCopy := *t.Result.Final
+		next.Result.Final = &finalCopy
+	}
+	if t.Result.Payload != nil {
+		payloadCopy := cloneResultPayload(t.Result.Payload)
+		next.Result.Payload = payloadCopy
+	}
 	return &next
+}
+
+func cloneResultPayload(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		dst := make(map[string]interface{}, len(src))
+		for k, v := range src {
+			dst[k] = v
+		}
+		return dst
+	}
+	var dst map[string]interface{}
+	if err := json.Unmarshal(b, &dst); err != nil {
+		dst = make(map[string]interface{}, len(src))
+		for k, v := range src {
+			dst[k] = v
+		}
+	}
+	return dst
 }

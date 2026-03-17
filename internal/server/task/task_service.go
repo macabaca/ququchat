@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -27,7 +28,7 @@ const summaryCountMax = 1000
 const agentRecentMessageLimit = 12
 const agentMaxSteps = 5
 
-type TaskCallback func(ctx context.Context, doneTask *tasksvc.Task)
+type TaskCallback func(ctx context.Context, doneTask *tasksvc.Task, final string, payload map[string]interface{})
 
 type Service struct {
 	db         *gorm.DB
@@ -200,8 +201,49 @@ func (s *Service) dispatchCallback(ctx context.Context, doneTask *tasksvc.Task) 
 	delete(s.callbacks, doneTask.ID)
 	s.callbackMu.Unlock()
 	if cb != nil {
-		cb(ctx, doneTask.Clone())
+		final, payload := extractCallbackResult(doneTask)
+		cb(ctx, doneTask.Clone(), final, payload)
 	}
+}
+
+func extractCallbackResult(doneTask *tasksvc.Task) (string, map[string]interface{}) {
+	if doneTask == nil {
+		return "", nil
+	}
+	final := ""
+	if doneTask.Result.Final != nil {
+		final = strings.TrimSpace(*doneTask.Result.Final)
+	}
+	if final == "" && doneTask.Result.Text != nil {
+		final = strings.TrimSpace(*doneTask.Result.Text)
+	}
+	if final == "" {
+		final = strings.TrimSpace(doneTask.ErrorMessage)
+	}
+	payload := clonePayloadMap(doneTask.Result.Payload)
+	return final, payload
+}
+
+func clonePayloadMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		dst := make(map[string]interface{}, len(src))
+		for k, v := range src {
+			dst[k] = v
+		}
+		return dst
+	}
+	var dst map[string]interface{}
+	if err := json.Unmarshal(b, &dst); err != nil {
+		dst = make(map[string]interface{}, len(src))
+		for k, v := range src {
+			dst[k] = v
+		}
+	}
+	return dst
 }
 
 func parseSummaryCount(cmd string) (int, error) {

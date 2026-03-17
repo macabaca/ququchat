@@ -36,6 +36,29 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
     const filePlaceholder = !isFile
         ? ''
         : (typeof msg.content === 'string' && msg.content.trim() && !contentIsUrl ? msg.content : `File (${msg.attachment_id || 'attachment'})`);
+    const isRobotMessage = msg.from_user_id === ROBOT_USER_ID;
+    const payloadText = useMemo(() => {
+        const rawPayload = (msg as Message & Record<string, any>).payload_json ?? (msg as Message & Record<string, any>).payload;
+        if (!rawPayload) {
+            return '';
+        }
+        if (typeof rawPayload === 'string') {
+            const trimmed = rawPayload.trim();
+            if (!trimmed) {
+                return '';
+            }
+            try {
+                return JSON.stringify(JSON.parse(trimmed), null, 2);
+            } catch {
+                return trimmed;
+            }
+        }
+        try {
+            return JSON.stringify(rawPayload, null, 2);
+        } catch {
+            return '';
+        }
+    }, [msg]);
 
     useEffect(() => {
         const isBlob = typeof msg.content === 'string' && msg.content.startsWith('blob:');
@@ -284,6 +307,14 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                     wordBreak: 'break-word'
                 }}>
                     {renderContent()}
+                    {isRobotMessage && payloadText && (
+                        <details style={{ marginTop: 8, border: '1px solid #d9d9d9', borderRadius: 6, background: '#fafafa' }}>
+                            <summary style={{ cursor: 'pointer', padding: '6px 8px', color: '#595959', fontSize: 12 }}>payload / memory</summary>
+                            <pre style={{ margin: 0, padding: '8px', fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#262626' }}>
+                                {payloadText}
+                            </pre>
+                        </details>
+                    )}
                 </div>
             </div>
         </List.Item>

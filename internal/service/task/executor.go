@@ -44,7 +44,8 @@ func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) 
 			return Result{}, ctx.Err()
 		}
 		text := fmt.Sprintf("fake-llm-response:%s", strings.TrimSpace(t.Payload.FakeLLM.Prompt))
-		return Result{Text: &text}, nil
+		final := text
+		return Result{Text: &text, Final: &final}, nil
 	case TypeLLM:
 		if t.Payload.LLM == nil {
 			return Result{}, errors.New("missing llm payload")
@@ -56,7 +57,8 @@ func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) 
 		if err != nil {
 			return Result{}, err
 		}
-		return Result{Text: &text}, nil
+		final := text
+		return Result{Text: &text, Final: &final}, nil
 	case TypeSummary:
 		if t.Payload.Summary == nil {
 			return Result{}, errors.New("missing summary payload")
@@ -68,13 +70,10 @@ func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) 
 		if err != nil {
 			return Result{}, err
 		}
-		return Result{Text: &text}, nil
+		final := text
+		return Result{Text: &text, Final: &final}, nil
 	case TypeAgent:
-		text, err := e.executeAgent(ctx, t)
-		if err != nil {
-			return Result{}, err
-		}
-		return Result{Text: &text}, nil
+		return e.executeAgent(ctx, t)
 	default:
 		return Result{}, ErrUnsupportedTask
 	}
