@@ -40,10 +40,29 @@ type toolCallRecord struct {
 	Error  string
 }
 
+type validationIssue struct {
+	Code    string
+	Field   string
+	Message string
+	Detail  string
+}
+
 const (
 	maxStepsDefault = 4
 	maxStepsLimit   = 10
 	roleRetryLimit  = 2
+)
+
+const (
+	errCodeJSONEmpty          = "E_JSON_EMPTY"
+	errCodeJSONNotFound       = "E_JSON_NOT_FOUND"
+	errCodeJSONInvalid        = "E_JSON_INVALID"
+	errCodeFieldMissing       = "E_FIELD_MISSING"
+	errCodeFieldType          = "E_FIELD_TYPE"
+	errCodeToolCombination    = "E_TOOL_COMBINATION"
+	errCodeToolNotAllowed     = "E_TOOL_NOT_ALLOWED"
+	errCodeFinishFinalMissing = "E_FINISH_FINAL_MISSING"
+	errCodeNormalizeFailed    = "E_NORMALIZE_FAILED"
 )
 
 func Execute(ctx context.Context, client ChatClient, input Input) (string, error) {
@@ -79,15 +98,36 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			if err != nil {
 				return "", errors.New(formatFailureReport(logs, fmt.Sprintf("planner调用失败: %v", err)))
 			}
-			normalizedPlan, normalizedJSON, validationErrors := validatePlannerOutput(nextPlannerRaw)
+			candidateRaw := strings.TrimSpace(nextPlannerRaw)
+			formatterPrompt := buildJSONFormatterPrompt(nextPlannerRaw)
+			formatterRaw, formatterErr := client.Chat(ctx, formatterPrompt)
+			formatterRecord := toolCallRecord{
+				Step:   step,
+				Role:   "Formatter",
+				Tool:   "normalize_planner_output",
+				Input:  shortText(nextPlannerRaw, 220),
+				Output: shortText(formatterRaw, 220),
+			}
+			if formatterErr != nil {
+				formatterRecord.Status = "failed"
+				formatterRecord.Error = formatterErr.Error()
+				logs = append(logs, formatterRecord)
+			} else {
+				formatterRecord.Status = "succeeded"
+				logs = append(logs, formatterRecord)
+				if strings.TrimSpace(formatterRaw) != "" {
+					candidateRaw = strings.TrimSpace(formatterRaw)
+				}
+			}
+			normalizedPlan, normalizedJSON, validationIssues := validatePlannerOutput(candidateRaw)
 			validateRecord := toolCallRecord{
 				Step:   step,
 				Role:   "Validator",
 				Tool:   "validate_planner_output",
-				Input:  shortText(nextPlannerRaw, 220),
+				Input:  shortText(candidateRaw, 220),
 				Output: shortText(normalizedJSON, 220),
 			}
-			if len(validationErrors) == 0 {
+			if len(validationIssues) == 0 {
 				validateRecord.Status = "succeeded"
 				if strings.TrimSpace(validateRecord.Output) == "" {
 					validateRecord.Output = "valid"
@@ -98,9 +138,9 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 				break
 			}
 			validateRecord.Status = "failed"
-			validateRecord.Error = strings.Join(validationErrors, "；")
+			validateRecord.Error = joinValidationIssueTexts(validationIssues, "；")
 			logs = append(logs, validateRecord)
-			plannerFeedback = buildValidationRetryFeedback(feedback, validationErrors)
+			plannerFeedback = buildValidationRetryFeedback(feedback, validationIssues)
 			if attempt == roleRetryLimit {
 				return "", errors.New(formatFailureReport(logs, "planner输出格式连续校验失败"))
 			}
@@ -178,36 +218,66 @@ func buildPlannerPrompt(goal string, recentMessages []string, feedback string, s
 	return builder.String()
 }
 
-func buildValidationRetryFeedback(baseFeedback string, errorsList []string) string {
+func buildJSONFormatterPrompt(rawOutput string) string {
+	builder := strings.Builder{}
+	builder.WriteString("你是JSONFormatter。你的任务是把输入内容转换成严格JSON对象，只输出JSON。\n")
+	builder.WriteString("必须遵循的schema:\n")
+	builder.WriteString(plannerSchemaTemplateText())
+	builder.WriteString("\n")
+	builder.WriteString("要求:\n")
+	builder.WriteString("- 只输出一个JSON对象，不允许markdown代码块，不允许解释文字。\n")
+	builder.WriteString("- 保留原始语义，不要增加无关信息。\n")
+	builder.WriteString("- 如果tool出现别名，归一化到标准工具名。\n")
+	builder.WriteString("- 如果action.tool=finish，action.final 必须非空。\n")
+	builder.WriteString("待规范化输入:\n")
+	builder.WriteString(strings.TrimSpace(rawOutput))
+	builder.WriteString("\n")
+	return builder.String()
+}
+
+func buildValidationRetryFeedback(baseFeedback string, issues []validationIssue) string {
 	builder := strings.Builder{}
 	if strings.TrimSpace(baseFeedback) != "" {
 		builder.WriteString(strings.TrimSpace(baseFeedback))
 		builder.WriteString("\n")
 	}
 	builder.WriteString("上一轮规则校验未通过，错误如下：")
-	if len(errorsList) == 0 {
-		builder.WriteString("格式错误")
+	if len(issues) == 0 {
+		builder.WriteString("未知格式错误")
 	} else {
-		builder.WriteString(strings.Join(errorsList, "；"))
+		builder.WriteString("\n")
+		for i, issue := range issues {
+			builder.WriteString(strconv.Itoa(i + 1))
+			builder.WriteString(") ")
+			builder.WriteString(validationIssueText(issue))
+			builder.WriteString("\n")
+		}
 	}
-	builder.WriteString("。请严格按JSON schema重新输出。schema: ")
+	builder.WriteString("请严格按JSON schema重新输出。schema: ")
 	builder.WriteString(plannerSchemaTemplateText())
 	return builder.String()
 }
 
-func validatePlannerOutput(raw string) (plan, string, []string) {
+func validatePlannerOutput(raw string) (plan, string, []validationIssue) {
 	cfg := getPlannerSchemaConfig()
-	candidate, err := extractJSONObjectText(raw)
-	if err != nil {
-		return plan{}, "", []string{err.Error()}
+	candidate, extractIssue := extractJSONObjectText(raw)
+	if extractIssue != nil {
+		return plan{}, "", []validationIssue{*extractIssue}
 	}
 	var root map[string]interface{}
 	if err := json.Unmarshal([]byte(candidate), &root); err != nil {
-		return plan{}, "", []string{"输出不是合法JSON对象"}
+		return plan{}, "", []validationIssue{
+			{
+				Code:    errCodeJSONInvalid,
+				Field:   "$",
+				Message: "输出不是合法JSON对象",
+				Detail:  err.Error(),
+			},
+		}
 	}
-	errorsList := make([]string, 0)
-	_, topLevelErrors := validateObjectAgainstSchema(root, cfg.TopLevelFields, "")
-	errorsList = append(errorsList, topLevelErrors...)
+	issues := make([]validationIssue, 0)
+	_, topLevelIssues := validateObjectAgainstSchema(root, cfg.TopLevelFields, "")
+	issues = append(issues, topLevelIssues...)
 	toolRaw := ""
 	input := ""
 	final := ""
@@ -215,26 +285,41 @@ func validatePlannerOutput(raw string) (plan, string, []string) {
 	actionValue, hasAction := root[cfg.ActionField]
 	actionMap, actionOK := actionValue.(map[string]interface{})
 	if hasAction && actionOK {
-		_, actionErrors := validateObjectAgainstSchema(actionMap, cfg.ActionFields, cfg.ActionField)
-		errorsList = append(errorsList, actionErrors...)
+		_, actionIssues := validateObjectAgainstSchema(actionMap, cfg.ActionFields, cfg.ActionField)
+		issues = append(issues, actionIssues...)
 		toolRaw = readStringValue(actionMap, cfg.ToolField)
 		input = readStringValue(actionMap, cfg.InputField)
 		final = readStringValue(actionMap, cfg.FinalField)
 	}
 	toolName := normalizeToolFromConfig(toolRaw)
 	if strings.TrimSpace(toolRaw) != "" && cfg.DisallowToolCombination && containsToolCombination(toolRaw) {
-		errorsList = append(errorsList, cfg.ActionField+"."+cfg.ToolField+" 不能是组合值")
+		issues = append(issues, validationIssue{
+			Code:    errCodeToolCombination,
+			Field:   cfg.ActionField + "." + cfg.ToolField,
+			Message: "工具名不能是组合值",
+			Detail:  "仅允许单个工具名，例如 read_recent_messages 或 finish",
+		})
 	}
 	if cfg.ToolEnumFromConfig && (strings.TrimSpace(toolName) == "" || !isKnownToolName(toolName)) {
-		errorsList = append(errorsList, cfg.ActionField+"."+cfg.ToolField+" 不在允许列表: "+allowedToolNamesCSV())
+		issues = append(issues, validationIssue{
+			Code:    errCodeToolNotAllowed,
+			Field:   cfg.ActionField + "." + cfg.ToolField,
+			Message: "工具不在允许列表",
+			Detail:  "允许值: " + allowedToolNamesCSV(),
+		})
 	}
 	if strings.TrimSpace(cfg.RequireFinalWhenToolName) != "" &&
 		strings.EqualFold(strings.TrimSpace(toolName), strings.TrimSpace(cfg.RequireFinalWhenToolName)) &&
 		strings.TrimSpace(final) == "" {
-		errorsList = append(errorsList, cfg.ActionField+"."+cfg.ToolField+"="+cfg.RequireFinalWhenToolName+" 时 "+cfg.ActionField+"."+cfg.FinalField+" 必须非空")
+		issues = append(issues, validationIssue{
+			Code:    errCodeFinishFinalMissing,
+			Field:   cfg.ActionField + "." + cfg.FinalField,
+			Message: cfg.ActionField + "." + cfg.ToolField + "=" + cfg.RequireFinalWhenToolName + " 时，" + cfg.ActionField + "." + cfg.FinalField + " 必须非空",
+			Detail:  "请提供最终答案文本",
+		})
 	}
-	if len(errorsList) > 0 {
-		return plan{}, "", errorsList
+	if len(issues) > 0 {
+		return plan{}, "", issues
 	}
 	normalizedPlan := plan{
 		Thought: strings.TrimSpace(thought),
@@ -246,7 +331,14 @@ func validatePlannerOutput(raw string) (plan, string, []string) {
 	}
 	b, marshalErr := json.Marshal(normalizedPlan)
 	if marshalErr != nil {
-		return plan{}, "", []string{"输出规范化失败"}
+		return plan{}, "", []validationIssue{
+			{
+				Code:    errCodeNormalizeFailed,
+				Field:   "$",
+				Message: "输出规范化失败",
+				Detail:  marshalErr.Error(),
+			},
+		}
 	}
 	return normalizedPlan, string(b), nil
 }
@@ -270,10 +362,15 @@ func decodeJSONFromText(raw string, v interface{}) error {
 	return errors.New("json not found")
 }
 
-func extractJSONObjectText(raw string) (string, error) {
+func extractJSONObjectText(raw string) (string, *validationIssue) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return "", errors.New("输出为空")
+		return "", &validationIssue{
+			Code:    errCodeJSONEmpty,
+			Field:   "$",
+			Message: "输出为空",
+			Detail:  "请输出一个JSON对象",
+		}
 	}
 	if json.Valid([]byte(trimmed)) {
 		return trimmed, nil
@@ -286,7 +383,12 @@ func extractJSONObjectText(raw string) (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", errors.New("未找到合法JSON对象")
+	return "", &validationIssue{
+		Code:    errCodeJSONNotFound,
+		Field:   "$",
+		Message: "未找到合法JSON对象",
+		Detail:  "请只输出JSON对象，不要包含markdown代码块或额外解释",
+	}
 }
 
 func readStringField(m map[string]interface{}, key string) (string, bool) {
@@ -309,9 +411,9 @@ func readStringValue(m map[string]interface{}, key string) string {
 	return text
 }
 
-func validateObjectAgainstSchema(root map[string]interface{}, fields []SchemaField, parent string) (map[string]interface{}, []string) {
+func validateObjectAgainstSchema(root map[string]interface{}, fields []SchemaField, parent string) (map[string]interface{}, []validationIssue) {
 	values := make(map[string]interface{}, len(fields))
-	errorsList := make([]string, 0)
+	issues := make([]validationIssue, 0)
 	for _, field := range fields {
 		name := strings.TrimSpace(field.Name)
 		if name == "" {
@@ -324,17 +426,85 @@ func validateObjectAgainstSchema(root map[string]interface{}, fields []SchemaFie
 		value, exists := root[name]
 		if !exists {
 			if field.Required {
-				errorsList = append(errorsList, fullName+" 字段缺失")
+				issues = append(issues, validationIssue{
+					Code:    errCodeFieldMissing,
+					Field:   fullName,
+					Message: "字段缺失",
+					Detail:  "该字段为必填项",
+				})
 			}
 			continue
 		}
 		if !matchesSchemaType(value, field.Type) {
-			errorsList = append(errorsList, fullName+" 不是 "+strings.ToLower(strings.TrimSpace(field.Type)))
+			issues = append(issues, validationIssue{
+				Code:    errCodeFieldType,
+				Field:   fullName,
+				Message: "字段类型错误，期望 " + strings.ToLower(strings.TrimSpace(field.Type)),
+				Detail:  "实际值类型: " + jsonValueTypeName(value),
+			})
 			continue
 		}
 		values[name] = value
 	}
-	return values, errorsList
+	return values, issues
+}
+
+func validationIssueText(issue validationIssue) string {
+	code := strings.TrimSpace(issue.Code)
+	if code == "" {
+		code = "E_UNKNOWN"
+	}
+	field := strings.TrimSpace(issue.Field)
+	msg := strings.TrimSpace(issue.Message)
+	detail := strings.TrimSpace(issue.Detail)
+	builder := strings.Builder{}
+	builder.WriteString("[")
+	builder.WriteString(code)
+	builder.WriteString("]")
+	if field != "" {
+		builder.WriteString(" ")
+		builder.WriteString(field)
+		builder.WriteString(": ")
+	} else {
+		builder.WriteString(" ")
+	}
+	builder.WriteString(msg)
+	if detail != "" {
+		builder.WriteString("（")
+		builder.WriteString(detail)
+		builder.WriteString("）")
+	}
+	return builder.String()
+}
+
+func joinValidationIssueTexts(issues []validationIssue, sep string) string {
+	if len(issues) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		parts = append(parts, validationIssueText(issue))
+	}
+	return strings.Join(parts, sep)
+}
+
+func jsonValueTypeName(value interface{}) string {
+	switch value.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case float64, float32, int, int32, int64:
+		return "number"
+	case map[string]interface{}:
+		return "object"
+	case []interface{}:
+		return "array"
+	default:
+		return fmt.Sprintf("%T", value)
+	}
 }
 
 func matchesSchemaType(value interface{}, expectedType string) bool {
