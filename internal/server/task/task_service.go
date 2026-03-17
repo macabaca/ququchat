@@ -217,11 +217,57 @@ func extractCallbackResult(doneTask *tasksvc.Task) (string, map[string]interface
 	if final == "" && doneTask.Result.Text != nil {
 		final = strings.TrimSpace(*doneTask.Result.Text)
 	}
+	payload := clonePayloadMap(doneTask.Result.Payload)
+	reportText := ""
+	if doneTask.Result.Text != nil {
+		reportText = strings.TrimSpace(*doneTask.Result.Text)
+	}
+	if reportText == "" {
+		reportText = strings.TrimSpace(doneTask.ErrorMessage)
+	}
+	reportFinal, reportMemory := splitAgentReport(reportText)
+	if final == "" {
+		final = reportFinal
+	}
+	if strings.TrimSpace(reportMemory) != "" {
+		if payload == nil {
+			payload = make(map[string]interface{})
+		}
+		if _, exists := payload["memory"]; !exists {
+			payload["memory"] = strings.TrimSpace(reportMemory)
+		}
+	}
 	if final == "" {
 		final = strings.TrimSpace(doneTask.ErrorMessage)
 	}
-	payload := clonePayloadMap(doneTask.Result.Payload)
 	return final, payload
+}
+
+func splitAgentReport(text string) (string, string) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "", ""
+	}
+	const memoryMarker = "工具调用记录："
+	const finalMarker = "最终结果："
+	const errorMarker = "错误报告："
+	if idx := strings.LastIndex(trimmed, finalMarker); idx >= 0 {
+		memory := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(trimmed[:idx]), memoryMarker))
+		final := strings.TrimSpace(trimmed[idx+len(finalMarker):])
+		if final == "" {
+			final = trimmed
+		}
+		return final, memory
+	}
+	if idx := strings.LastIndex(trimmed, errorMarker); idx >= 0 {
+		memory := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(trimmed[:idx]), memoryMarker))
+		final := strings.TrimSpace(trimmed[idx+len(errorMarker):])
+		if final == "" {
+			final = trimmed
+		}
+		return final, memory
+	}
+	return trimmed, ""
 }
 
 func clonePayloadMap(src map[string]interface{}) map[string]interface{} {

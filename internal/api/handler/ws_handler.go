@@ -255,6 +255,7 @@ type OutgoingMessage struct {
 	Content      string             `json:"content,omitempty"`
 	AttachmentID string             `json:"attachment_id,omitempty"`
 	Attachment   *AttachmentPayload `json:"attachment,omitempty"`
+	PayloadJSON  datatypes.JSON     `json:"payload_json,omitempty"`
 	Timestamp    int64              `json:"timestamp"`
 	SequenceID   int64              `json:"sequence_id"`
 }
@@ -715,13 +716,14 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[st
 		return err
 	}
 	out := OutgoingMessage{
-		ID:         savedMsg.ID,
-		Type:       "group_message",
-		FromUser:   wsRobotUserID,
-		RoomID:     roomID,
-		Content:    text,
-		Timestamp:  savedMsg.CreatedAt.Unix(),
-		SequenceID: savedMsg.SequenceID,
+		ID:          savedMsg.ID,
+		Type:        "group_message",
+		FromUser:    wsRobotUserID,
+		RoomID:      roomID,
+		Content:     text,
+		PayloadJSON: payloadJSON,
+		Timestamp:   savedMsg.CreatedAt.Unix(),
+		SequenceID:  savedMsg.SequenceID,
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
