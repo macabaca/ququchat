@@ -418,11 +418,6 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                             )}
                         </div>
                     </Dropdown>
-                    {sequenceID !== null && (
-                        <span style={{ marginTop: 4, fontSize: 11, color: '#8c8c8c', lineHeight: '14px' }}>
-                            SequenceID: {sequenceID}
-                        </span>
-                    )}
                 </div>
             </div>
         </List.Item>
