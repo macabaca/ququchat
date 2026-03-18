@@ -29,6 +29,16 @@ interface MemoryEntry {
     raw: string;
 }
 
+interface RAGPayloadEntry {
+    pointID: string;
+    scoreText: string;
+    summary: string;
+    segmentID: string;
+    startSeq: string;
+    endSeq: string;
+    messageCount: string;
+}
+
 const parseMemoryEntries = (memoryText: string): MemoryEntry[] => {
     const normalized = memoryText.replace(/\r\n/g, '\n').trim();
     if (!normalized) {
@@ -73,6 +83,68 @@ const parseMemoryEntries = (memoryText: string): MemoryEntry[] => {
             output: readPart(outputToken, [errorToken]),
             error: readPart(errorToken, []),
             raw: chunk
+        });
+    }
+    return entries;
+};
+
+const asRecord = (value: any): Record<string, any> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null;
+    }
+    return value as Record<string, any>;
+};
+
+const parseRAGPayloadEntries = (payloadObject: Record<string, any> | null): RAGPayloadEntry[] => {
+    if (!payloadObject) {
+        return [];
+    }
+    let rawResults: any[] = [];
+    if (Array.isArray(payloadObject.results)) {
+        rawResults = payloadObject.results;
+    } else if (typeof payloadObject.results_json === 'string') {
+        const trimmed = payloadObject.results_json.trim();
+        if (trimmed) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (Array.isArray(parsed)) {
+                    rawResults = parsed;
+                }
+            } catch {
+                rawResults = [];
+            }
+        }
+    }
+    if (!Array.isArray(rawResults) || rawResults.length === 0) {
+        return [];
+    }
+    const entries: RAGPayloadEntry[] = [];
+    for (const item of rawResults) {
+        const row = asRecord(item);
+        if (!row) {
+            continue;
+        }
+        const pointID = String(row.point_id ?? '').trim();
+        const scoreValue = row.score;
+        const scoreText = typeof scoreValue === 'number'
+            ? scoreValue.toFixed(6)
+            : String(scoreValue ?? '').trim();
+        const summary = String(row.summary ?? '').trim();
+        const segmentID = String(row.segment_id ?? '').trim();
+        const startSeq = String(row.start_seq ?? '').trim();
+        const endSeq = String(row.end_seq ?? '').trim();
+        const messageCount = String(row.message_count ?? '').trim();
+        if (!pointID && !summary && !segmentID) {
+            continue;
+        }
+        entries.push({
+            pointID,
+            scoreText,
+            summary,
+            segmentID,
+            startSeq,
+            endSeq,
+            messageCount
         });
     }
     return entries;
@@ -128,6 +200,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
         return payloadObject.memory.trim();
     }, [payloadObject]);
     const memoryEntries = useMemo(() => parseMemoryEntries(memoryText), [memoryText]);
+    const ragPayloadEntries = useMemo(() => parseRAGPayloadEntries(payloadObject), [payloadObject]);
 
     useEffect(() => {
         const isBlob = typeof msg.content === 'string' && msg.content.startsWith('blob:');
@@ -411,6 +484,29 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                                                 {entry.input && <div style={{ padding: '6px 8px', fontSize: 12, color: '#595959', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>input:</strong> {entry.input}</div>}
                                                 {entry.output && <div style={{ padding: '0 8px 6px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>output:</strong> {entry.output}</div>}
                                                 {entry.error && <div style={{ padding: '0 8px 8px 8px', fontSize: 12, color: '#cf1322', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>error:</strong> {entry.error}</div>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </details>
+                            )}
+                            {isRobotMessage && ragPayloadEntries.length > 0 && (
+                                <details style={{ marginTop: 8, border: '1px solid #d9d9d9', borderRadius: 6, background: '#fafafa' }}>
+                                    <summary style={{ cursor: 'pointer', padding: '6px 8px', color: '#595959', fontSize: 12 }}>payload / rag ({ragPayloadEntries.length})</summary>
+                                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        {ragPayloadEntries.map((entry, index) => (
+                                            <div key={`${msg.id || 'rag'}-${entry.pointID || entry.segmentID || index}`} style={{ border: '1px solid #e8e8e8', borderRadius: 6, background: '#fff' }}>
+                                                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 8px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                                                    <span style={{ color: '#8c8c8c' }}>#{index + 1}</span>
+                                                    {entry.scoreText && <span style={{ color: '#262626' }}>score: {entry.scoreText}</span>}
+                                                    {entry.segmentID && <span style={{ color: '#595959' }}>segment: {entry.segmentID}</span>}
+                                                </div>
+                                                {entry.pointID && <div style={{ padding: '6px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>point_id:</strong> {entry.pointID}</div>}
+                                                {(entry.startSeq || entry.endSeq || entry.messageCount) && (
+                                                    <div style={{ padding: '0 8px 6px 8px', fontSize: 12, color: '#595959', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                                        <strong>range:</strong> {entry.startSeq || '-'} ~ {entry.endSeq || '-'}，消息数 {entry.messageCount || '-'}
+                                                    </div>
+                                                )}
+                                                {entry.summary && <div style={{ padding: '0 8px 8px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>summary:</strong> {entry.summary}</div>}
                                             </div>
                                         ))}
                                     </div>

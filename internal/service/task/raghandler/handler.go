@@ -23,10 +23,10 @@ import (
 	tasksvc "ququchat/internal/service/task"
 )
 
-const defaultSegmentGapSeconds = 600
-const defaultMaxCharsPerSegment = 4000
+const defaultSegmentGapSeconds = 300
+const defaultMaxCharsPerSegment = 2000
 const defaultMaxMessagesPerSeg = 50
-const defaultMaxSummaryChars = 4000
+const defaultMaxSummaryChars = 2000
 const defaultMinSummaryMessageCount = 5
 const defaultRAGSearchTopK = 5
 const maxRAGSearchTopK = 20
