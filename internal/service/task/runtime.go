@@ -331,9 +331,52 @@ func (r *Runtime) SubmitRAGSearch(req SubmitRAGSearchRequest) (*Task, error) {
 	return t.Clone(), nil
 }
 
+func (r *Runtime) SubmitRAGAddMemory(req SubmitRAGAddMemoryRequest) (*Task, error) {
+	now := time.Now()
+	taskID := strings.TrimSpace(req.RequestID)
+	if taskID == "" {
+		taskID = uuid.NewString()
+	}
+	t := &Task{
+		ID:        taskID,
+		RequestID: strings.TrimSpace(req.RequestID),
+		Type:      TypeRAGAddMem,
+		Priority:  req.Priority,
+		Status:    StatusPending,
+		Payload: Payload{
+			RAGAddMem: &RAGAddMemoryPayload{
+				RoomID:             strings.TrimSpace(req.RoomID),
+				StartSequenceID:    req.StartSequenceID,
+				EndSequenceID:      req.EndSequenceID,
+				SegmentGapSeconds:  req.SegmentGapSeconds,
+				MaxCharsPerSegment: req.MaxCharsPerSegment,
+				MaxMessagesPerSeg:  req.MaxMessagesPerSeg,
+				OverlapMessages:    req.OverlapMessages,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if t.Payload.RAGAddMem.RoomID == "" {
+		return nil, ErrInvalidRAGRoomID
+	}
+	if t.Payload.RAGAddMem.StartSequenceID <= 0 || t.Payload.RAGAddMem.EndSequenceID <= 0 || t.Payload.RAGAddMem.StartSequenceID > t.Payload.RAGAddMem.EndSequenceID {
+		return nil, ErrInvalidRAGMemorySequenceRange
+	}
+	if err := r.store.Create(t); err != nil {
+		return nil, err
+	}
+	if err := r.queue.Push(t.Clone()); err != nil {
+		_, _ = r.store.MarkFailed(t.ID, err.Error())
+		return nil, err
+	}
+	return t.Clone(), nil
+}
+
 var ErrInvalidFakeLLMPrompt = errors.New("invalid fake llm prompt")
 var ErrInvalidLLMPrompt = errors.New("invalid llm prompt")
 var ErrInvalidSummaryPrompt = errors.New("invalid summary prompt")
 var ErrInvalidAgentGoal = errors.New("invalid agent goal")
 var ErrInvalidRAGRoomID = errors.New("invalid rag room id")
 var ErrInvalidRAGSearchQuery = errors.New("invalid rag search query")
+var ErrInvalidRAGMemorySequenceRange = errors.New("invalid rag memory sequence range")

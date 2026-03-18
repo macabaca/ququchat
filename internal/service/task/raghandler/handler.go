@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -183,7 +184,7 @@ func (h *Handler) ExecuteRAG(ctx context.Context, payload *tasksvc.RAGPayload) (
 		}
 		sum := sha256.Sum256([]byte(rawText))
 		segmentID := fmt.Sprintf("%s-%d-%d", roomID, start.seq, end.seq)
-		pointID := fmt.Sprintf("seg_room_%s_%d_%d", roomID, start.seq, end.seq)
+		pointID := buildQdrantPointID(segmentID)
 		segments = append(segments, models.ChatSegment{
 			ID:            segmentID,
 			RoomID:        roomID,
@@ -234,6 +235,10 @@ func (h *Handler) ExecuteRAG(ctx context.Context, payload *tasksvc.RAGPayload) (
 		})
 	}
 	flush()
+	segments, skippedByRange, err := h.filterExistingSegmentsBySeqRange(roomID, segments)
+	if err != nil {
+		return tasksvc.Result{}, err
+	}
 	if len(segments) == 0 {
 		now := time.Now()
 		nextCursor := models.ChatSegmentCursor{
@@ -248,6 +253,9 @@ func (h *Handler) ExecuteRAG(ctx context.Context, payload *tasksvc.RAGPayload) (
 			return tasksvc.Result{}, err
 		}
 		final := fmt.Sprintf("群聊 %s 没有可用于 RAG 的有效消息", roomID)
+		if skippedByRange > 0 {
+			final = fmt.Sprintf("群聊 %s RAG 索引无新增分段，跳过重复区间 %d 个", roomID, skippedByRange)
+		}
 		return tasksvc.Result{
 			Text:  &final,
 			Final: &final,
@@ -256,6 +264,7 @@ func (h *Handler) ExecuteRAG(ctx context.Context, payload *tasksvc.RAGPayload) (
 				"latest_seq":       latest.SequenceID,
 				"last_indexed_seq": nextCursor.LastIndexedSeq,
 				"indexed_segments": 0,
+				"skipped_segments": skippedByRange,
 				"status":           "no_valid_messages",
 			},
 		}, nil
@@ -309,6 +318,7 @@ func (h *Handler) ExecuteRAG(ctx context.Context, payload *tasksvc.RAGPayload) (
 			"latest_seq":           latest.SequenceID,
 			"previous_indexed_seq": lastIndexedSeq,
 			"indexed_segments":     len(taskSegments),
+			"skipped_segments":     skippedByRange,
 			"overlap_messages":     overlapMessages,
 			"segment_gap_seconds":  gapSeconds,
 		},
@@ -413,6 +423,204 @@ func (h *Handler) ExecuteRAGSearch(ctx context.Context, payload *tasksvc.RAGSear
 	}, nil
 }
 
+func (h *Handler) ExecuteRAGAddMemory(ctx context.Context, payload *tasksvc.RAGAddMemoryPayload) (tasksvc.Result, error) {
+	if h == nil || h.db == nil {
+		return tasksvc.Result{}, errors.New("rag handler db is not initialized")
+	}
+	if payload == nil || strings.TrimSpace(payload.RoomID) == "" {
+		return tasksvc.Result{}, tasksvc.ErrInvalidRAGRoomID
+	}
+	if payload.StartSequenceID <= 0 || payload.EndSequenceID <= 0 || payload.StartSequenceID > payload.EndSequenceID {
+		return tasksvc.Result{}, tasksvc.ErrInvalidRAGMemorySequenceRange
+	}
+	roomID := strings.TrimSpace(payload.RoomID)
+	gapSeconds := payload.SegmentGapSeconds
+	if gapSeconds <= 0 {
+		gapSeconds = defaultSegmentGapSeconds
+	}
+	maxChars := payload.MaxCharsPerSegment
+	if maxChars <= 0 {
+		maxChars = defaultMaxCharsPerSegment
+	}
+	maxMessages := payload.MaxMessagesPerSeg
+	if maxMessages <= 0 {
+		maxMessages = defaultMaxMessagesPerSeg
+	}
+	overlapMessages := payload.OverlapMessages
+	if overlapMessages < 0 {
+		overlapMessages = 0
+	}
+	if overlapMessages > 3 {
+		overlapMessages = 3
+	}
+	stopPhrases := loadRAGStopPhrases()
+	var messages []models.Message
+	if err := h.db.Where("room_id = ? AND sequence_id >= ? AND sequence_id <= ?", roomID, payload.StartSequenceID, payload.EndSequenceID).
+		Where("content_type IN ?", []models.ContentType{
+			models.ContentTypeText,
+			models.ContentTypeImage,
+			models.ContentTypeFile,
+		}).
+		Order("sequence_id asc").
+		Find(&messages).Error; err != nil {
+		return tasksvc.Result{}, err
+	}
+	if len(messages) == 0 {
+		final := fmt.Sprintf("群聊 %s 在序列号区间 [%d, %d] 没有消息", roomID, payload.StartSequenceID, payload.EndSequenceID)
+		return tasksvc.Result{
+			Text:  &final,
+			Final: &final,
+			Payload: map[string]interface{}{
+				"room_id":           roomID,
+				"start_sequence_id": payload.StartSequenceID,
+				"end_sequence_id":   payload.EndSequenceID,
+				"indexed_segments":  0,
+				"status":            "empty_range",
+			},
+		}, nil
+	}
+	senderNames, err := h.loadRAGSenderNames(roomID, messages)
+	if err != nil {
+		return tasksvc.Result{}, err
+	}
+	lines := make([]ragSegmentLine, 0, maxMessages)
+	segments := make([]models.ChatSegment, 0)
+	memoryBatchID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	if len(memoryBatchID) > 12 {
+		memoryBatchID = memoryBatchID[:12]
+	}
+	flush := func() {
+		if len(lines) == 0 {
+			return
+		}
+		start := lines[0]
+		end := lines[len(lines)-1]
+		builder := strings.Builder{}
+		for i, line := range lines {
+			if i > 0 {
+				builder.WriteString("\n")
+			}
+			builder.WriteString(line.formatted)
+		}
+		rawText := strings.TrimSpace(builder.String())
+		if rawText == "" {
+			return
+		}
+		sum := sha256.Sum256([]byte(rawText))
+		segmentID := fmt.Sprintf("mem_%s_%d_%d_%s", roomID, start.seq, end.seq, memoryBatchID)
+		pointID := buildQdrantPointID(segmentID)
+		segments = append(segments, models.ChatSegment{
+			ID:            segmentID,
+			RoomID:        roomID,
+			SegmentID:     segmentID,
+			StartSeq:      start.seq,
+			EndSeq:        end.seq,
+			StartAt:       start.created,
+			EndAt:         end.created,
+			MessageCount:  len(lines),
+			RawText:       rawText,
+			RawTextHash:   hex.EncodeToString(sum[:]),
+			QdrantPointID: pointID,
+			SummaryReady:  false,
+		})
+	}
+	segmentGap := time.Duration(gapSeconds) * time.Second
+	for _, msg := range messages {
+		formatted, ok := formatRAGMessageLine(msg, stopPhrases, senderNames)
+		if !ok {
+			continue
+		}
+		if len(lines) > 0 {
+			last := lines[len(lines)-1]
+			needFlushByGap := msg.CreatedAt.Sub(last.created) > segmentGap
+			chars := 0
+			for _, line := range lines {
+				chars += len(line.formatted)
+			}
+			needFlushByChar := chars+len(formatted) > maxChars
+			needFlushByMsgCount := len(lines) >= maxMessages
+			if needFlushByGap || needFlushByChar || needFlushByMsgCount {
+				flush()
+				if overlapMessages > 0 && len(lines) > 0 {
+					start := len(lines) - overlapMessages
+					if start < 0 {
+						start = 0
+					}
+					lines = append([]ragSegmentLine(nil), lines[start:]...)
+				} else {
+					lines = lines[:0]
+				}
+			}
+		}
+		lines = append(lines, ragSegmentLine{
+			seq:       msg.SequenceID,
+			created:   msg.CreatedAt,
+			formatted: formatted,
+		})
+	}
+	flush()
+	segments, skippedByRange, err := h.filterExistingSegmentsBySeqRange(roomID, segments)
+	if err != nil {
+		return tasksvc.Result{}, err
+	}
+	if len(segments) == 0 {
+		final := fmt.Sprintf("群聊 %s 在区间 [%d, %d] 无新增分段，跳过重复区间 %d 个", roomID, payload.StartSequenceID, payload.EndSequenceID, skippedByRange)
+		return tasksvc.Result{
+			Text:  &final,
+			Final: &final,
+			Payload: map[string]interface{}{
+				"room_id":           roomID,
+				"start_sequence_id": payload.StartSequenceID,
+				"end_sequence_id":   payload.EndSequenceID,
+				"indexed_segments":  0,
+				"skipped_segments":  skippedByRange,
+				"status":            "no_new_segments",
+			},
+		}, nil
+	}
+	now := time.Now()
+	for i := range segments {
+		segments[i].CreatedAt = now
+		segments[i].UpdatedAt = now
+	}
+	if err := h.db.Create(&segments).Error; err != nil {
+		return tasksvc.Result{}, err
+	}
+	taskSegments := make([]tasksvc.RAGSegment, 0, len(segments))
+	for _, seg := range segments {
+		taskSegments = append(taskSegments, tasksvc.RAGSegment{
+			SegmentID:    seg.SegmentID,
+			PointID:      seg.QdrantPointID,
+			RoomID:       seg.RoomID,
+			StartSeq:     seg.StartSeq,
+			EndSeq:       seg.EndSeq,
+			StartUnixSec: seg.StartAt.Unix(),
+			EndUnixSec:   seg.EndAt.Unix(),
+			MessageCount: seg.MessageCount,
+			RawText:      seg.RawText,
+			TextPreview:  previewText(seg.RawText, 80),
+		})
+	}
+	if err := h.upsertRAGPoints(ctx, taskSegments); err != nil {
+		return tasksvc.Result{}, err
+	}
+	final := fmt.Sprintf("群聊 %s 添加记忆完成，区间 [%d, %d] 新增分段 %d 个", roomID, payload.StartSequenceID, payload.EndSequenceID, len(taskSegments))
+	return tasksvc.Result{
+		Text:  &final,
+		Final: &final,
+		Payload: map[string]interface{}{
+			"room_id":             roomID,
+			"start_sequence_id":   payload.StartSequenceID,
+			"end_sequence_id":     payload.EndSequenceID,
+			"indexed_segments":    len(taskSegments),
+			"skipped_segments":    skippedByRange,
+			"overlap_messages":    overlapMessages,
+			"segment_gap_seconds": gapSeconds,
+			"cursor_updated":      false,
+		},
+	}, nil
+}
+
 func formatRAGMessageLine(msg models.Message, stopPhrases map[string]struct{}, senderNames map[string]string) (string, bool) {
 	sender := "系统"
 	if msg.SenderID != nil && strings.TrimSpace(*msg.SenderID) != "" {
@@ -509,6 +717,66 @@ func (h *Handler) loadRAGSenderNames(roomID string, messages []models.Message) (
 	return names, nil
 }
 
+func (h *Handler) filterExistingSegmentsBySeqRange(roomID string, segments []models.ChatSegment) ([]models.ChatSegment, int, error) {
+	if h == nil || h.db == nil || len(segments) == 0 {
+		return segments, 0, nil
+	}
+	type seqRange struct {
+		start int64
+		end   int64
+	}
+	startSeqs := make([]int64, 0, len(segments))
+	endSeqs := make([]int64, 0, len(segments))
+	startSet := make(map[int64]struct{}, len(segments))
+	endSet := make(map[int64]struct{}, len(segments))
+	for _, seg := range segments {
+		if _, ok := startSet[seg.StartSeq]; !ok {
+			startSet[seg.StartSeq] = struct{}{}
+			startSeqs = append(startSeqs, seg.StartSeq)
+		}
+		if _, ok := endSet[seg.EndSeq]; !ok {
+			endSet[seg.EndSeq] = struct{}{}
+			endSeqs = append(endSeqs, seg.EndSeq)
+		}
+	}
+	var existing []models.ChatSegment
+	if err := h.db.Select("start_seq", "end_seq").Where("room_id = ?", strings.TrimSpace(roomID)).
+		Where("start_seq IN ?", startSeqs).
+		Where("end_seq IN ?", endSeqs).
+		Find(&existing).Error; err != nil {
+		return nil, 0, err
+	}
+	existingSet := make(map[seqRange]struct{}, len(existing))
+	for _, seg := range existing {
+		existingSet[seqRange{start: seg.StartSeq, end: seg.EndSeq}] = struct{}{}
+	}
+	filtered := make([]models.ChatSegment, 0, len(segments))
+	skipped := 0
+	selectedSet := make(map[seqRange]struct{}, len(segments))
+	for _, seg := range segments {
+		key := seqRange{start: seg.StartSeq, end: seg.EndSeq}
+		if _, exists := existingSet[key]; exists {
+			skipped++
+			continue
+		}
+		if _, exists := selectedSet[key]; exists {
+			skipped++
+			continue
+		}
+		selectedSet[key] = struct{}{}
+		filtered = append(filtered, seg)
+	}
+	return filtered, skipped, nil
+}
+
+func buildQdrantPointID(segmentID string) string {
+	trimmed := strings.TrimSpace(segmentID)
+	if trimmed == "" {
+		return uuid.NewString()
+	}
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(trimmed)).String()
+}
+
 func cleanRAGText(raw string, stopPhrases map[string]struct{}) (string, bool) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
@@ -587,6 +855,17 @@ func parseRAGToolCall(text string) (string, string, bool) {
 			return "RAG检索", invalid(arg), true
 		}
 		return "RAG检索", fmt.Sprintf("检索相关群聊片段：%s", arg), true
+	case "添加记忆":
+		args := strings.Fields(arg)
+		if len(args) < 2 {
+			return "添加记忆", invalid(arg), true
+		}
+		startSeq, startErr := strconv.ParseInt(strings.TrimSpace(args[0]), 10, 64)
+		endSeq, endErr := strconv.ParseInt(strings.TrimSpace(args[1]), 10, 64)
+		if startErr != nil || endErr != nil || startSeq <= 0 || endSeq <= 0 || startSeq > endSeq {
+			return "添加记忆", invalid(arg), true
+		}
+		return "添加记忆", fmt.Sprintf("将序列号区间[%d, %d]分段并写入RAG记忆", startSeq, endSeq), true
 	default:
 		return cmd, invalid(arg), true
 	}
@@ -690,7 +969,11 @@ func (h *Handler) upsertRAGPoints(ctx context.Context, segments []tasksvc.RAGSeg
 	for i, seg := range segments {
 		pointID := strings.TrimSpace(seg.PointID)
 		if pointID == "" {
-			pointID = fmt.Sprintf("seg_room_%s_%d_%d", seg.RoomID, seg.StartSeq, seg.EndSeq)
+			sourceID := strings.TrimSpace(seg.SegmentID)
+			if sourceID == "" {
+				sourceID = fmt.Sprintf("%s-%d-%d", seg.RoomID, seg.StartSeq, seg.EndSeq)
+			}
+			pointID = buildQdrantPointID(sourceID)
 		}
 		summaryVec := make([]float32, 0)
 		if vec, ok := summaryVectorsByIndex[i]; ok && len(vec) > 0 {

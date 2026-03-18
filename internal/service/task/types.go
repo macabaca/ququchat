@@ -14,6 +14,7 @@ const (
 	TypeAgent     Type = "agent"
 	TypeRAG       Type = "rag"
 	TypeRAGSearch Type = "rag_search"
+	TypeRAGAddMem Type = "rag_add_memory"
 )
 
 type Priority int
@@ -67,6 +68,16 @@ type RAGSearchPayload struct {
 	TopK   int
 }
 
+type RAGAddMemoryPayload struct {
+	RoomID             string
+	StartSequenceID    int64
+	EndSequenceID      int64
+	SegmentGapSeconds  int
+	MaxCharsPerSegment int
+	MaxMessagesPerSeg  int
+	OverlapMessages    int
+}
+
 type Payload struct {
 	FakeLLM   *FakeLLMPayload
 	LLM       *LLMPayload
@@ -74,6 +85,7 @@ type Payload struct {
 	Agent     *AgentPayload
 	RAG       *RAGPayload
 	RAGSearch *RAGSearchPayload
+	RAGAddMem *RAGAddMemoryPayload
 }
 
 type Result struct {
@@ -126,6 +138,10 @@ func (t *Task) Clone() *Task {
 	if t.Payload.RAGSearch != nil {
 		payloadCopy := *t.Payload.RAGSearch
 		next.Payload.RAGSearch = &payloadCopy
+	}
+	if t.Payload.RAGAddMem != nil {
+		payloadCopy := *t.Payload.RAGAddMem
+		next.Payload.RAGAddMem = &payloadCopy
 	}
 	if t.Result.Text != nil {
 		textCopy := *t.Result.Text

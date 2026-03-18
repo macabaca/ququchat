@@ -28,6 +28,8 @@ var ErrRAGRoomRequired = errors.New("rag room id is required")
 var ErrRAGSearchQueryRequired = errors.New("rag search query is required")
 var ErrRAGSearchTopKInvalid = errors.New("rag search topK must be a positive integer")
 var ErrRAGSearchTopKTooLarge = errors.New("rag search topK is too large")
+var ErrRAGMemorySequenceRangeRequired = errors.New("rag memory start/end sequence ids are required")
+var ErrRAGMemorySequenceRangeInvalid = errors.New("rag memory sequence range is invalid")
 
 const summaryCountMax = 1000
 const agentRecentMessageLimit = 12
@@ -109,6 +111,13 @@ func (s *Service) SubmitRAG(req tasksvc.SubmitRAGRequest) (*tasksvc.Task, error)
 		return nil, ErrServiceNotInitialized
 	}
 	return s.runtime.SubmitRAG(req)
+}
+
+func (s *Service) SubmitRAGAddMemory(req tasksvc.SubmitRAGAddMemoryRequest) (*tasksvc.Task, error) {
+	if s == nil || s.runtime == nil {
+		return nil, ErrServiceNotInitialized
+	}
+	return s.runtime.SubmitRAGAddMemory(req)
 }
 
 func (s *Service) Get(taskID string) (*tasksvc.Task, bool) {
@@ -215,6 +224,24 @@ func (s *Service) SubmitCommand(req SubmitCommandRequest, cb TaskCallback) (stri
 			RoomID:   strings.TrimSpace(req.RoomID),
 			Query:    ragQuery,
 			TopK:     topK,
+		})
+	} else if strings.HasPrefix(cmd, "添加记忆") {
+		if strings.TrimSpace(req.RoomID) == "" {
+			return "", ErrRAGRoomRequired
+		}
+		startSeq, endSeq, parseErr := parseRAGMemorySequenceRange(cmd)
+		if parseErr != nil {
+			return "", parseErr
+		}
+		t, err = s.runtime.SubmitRAGAddMemory(tasksvc.SubmitRAGAddMemoryRequest{
+			Priority:           tasksvc.PriorityNormal,
+			RoomID:             strings.TrimSpace(req.RoomID),
+			StartSequenceID:    startSeq,
+			EndSequenceID:      endSeq,
+			SegmentGapSeconds:  ragSegmentGapSeconds,
+			MaxCharsPerSegment: ragMaxCharsPerSegment,
+			MaxMessagesPerSeg:  ragMaxMessagesPerSeg,
+			OverlapMessages:    ragOverlapMessages,
 		})
 	} else if strings.HasPrefix(cmd, "生成rag") || strings.HasPrefix(cmd, "rag") {
 		if strings.TrimSpace(req.RoomID) == "" {
@@ -412,4 +439,17 @@ func parseRAGSearchQuery(cmd string) (string, int, error) {
 		return "", 0, ErrRAGSearchQueryRequired
 	}
 	return query, topK, nil
+}
+
+func parseRAGMemorySequenceRange(cmd string) (int64, int64, error) {
+	parts := strings.Fields(strings.TrimSpace(cmd))
+	if len(parts) < 3 {
+		return 0, 0, ErrRAGMemorySequenceRangeRequired
+	}
+	startSeq, startErr := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+	endSeq, endErr := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
+	if startErr != nil || endErr != nil || startSeq <= 0 || endSeq <= 0 || startSeq > endSeq {
+		return 0, 0, ErrRAGMemorySequenceRangeInvalid
+	}
+	return startSeq, endSeq, nil
 }

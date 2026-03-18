@@ -21,6 +21,18 @@ type SubmitRAGSearchRequest struct {
 	TopK      int
 }
 
+type SubmitRAGAddMemoryRequest struct {
+	RequestID          string
+	Priority           Priority
+	RoomID             string
+	StartSequenceID    int64
+	EndSequenceID      int64
+	SegmentGapSeconds  int
+	MaxCharsPerSegment int
+	MaxMessagesPerSeg  int
+	OverlapMessages    int
+}
+
 type RAGSegment struct {
 	SegmentID    string
 	PointID      string
@@ -60,4 +72,5 @@ type VectorStore interface {
 type RAGHandler interface {
 	ExecuteRAG(ctx context.Context, payload *RAGPayload) (Result, error)
 	ExecuteRAGSearch(ctx context.Context, payload *RAGSearchPayload) (Result, error)
+	ExecuteRAGAddMemory(ctx context.Context, payload *RAGAddMemoryPayload) (Result, error)
 }

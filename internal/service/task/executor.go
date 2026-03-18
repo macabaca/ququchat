@@ -93,6 +93,14 @@ func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) 
 			return Result{}, errors.New("rag handler is not configured")
 		}
 		return e.ragHandler.ExecuteRAGSearch(ctx, t.Payload.RAGSearch)
+	case TypeRAGAddMem:
+		if t.Payload.RAGAddMem == nil {
+			return Result{}, errors.New("missing rag add memory payload")
+		}
+		if e.ragHandler == nil {
+			return Result{}, errors.New("rag handler is not configured")
+		}
+		return e.ragHandler.ExecuteRAGAddMemory(ctx, t.Payload.RAGAddMem)
 	default:
 		return Result{}, ErrUnsupportedTask
 	}
