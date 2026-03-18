@@ -8,16 +8,18 @@ import (
 )
 
 type Config struct {
-	Database Database `yaml:"database" json:"database"`
-	Auth     Auth     `yaml:"auth" json:"auth"`
-	Chat     Chat     `yaml:"chat" json:"chat"`
-	Task     Task     `yaml:"task" json:"task"`
-	LLM      LLM      `yaml:"llm" json:"llm"`
-	File     File     `yaml:"file" json:"file"`
-	Avatar   Avatar   `yaml:"avatar" json:"avatar"`
-	Storage  Storage  `yaml:"storage" json:"storage"`
-	Minio    Minio    `yaml:"minio" json:"minio"`
-	OSS      OSS      `yaml:"oss" json:"oss"`
+	Database  Database  `yaml:"database" json:"database"`
+	Auth      Auth      `yaml:"auth" json:"auth"`
+	Chat      Chat      `yaml:"chat" json:"chat"`
+	Task      Task      `yaml:"task" json:"task"`
+	LLM       LLM       `yaml:"llm" json:"llm"`
+	Embedding Embedding `yaml:"embedding" json:"embedding"`
+	Vector    Vector    `yaml:"vector" json:"vector"`
+	File      File      `yaml:"file" json:"file"`
+	Avatar    Avatar    `yaml:"avatar" json:"avatar"`
+	Storage   Storage   `yaml:"storage" json:"storage"`
+	Minio     Minio     `yaml:"minio" json:"minio"`
+	OSS       OSS       `yaml:"oss" json:"oss"`
 }
 
 // Database 结构体已拆分至 config_db.go

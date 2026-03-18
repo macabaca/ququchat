@@ -211,3 +211,26 @@ type TaskJob struct {
 	CreatedAt    time.Time      `gorm:"not null;index" json:"created_at"`
 	UpdatedAt    time.Time      `gorm:"not null;index" json:"updated_at"`
 }
+
+type ChatSegment struct {
+	ID            string    `gorm:"size:128;primaryKey" json:"id"`
+	RoomID        string    `gorm:"type:char(36);not null;index:idx_seg_room_seq,priority:1;index:idx_seg_room_time,priority:1" json:"room_id"`
+	SegmentID     string    `gorm:"size:128;not null;uniqueIndex" json:"segment_id"`
+	StartSeq      int64     `gorm:"not null;index:idx_seg_room_seq,priority:2" json:"start_seq"`
+	EndSeq        int64     `gorm:"not null;index:idx_seg_room_seq,priority:3" json:"end_seq"`
+	StartAt       time.Time `gorm:"not null;index:idx_seg_room_time,priority:2" json:"start_at"`
+	EndAt         time.Time `gorm:"not null;index:idx_seg_room_time,priority:3" json:"end_at"`
+	MessageCount  int       `gorm:"not null" json:"message_count"`
+	RawText       string    `gorm:"type:text;not null" json:"raw_text"`
+	RawTextHash   string    `gorm:"size:64;not null;index" json:"raw_text_hash"`
+	QdrantPointID string    `gorm:"size:128;not null;uniqueIndex" json:"qdrant_point_id"`
+	SummaryReady  bool      `gorm:"not null;default:false;index" json:"summary_ready"`
+	CreatedAt     time.Time `gorm:"not null;index" json:"created_at"`
+	UpdatedAt     time.Time `gorm:"not null;index" json:"updated_at"`
+}
+
+type ChatSegmentCursor struct {
+	RoomID         string    `gorm:"type:char(36);primaryKey" json:"room_id"`
+	LastIndexedSeq int64     `gorm:"not null" json:"last_indexed_seq"`
+	UpdatedAt      time.Time `gorm:"not null;index" json:"updated_at"`
+}

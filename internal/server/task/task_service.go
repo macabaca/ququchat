@@ -23,10 +23,15 @@ var ErrSummaryRoomRequired = errors.New("summary room id is required")
 var ErrSummarySourceEmpty = errors.New("no messages available for summary")
 var ErrAgentRoomRequired = errors.New("agent room id is required")
 var ErrAgentGoalRequired = errors.New("agent goal is required")
+var ErrRAGRoomRequired = errors.New("rag room id is required")
 
 const summaryCountMax = 1000
 const agentRecentMessageLimit = 12
 const agentMaxSteps = 5
+const ragSegmentGapSeconds = 600
+const ragMaxCharsPerSegment = 2000
+const ragMaxMessagesPerSeg = 24
+const ragOverlapMessages = 1
 
 type TaskCallback func(ctx context.Context, doneTask *tasksvc.Task, final string, payload map[string]interface{})
 
@@ -49,6 +54,7 @@ func NewService(db *gorm.DB, opts tasksvc.RuntimeOptions) *Service {
 	if opts.Store == nil && db != nil {
 		opts.Store = tasksvc.NewGormStore(db)
 	}
+	opts.RAGHandler = s
 	s.db = db
 	s.runtime = tasksvc.NewRuntime(opts)
 	return s
@@ -80,6 +86,13 @@ func (s *Service) SubmitAgent(req tasksvc.SubmitAgentRequest) (*tasksvc.Task, er
 		return nil, ErrServiceNotInitialized
 	}
 	return s.runtime.SubmitAgent(req)
+}
+
+func (s *Service) SubmitRAG(req tasksvc.SubmitRAGRequest) (*tasksvc.Task, error) {
+	if s == nil || s.runtime == nil {
+		return nil, ErrServiceNotInitialized
+	}
+	return s.runtime.SubmitRAG(req)
 }
 
 func (s *Service) Get(taskID string) (*tasksvc.Task, bool) {
@@ -172,6 +185,18 @@ func (s *Service) SubmitCommand(req SubmitCommandRequest, cb TaskCallback) (stri
 			Goal:           goal,
 			RecentMessages: recentMessages,
 			MaxSteps:       agentMaxSteps,
+		})
+	} else if strings.HasPrefix(cmd, "生成rag") || strings.HasPrefix(cmd, "rag") {
+		if strings.TrimSpace(req.RoomID) == "" {
+			return "", ErrRAGRoomRequired
+		}
+		t, err = s.runtime.SubmitRAG(tasksvc.SubmitRAGRequest{
+			Priority:           tasksvc.PriorityNormal,
+			RoomID:             strings.TrimSpace(req.RoomID),
+			SegmentGapSeconds:  ragSegmentGapSeconds,
+			MaxCharsPerSegment: ragMaxCharsPerSegment,
+			MaxMessagesPerSeg:  ragMaxMessagesPerSeg,
+			OverlapMessages:    ragOverlapMessages,
 		})
 	} else {
 		return "", ErrUnsupportedCommand

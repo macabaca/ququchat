@@ -13,7 +13,9 @@ import (
 	"ququchat/internal/server/storage"
 	servertask "ququchat/internal/server/task"
 	tasksvc "ququchat/internal/service/task"
+	"ququchat/internal/service/task/embeddingmq"
 	"ququchat/internal/service/task/llmmq"
+	"ququchat/internal/service/task/openaicompat"
 )
 
 func main() {
@@ -84,7 +86,7 @@ func main() {
 	})
 	taskService.Start(context.Background())
 	if cfg.LLM.TransportOrDefault() == "rabbitmq" {
-		provider, err := tasksvc.NewOpenAICompatClient(tasksvc.OpenAICompatOptions{
+		provider, err := openaicompat.NewLLMClient(openaicompat.LLMOptions{
 			APIKey:  cfg.LLM.APIKey,
 			BaseURL: cfg.LLM.BaseURLOrDefault(),
 			Model:   cfg.LLM.ModelOrDefault(),
@@ -116,6 +118,41 @@ func main() {
 			cfg.LLM.WorkerSizeOrDefault(),
 			cfg.LLM.RPMOrDefault(),
 			cfg.LLM.TPMOrDefault(),
+		)
+	}
+	if cfg.Embedding.TransportOrDefault() == "rabbitmq" {
+		provider, err := openaicompat.NewEmbeddingClient(openaicompat.EmbeddingOptions{
+			APIKey:  cfg.Embedding.APIKey,
+			BaseURL: cfg.Embedding.BaseURLOrDefault(),
+			Model:   cfg.Embedding.ModelOrDefault(),
+		})
+		if err != nil {
+			log.Fatalf("初始化 Embedding provider 失败: %v", err)
+		}
+		embeddingPool, err := embeddingmq.NewPool(embeddingmq.PoolOptions{
+			URL:          cfg.Embedding.RabbitMQURL,
+			RequestQueue: cfg.Embedding.RequestQueueOrDefault(),
+			Provider:     provider,
+			Size:         cfg.Embedding.WorkerSizeOrDefault(),
+			RPM:          cfg.Embedding.RPMOrDefault(),
+			TPM:          cfg.Embedding.TPMOrDefault(),
+		})
+		if err != nil {
+			log.Fatalf("初始化 Embedding worker pool 失败: %v", err)
+		}
+		if err := embeddingPool.Start(context.Background()); err != nil {
+			log.Fatalf("启动 Embedding worker pool 失败: %v", err)
+		}
+		defer func() {
+			if err := embeddingPool.Shutdown(context.Background()); err != nil {
+				log.Printf("Embedding worker pool 关闭失败: %v", err)
+			}
+		}()
+		log.Printf(
+			"Embedding worker pool 已启动，worker 数量: %d, RPM: %d, TPM: %d",
+			cfg.Embedding.WorkerSizeOrDefault(),
+			cfg.Embedding.RPMOrDefault(),
+			cfg.Embedding.TPMOrDefault(),
 		)
 	}
 

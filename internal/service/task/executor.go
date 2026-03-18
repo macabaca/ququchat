@@ -15,16 +15,19 @@ type Executor interface {
 }
 
 type ExecutorOptions struct {
-	LLMClient LLMClient
+	LLMClient  LLMClient
+	RAGHandler RAGHandler
 }
 
 type DefaultExecutor struct {
-	llmClient LLMClient
+	llmClient  LLMClient
+	ragHandler RAGHandler
 }
 
 func NewDefaultExecutor(opts ExecutorOptions) *DefaultExecutor {
 	return &DefaultExecutor{
-		llmClient: opts.LLMClient,
+		llmClient:  opts.LLMClient,
+		ragHandler: opts.RAGHandler,
 	}
 }
 
@@ -74,6 +77,14 @@ func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) 
 		return Result{Text: &text, Final: &final}, nil
 	case TypeAgent:
 		return e.executeAgent(ctx, t)
+	case TypeRAG:
+		if t.Payload.RAG == nil {
+			return Result{}, errors.New("missing rag payload")
+		}
+		if e.ragHandler == nil {
+			return Result{}, errors.New("rag handler is not configured")
+		}
+		return e.ragHandler.ExecuteRAG(ctx, t.Payload.RAG)
 	default:
 		return Result{}, ErrUnsupportedTask
 	}

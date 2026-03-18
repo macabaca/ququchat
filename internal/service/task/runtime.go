@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"ququchat/internal/service/task/llmmq"
+	"ququchat/internal/service/task/openaicompat"
 )
 
 type RuntimeOptions struct {
@@ -25,6 +26,7 @@ type RuntimeOptions struct {
 	LLMAPIKey      string
 	LLMBaseURL     string
 	LLMModel       string
+	RAGHandler     RAGHandler
 	OnFinish       func(ctx context.Context, doneTask *Task)
 }
 
@@ -55,7 +57,7 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 			}
 		}
 		if llmClient == nil && strings.TrimSpace(opts.LLMAPIKey) != "" && strings.TrimSpace(opts.LLMBaseURL) != "" && strings.TrimSpace(opts.LLMModel) != "" {
-			client, err := NewOpenAICompatClient(OpenAICompatOptions{
+			client, err := openaicompat.NewLLMClient(openaicompat.LLMOptions{
 				APIKey:  opts.LLMAPIKey,
 				BaseURL: opts.LLMBaseURL,
 				Model:   opts.LLMModel,
@@ -65,7 +67,10 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 			}
 		}
 	}
-	exec := NewDefaultExecutor(ExecutorOptions{LLMClient: llmClient})
+	exec := NewDefaultExecutor(ExecutorOptions{
+		LLMClient:  llmClient,
+		RAGHandler: opts.RAGHandler,
+	})
 	pool := NewPool(queue, store, exec, opts.WorkerSize, opts.OnFinish)
 	return &Runtime{
 		store: store,
@@ -245,7 +250,46 @@ func (r *Runtime) SubmitAgent(req SubmitAgentRequest) (*Task, error) {
 	return t.Clone(), nil
 }
 
+func (r *Runtime) SubmitRAG(req SubmitRAGRequest) (*Task, error) {
+	now := time.Now()
+	taskID := strings.TrimSpace(req.RequestID)
+	if taskID == "" {
+		taskID = uuid.NewString()
+	}
+	t := &Task{
+		ID:        taskID,
+		RequestID: strings.TrimSpace(req.RequestID),
+		Type:      TypeRAG,
+		Priority:  req.Priority,
+		Status:    StatusPending,
+		Payload: Payload{
+			RAG: &RAGPayload{
+				RoomID:               strings.TrimSpace(req.RoomID),
+				SegmentGapSeconds:    req.SegmentGapSeconds,
+				MaxCharsPerSegment:   req.MaxCharsPerSegment,
+				MaxMessagesPerSeg:    req.MaxMessagesPerSeg,
+				OverlapMessages:      req.OverlapMessages,
+				MinMessageSequenceID: req.MinMessageSequenceID,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if t.Payload.RAG.RoomID == "" {
+		return nil, ErrInvalidRAGRoomID
+	}
+	if err := r.store.Create(t); err != nil {
+		return nil, err
+	}
+	if err := r.queue.Push(t.Clone()); err != nil {
+		_, _ = r.store.MarkFailed(t.ID, err.Error())
+		return nil, err
+	}
+	return t.Clone(), nil
+}
+
 var ErrInvalidFakeLLMPrompt = errors.New("invalid fake llm prompt")
 var ErrInvalidLLMPrompt = errors.New("invalid llm prompt")
 var ErrInvalidSummaryPrompt = errors.New("invalid summary prompt")
 var ErrInvalidAgentGoal = errors.New("invalid agent goal")
+var ErrInvalidRAGRoomID = errors.New("invalid rag room id")

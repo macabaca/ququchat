@@ -29,6 +29,30 @@ type LLM struct {
 	Model             string `yaml:"model" json:"model"`
 }
 
+type Embedding struct {
+	Transport         string `yaml:"transport" json:"transport"`
+	RPM               int    `yaml:"rpm" json:"rpm"`
+	TPM               int    `yaml:"tpm" json:"tpm"`
+	RabbitMQURL       string `yaml:"rabbitmq_url" json:"rabbitmq_url"`
+	RequestQueue      string `yaml:"request_queue" json:"request_queue"`
+	WorkerSize        int    `yaml:"worker_size" json:"worker_size"`
+	ResponseTimeoutMs int    `yaml:"response_timeout_ms" json:"response_timeout_ms"`
+	APIKey            string `yaml:"api_key" json:"api_key"`
+	BaseURL           string `yaml:"base_url" json:"base_url"`
+	Model             string `yaml:"model" json:"model"`
+}
+
+type Vector struct {
+	Provider         string `yaml:"provider" json:"provider"`
+	QdrantURL        string `yaml:"qdrant_url" json:"qdrant_url"`
+	APIKey           string `yaml:"api_key" json:"api_key"`
+	Collection       string `yaml:"collection" json:"collection"`
+	TimeoutMs        int    `yaml:"timeout_ms" json:"timeout_ms"`
+	RawVectorDim     int    `yaml:"raw_vector_dim" json:"raw_vector_dim"`
+	SummaryVectorDim int    `yaml:"summary_vector_dim" json:"summary_vector_dim"`
+	Distance         string `yaml:"distance" json:"distance"`
+}
+
 func (l LLM) TransportOrDefault() string {
 	if strings.TrimSpace(l.Transport) != "" {
 		return strings.TrimSpace(l.Transport)
@@ -83,6 +107,111 @@ func (l LLM) ResponseTimeoutOrDefault() time.Duration {
 		return time.Duration(l.ResponseTimeoutMs) * time.Millisecond
 	}
 	return 60 * time.Second
+}
+
+func (e Embedding) TransportOrDefault() string {
+	if strings.TrimSpace(e.Transport) != "" {
+		return strings.TrimSpace(e.Transport)
+	}
+	return "direct"
+}
+
+func (e Embedding) BaseURLOrDefault() string {
+	if strings.TrimSpace(e.BaseURL) != "" {
+		return strings.TrimSpace(e.BaseURL)
+	}
+	return "https://api.openai.com/v1"
+}
+
+func (e Embedding) ModelOrDefault() string {
+	if strings.TrimSpace(e.Model) != "" {
+		return strings.TrimSpace(e.Model)
+	}
+	return "text-embedding-3-large"
+}
+
+func (e Embedding) RequestQueueOrDefault() string {
+	if strings.TrimSpace(e.RequestQueue) != "" {
+		return strings.TrimSpace(e.RequestQueue)
+	}
+	return "ququchat.embedding.request"
+}
+
+func (e Embedding) WorkerSizeOrDefault() int {
+	if e.WorkerSize > 0 {
+		return e.WorkerSize
+	}
+	return 1
+}
+
+func (e Embedding) RPMOrDefault() int {
+	if e.RPM > 0 {
+		return e.RPM
+	}
+	return 0
+}
+
+func (e Embedding) TPMOrDefault() int {
+	if e.TPM > 0 {
+		return e.TPM
+	}
+	return 0
+}
+
+func (e Embedding) ResponseTimeoutOrDefault() time.Duration {
+	if e.ResponseTimeoutMs > 0 {
+		return time.Duration(e.ResponseTimeoutMs) * time.Millisecond
+	}
+	return 60 * time.Second
+}
+
+func (v Vector) ProviderOrDefault() string {
+	if strings.TrimSpace(v.Provider) != "" {
+		return strings.TrimSpace(v.Provider)
+	}
+	return "qdrant"
+}
+
+func (v Vector) QdrantURLOrDefault() string {
+	if strings.TrimSpace(v.QdrantURL) != "" {
+		return strings.TrimSpace(v.QdrantURL)
+	}
+	return "http://localhost:6333"
+}
+
+func (v Vector) CollectionOrDefault() string {
+	if strings.TrimSpace(v.Collection) != "" {
+		return strings.TrimSpace(v.Collection)
+	}
+	return "chat_segments"
+}
+
+func (v Vector) TimeoutOrDefault() time.Duration {
+	if v.TimeoutMs > 0 {
+		return time.Duration(v.TimeoutMs) * time.Millisecond
+	}
+	return 3 * time.Second
+}
+
+func (v Vector) RawVectorDimOrDefault() int {
+	if v.RawVectorDim > 0 {
+		return v.RawVectorDim
+	}
+	return 1024
+}
+
+func (v Vector) SummaryVectorDimOrDefault() int {
+	if v.SummaryVectorDim > 0 {
+		return v.SummaryVectorDim
+	}
+	return v.RawVectorDimOrDefault()
+}
+
+func (v Vector) DistanceOrDefault() string {
+	if strings.TrimSpace(v.Distance) != "" {
+		return strings.TrimSpace(v.Distance)
+	}
+	return "Cosine"
 }
 
 func (t Task) QueueHighCapOrDefault() int {
