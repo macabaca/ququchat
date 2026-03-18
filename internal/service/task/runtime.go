@@ -13,21 +13,26 @@ import (
 )
 
 type RuntimeOptions struct {
-	QueueHighCap   int
-	QueueNormalCap int
-	QueueLowCap    int
-	WorkerSize     int
-	Store          Store
-	LLMClient      LLMClient
-	LLMTransport   string
-	LLMMQURL       string
-	LLMMQQueue     string
-	LLMMQTimeout   time.Duration
-	LLMAPIKey      string
-	LLMBaseURL     string
-	LLMModel       string
-	RAGHandler     RAGHandler
-	OnFinish       func(ctx context.Context, doneTask *Task)
+	QueueHighCap          int
+	QueueNormalCap        int
+	QueueLowCap           int
+	WorkerSize            int
+	Store                 Store
+	LLMClient             LLMClient
+	LLMTransport          string
+	LLMMQURL              string
+	LLMMQQueue            string
+	LLMMQTimeout          time.Duration
+	LLMAPIKey             string
+	LLMBaseURL            string
+	LLMModel              string
+	EmbeddingProvider     EmbeddingProvider
+	VectorStore           VectorStore
+	EmbeddingModelRaw     string
+	EmbeddingModelSummary string
+	SummaryVectorDim      int
+	RAGHandler            RAGHandler
+	OnFinish              func(ctx context.Context, doneTask *Task)
 }
 
 type Runtime struct {
@@ -288,8 +293,47 @@ func (r *Runtime) SubmitRAG(req SubmitRAGRequest) (*Task, error) {
 	return t.Clone(), nil
 }
 
+func (r *Runtime) SubmitRAGSearch(req SubmitRAGSearchRequest) (*Task, error) {
+	now := time.Now()
+	taskID := strings.TrimSpace(req.RequestID)
+	if taskID == "" {
+		taskID = uuid.NewString()
+	}
+	t := &Task{
+		ID:        taskID,
+		RequestID: strings.TrimSpace(req.RequestID),
+		Type:      TypeRAGSearch,
+		Priority:  req.Priority,
+		Status:    StatusPending,
+		Payload: Payload{
+			RAGSearch: &RAGSearchPayload{
+				RoomID: strings.TrimSpace(req.RoomID),
+				Query:  strings.TrimSpace(req.Query),
+				TopK:   req.TopK,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if t.Payload.RAGSearch.RoomID == "" {
+		return nil, ErrInvalidRAGRoomID
+	}
+	if t.Payload.RAGSearch.Query == "" {
+		return nil, ErrInvalidRAGSearchQuery
+	}
+	if err := r.store.Create(t); err != nil {
+		return nil, err
+	}
+	if err := r.queue.Push(t.Clone()); err != nil {
+		_, _ = r.store.MarkFailed(t.ID, err.Error())
+		return nil, err
+	}
+	return t.Clone(), nil
+}
+
 var ErrInvalidFakeLLMPrompt = errors.New("invalid fake llm prompt")
 var ErrInvalidLLMPrompt = errors.New("invalid llm prompt")
 var ErrInvalidSummaryPrompt = errors.New("invalid summary prompt")
 var ErrInvalidAgentGoal = errors.New("invalid agent goal")
 var ErrInvalidRAGRoomID = errors.New("invalid rag room id")
+var ErrInvalidRAGSearchQuery = errors.New("invalid rag search query")

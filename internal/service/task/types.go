@@ -8,11 +8,12 @@ import (
 type Type string
 
 const (
-	TypeFakeLLM Type = "fake_llm"
-	TypeLLM     Type = "llm"
-	TypeSummary Type = "summary"
-	TypeAgent   Type = "agent"
-	TypeRAG     Type = "rag"
+	TypeFakeLLM   Type = "fake_llm"
+	TypeLLM       Type = "llm"
+	TypeSummary   Type = "summary"
+	TypeAgent     Type = "agent"
+	TypeRAG       Type = "rag"
+	TypeRAGSearch Type = "rag_search"
 )
 
 type Priority int
@@ -60,12 +61,19 @@ type RAGPayload struct {
 	MinMessageSequenceID int64
 }
 
+type RAGSearchPayload struct {
+	RoomID string
+	Query  string
+	TopK   int
+}
+
 type Payload struct {
-	FakeLLM *FakeLLMPayload
-	LLM     *LLMPayload
-	Summary *SummaryPayload
-	Agent   *AgentPayload
-	RAG     *RAGPayload
+	FakeLLM   *FakeLLMPayload
+	LLM       *LLMPayload
+	Summary   *SummaryPayload
+	Agent     *AgentPayload
+	RAG       *RAGPayload
+	RAGSearch *RAGSearchPayload
 }
 
 type Result struct {
@@ -114,6 +122,10 @@ func (t *Task) Clone() *Task {
 	if t.Payload.RAG != nil {
 		payloadCopy := *t.Payload.RAG
 		next.Payload.RAG = &payloadCopy
+	}
+	if t.Payload.RAGSearch != nil {
+		payloadCopy := *t.Payload.RAGSearch
+		next.Payload.RAGSearch = &payloadCopy
 	}
 	if t.Result.Text != nil {
 		textCopy := *t.Result.Text

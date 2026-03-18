@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { List, Avatar, Button, Modal, message } from 'antd';
+import { List, Avatar, Button, Dropdown, Modal, message } from 'antd';
+import type { MenuProps } from 'antd';
 import { UserOutlined, FileOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined, DownOutlined } from '@ant-design/icons';
 import { Message, ROBOT_DISPLAY_NAME, ROBOT_USER_ID } from '../../types/models';
 import { useAuthStore } from '../../stores/authStore';
@@ -98,6 +99,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
         ? ''
         : (typeof msg.content === 'string' && msg.content.trim() && !contentIsUrl ? msg.content : `File (${msg.attachment_id || 'attachment'})`);
     const isRobotMessage = msg.from_user_id === ROBOT_USER_ID;
+    const sequenceID = typeof msg.sequence_id === 'number' ? msg.sequence_id : null;
     const payloadObject = useMemo(() => {
         const rawPayload = msg.payload_json;
         if (!rawPayload) {
@@ -343,6 +345,24 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
         return msg.content;
     };
 
+    const messageContextMenu: MenuProps = {
+        items: [
+            {
+                key: 'show-sequence-id',
+                label: sequenceID === null ? '暂无 SequenceID' : `查看 SequenceID (${sequenceID})`,
+                disabled: sequenceID === null
+            }
+        ],
+        onClick: ({ key }) => {
+            if (key !== 'show-sequence-id' || sequenceID === null) return;
+            Modal.info({
+                title: '消息 SequenceID',
+                content: <span>{sequenceID}</span>,
+                okText: '知道了'
+            });
+        }
+    };
+
     return (
         <List.Item id={`chat-msg-${msg.id}`} data-msg-id={msg.id} style={{ 
             display: 'flex', 
@@ -365,34 +385,43 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                         {senderName}
                     </span>
                 </div>
-                <div style={{
-                    background: isMe ? '#1890ff' : '#fff',
-                    color: isMe ? '#fff' : '#000',
-                    padding: '8px 12px',
-                    borderRadius: '8px',
-                    boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
-                    wordBreak: 'break-word'
-                }}>
-                    {renderContent()}
-                    {isRobotMessage && memoryEntries.length > 0 && (
-                        <details style={{ marginTop: 8, border: '1px solid #d9d9d9', borderRadius: 6, background: '#fafafa' }}>
-                            <summary style={{ cursor: 'pointer', padding: '6px 8px', color: '#595959', fontSize: 12 }}>payload / memory</summary>
-                            <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                                {memoryEntries.map((entry) => (
-                                    <div key={`${msg.id || 'memory'}-${entry.index}-${entry.role}-${entry.tool}`} style={{ border: '1px solid #e8e8e8', borderRadius: 6, background: '#fff' }}>
-                                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 8px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
-                                            <span style={{ color: '#8c8c8c' }}>#{entry.index}</span>
-                                            <span style={{ fontWeight: 600, color: '#262626' }}>{entry.role}</span>
-                                            <span style={{ color: '#595959' }}>{entry.tool}</span>
-                                            <span style={{ color: entry.status === 'failed' ? '#cf1322' : '#389e0d' }}>{entry.status}</span>
-                                        </div>
-                                        {entry.input && <div style={{ padding: '6px 8px', fontSize: 12, color: '#595959', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>input:</strong> {entry.input}</div>}
-                                        {entry.output && <div style={{ padding: '0 8px 6px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>output:</strong> {entry.output}</div>}
-                                        {entry.error && <div style={{ padding: '0 8px 8px 8px', fontSize: 12, color: '#cf1322', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>error:</strong> {entry.error}</div>}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start' }}>
+                    <Dropdown trigger={['contextMenu']} menu={messageContextMenu}>
+                        <div style={{
+                            background: isMe ? '#1890ff' : '#fff',
+                            color: isMe ? '#fff' : '#000',
+                            padding: '8px 12px',
+                            borderRadius: '8px',
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+                            wordBreak: 'break-word'
+                        }}>
+                            {renderContent()}
+                            {isRobotMessage && memoryEntries.length > 0 && (
+                                <details style={{ marginTop: 8, border: '1px solid #d9d9d9', borderRadius: 6, background: '#fafafa' }}>
+                                    <summary style={{ cursor: 'pointer', padding: '6px 8px', color: '#595959', fontSize: 12 }}>payload / memory</summary>
+                                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        {memoryEntries.map((entry) => (
+                                            <div key={`${msg.id || 'memory'}-${entry.index}-${entry.role}-${entry.tool}`} style={{ border: '1px solid #e8e8e8', borderRadius: 6, background: '#fff' }}>
+                                                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 8px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                                                    <span style={{ color: '#8c8c8c' }}>#{entry.index}</span>
+                                                    <span style={{ fontWeight: 600, color: '#262626' }}>{entry.role}</span>
+                                                    <span style={{ color: '#595959' }}>{entry.tool}</span>
+                                                    <span style={{ color: entry.status === 'failed' ? '#cf1322' : '#389e0d' }}>{entry.status}</span>
+                                                </div>
+                                                {entry.input && <div style={{ padding: '6px 8px', fontSize: 12, color: '#595959', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>input:</strong> {entry.input}</div>}
+                                                {entry.output && <div style={{ padding: '0 8px 6px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>output:</strong> {entry.output}</div>}
+                                                {entry.error && <div style={{ padding: '0 8px 8px 8px', fontSize: 12, color: '#cf1322', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>error:</strong> {entry.error}</div>}
+                                            </div>
+                                        ))}
                                     </div>
-                                ))}
-                            </div>
-                        </details>
+                                </details>
+                            )}
+                        </div>
+                    </Dropdown>
+                    {sequenceID !== null && (
+                        <span style={{ marginTop: 4, fontSize: 11, color: '#8c8c8c', lineHeight: '14px' }}>
+                            SequenceID: {sequenceID}
+                        </span>
                     )}
                 </div>
             </div>

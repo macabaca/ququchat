@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	tasksvc "ququchat/internal/service/task"
+	"ququchat/internal/service/task/raghandler"
 )
 
 var ErrServiceNotInitialized = errors.New("task service not initialized")
@@ -24,6 +25,9 @@ var ErrSummarySourceEmpty = errors.New("no messages available for summary")
 var ErrAgentRoomRequired = errors.New("agent room id is required")
 var ErrAgentGoalRequired = errors.New("agent goal is required")
 var ErrRAGRoomRequired = errors.New("rag room id is required")
+var ErrRAGSearchQueryRequired = errors.New("rag search query is required")
+var ErrRAGSearchTopKInvalid = errors.New("rag search topK must be a positive integer")
+var ErrRAGSearchTopKTooLarge = errors.New("rag search topK is too large")
 
 const summaryCountMax = 1000
 const agentRecentMessageLimit = 12
@@ -32,6 +36,8 @@ const ragSegmentGapSeconds = 600
 const ragMaxCharsPerSegment = 2000
 const ragMaxMessagesPerSeg = 24
 const ragOverlapMessages = 1
+const ragSearchTopKDefault = 5
+const ragSearchTopKMax = 20
 
 type TaskCallback func(ctx context.Context, doneTask *tasksvc.Task, final string, payload map[string]interface{})
 
@@ -54,7 +60,17 @@ func NewService(db *gorm.DB, opts tasksvc.RuntimeOptions) *Service {
 	if opts.Store == nil && db != nil {
 		opts.Store = tasksvc.NewGormStore(db)
 	}
-	opts.RAGHandler = s
+	if opts.RAGHandler == nil {
+		opts.RAGHandler = raghandler.New(raghandler.Options{
+			DB:                    db,
+			LLMClient:             opts.LLMClient,
+			EmbeddingProvider:     opts.EmbeddingProvider,
+			VectorStore:           opts.VectorStore,
+			EmbeddingModelRaw:     opts.EmbeddingModelRaw,
+			EmbeddingModelSummary: opts.EmbeddingModelSummary,
+			SummaryVectorDim:      opts.SummaryVectorDim,
+		})
+	}
 	s.db = db
 	s.runtime = tasksvc.NewRuntime(opts)
 	return s
@@ -185,6 +201,20 @@ func (s *Service) SubmitCommand(req SubmitCommandRequest, cb TaskCallback) (stri
 			Goal:           goal,
 			RecentMessages: recentMessages,
 			MaxSteps:       agentMaxSteps,
+		})
+	} else if strings.HasPrefix(cmd, "rag检索") {
+		if strings.TrimSpace(req.RoomID) == "" {
+			return "", ErrRAGRoomRequired
+		}
+		ragQuery, topK, parseErr := parseRAGSearchQuery(cmd)
+		if parseErr != nil {
+			return "", parseErr
+		}
+		t, err = s.runtime.SubmitRAGSearch(tasksvc.SubmitRAGSearchRequest{
+			Priority: tasksvc.PriorityNormal,
+			RoomID:   strings.TrimSpace(req.RoomID),
+			Query:    ragQuery,
+			TopK:     topK,
 		})
 	} else if strings.HasPrefix(cmd, "生成rag") || strings.HasPrefix(cmd, "rag") {
 		if strings.TrimSpace(req.RoomID) == "" {
@@ -352,4 +382,34 @@ func parseAgentGoal(cmd string) (string, error) {
 		return goal, nil
 	}
 	return "", ErrAgentGoalRequired
+}
+
+func parseRAGSearchQuery(cmd string) (string, int, error) {
+	trimmed := strings.TrimSpace(cmd)
+	if !strings.HasPrefix(trimmed, "rag检索") {
+		return "", 0, ErrRAGSearchQueryRequired
+	}
+	body := strings.TrimSpace(strings.TrimPrefix(trimmed, "rag检索"))
+	if body == "" {
+		return "", 0, ErrRAGSearchQueryRequired
+	}
+	topK := ragSearchTopKDefault
+	parts := strings.Fields(body)
+	if len(parts) > 0 {
+		if parsedTopK, err := strconv.Atoi(parts[0]); err == nil {
+			if parsedTopK <= 0 {
+				return "", 0, ErrRAGSearchTopKInvalid
+			}
+			if parsedTopK > ragSearchTopKMax {
+				return "", 0, ErrRAGSearchTopKTooLarge
+			}
+			topK = parsedTopK
+			body = strings.TrimSpace(strings.TrimPrefix(body, parts[0]))
+		}
+	}
+	query := strings.TrimSpace(body)
+	if query == "" {
+		return "", 0, ErrRAGSearchQueryRequired
+	}
+	return query, topK, nil
 }
