@@ -17,17 +17,20 @@ type Executor interface {
 type ExecutorOptions struct {
 	LLMClient  LLMClient
 	RAGHandler RAGHandler
+	AIGCClient AIGCClient
 }
 
 type DefaultExecutor struct {
 	llmClient  LLMClient
 	ragHandler RAGHandler
+	aigcClient AIGCClient
 }
 
 func NewDefaultExecutor(opts ExecutorOptions) *DefaultExecutor {
 	return &DefaultExecutor{
 		llmClient:  opts.LLMClient,
 		ragHandler: opts.RAGHandler,
+		aigcClient: opts.AIGCClient,
 	}
 }
 

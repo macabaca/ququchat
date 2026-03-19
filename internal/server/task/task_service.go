@@ -28,6 +28,7 @@ var ErrRAGRoomRequired = errors.New("rag room id is required")
 var ErrRAGSearchQueryRequired = errors.New("rag search query is required")
 var ErrRAGSearchTopKInvalid = errors.New("rag search topK must be a positive integer")
 var ErrRAGSearchTopKTooLarge = errors.New("rag search topK is too large")
+var ErrRAGSearchVectorInvalid = errors.New("rag search vector must be raw or summary")
 var ErrRAGMemorySequenceRangeRequired = errors.New("rag memory start/end sequence ids are required")
 var ErrRAGMemorySequenceRangeInvalid = errors.New("rag memory sequence range is invalid")
 
@@ -37,7 +38,7 @@ const agentMaxSteps = 5
 const ragSegmentGapSeconds = 600
 const ragMaxCharsPerSegment = 2000
 const ragMaxMessagesPerSeg = 24
-const ragOverlapMessages = 1
+const ragOverlapMessages = 3
 const ragSearchTopKDefault = 5
 const ragSearchTopKMax = 20
 
@@ -210,12 +211,13 @@ func (s *Service) SubmitCommand(req SubmitCommandRequest, cb TaskCallback) (stri
 			Goal:           goal,
 			RecentMessages: recentMessages,
 			MaxSteps:       agentMaxSteps,
+			RoomID:         strings.TrimSpace(req.RoomID),
 		})
 	} else if strings.HasPrefix(cmd, "rag检索") {
 		if strings.TrimSpace(req.RoomID) == "" {
 			return "", ErrRAGRoomRequired
 		}
-		ragQuery, topK, parseErr := parseRAGSearchQuery(cmd)
+		ragQuery, topK, vectorMode, parseErr := parseRAGSearchQuery(cmd)
 		if parseErr != nil {
 			return "", parseErr
 		}
@@ -224,6 +226,7 @@ func (s *Service) SubmitCommand(req SubmitCommandRequest, cb TaskCallback) (stri
 			RoomID:   strings.TrimSpace(req.RoomID),
 			Query:    ragQuery,
 			TopK:     topK,
+			Vector:   vectorMode,
 		})
 	} else if strings.HasPrefix(cmd, "添加记忆") {
 		if strings.TrimSpace(req.RoomID) == "" {
@@ -411,34 +414,63 @@ func parseAgentGoal(cmd string) (string, error) {
 	return "", ErrAgentGoalRequired
 }
 
-func parseRAGSearchQuery(cmd string) (string, int, error) {
+func parseRAGSearchQuery(cmd string) (string, int, string, error) {
 	trimmed := strings.TrimSpace(cmd)
 	if !strings.HasPrefix(trimmed, "rag检索") {
-		return "", 0, ErrRAGSearchQueryRequired
+		return "", 0, "", ErrRAGSearchQueryRequired
 	}
 	body := strings.TrimSpace(strings.TrimPrefix(trimmed, "rag检索"))
 	if body == "" {
-		return "", 0, ErrRAGSearchQueryRequired
+		return "", 0, "", ErrRAGSearchQueryRequired
 	}
 	topK := ragSearchTopKDefault
+	vectorMode := "raw"
 	parts := strings.Fields(body)
-	if len(parts) > 0 {
-		if parsedTopK, err := strconv.Atoi(parts[0]); err == nil {
+	consumed := 0
+	for consumed < len(parts) && consumed < 2 {
+		token := strings.ToLower(strings.TrimSpace(parts[consumed]))
+		if token == "" {
+			consumed++
+			continue
+		}
+		if parsedTopK, err := strconv.Atoi(token); err == nil {
 			if parsedTopK <= 0 {
-				return "", 0, ErrRAGSearchTopKInvalid
+				return "", 0, "", ErrRAGSearchTopKInvalid
 			}
 			if parsedTopK > ragSearchTopKMax {
-				return "", 0, ErrRAGSearchTopKTooLarge
+				return "", 0, "", ErrRAGSearchTopKTooLarge
 			}
 			topK = parsedTopK
-			body = strings.TrimSpace(strings.TrimPrefix(body, parts[0]))
+			consumed++
+			continue
 		}
+		switch token {
+		case "raw", "summary":
+			vectorMode = token
+			consumed++
+			continue
+		case "raw:", "summary:":
+			vectorMode = strings.TrimSuffix(token, ":")
+			consumed++
+			continue
+		}
+		break
+	}
+	if consumed > 0 {
+		body = strings.TrimSpace(strings.Join(parts[consumed:], " "))
 	}
 	query := strings.TrimSpace(body)
 	if query == "" {
-		return "", 0, ErrRAGSearchQueryRequired
+		return "", 0, "", ErrRAGSearchQueryRequired
 	}
-	return query, topK, nil
+	modeLower := strings.ToLower(strings.TrimSpace(vectorMode))
+	if modeLower == "" {
+		modeLower = "raw"
+	}
+	if modeLower != "raw" && modeLower != "summary" {
+		return "", 0, "", ErrRAGSearchVectorInvalid
+	}
+	return query, topK, modeLower, nil
 }
 
 func parseRAGMemorySequenceRange(cmd string) (int64, int64, error) {

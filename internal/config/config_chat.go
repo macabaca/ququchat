@@ -29,6 +29,19 @@ type LLM struct {
 	Model             string `yaml:"model" json:"model"`
 }
 
+type AIGC struct {
+	Transport         string `yaml:"transport" json:"transport"`
+	IPM               int    `yaml:"ipm" json:"ipm"`
+	IPD               int    `yaml:"ipd" json:"ipd"`
+	RabbitMQURL       string `yaml:"rabbitmq_url" json:"rabbitmq_url"`
+	RequestQueue      string `yaml:"request_queue" json:"request_queue"`
+	WorkerSize        int    `yaml:"worker_size" json:"worker_size"`
+	ResponseTimeoutMs int    `yaml:"response_timeout_ms" json:"response_timeout_ms"`
+	APIKey            string `yaml:"api_key" json:"api_key"`
+	BaseURL           string `yaml:"base_url" json:"base_url"`
+	Model             string `yaml:"model" json:"model"`
+}
+
 type Embedding struct {
 	Transport         string `yaml:"transport" json:"transport"`
 	RPM               int    `yaml:"rpm" json:"rpm"`
@@ -107,6 +120,62 @@ func (l LLM) ResponseTimeoutOrDefault() time.Duration {
 		return time.Duration(l.ResponseTimeoutMs) * time.Millisecond
 	}
 	return 60 * time.Second
+}
+
+func (a AIGC) TransportOrDefault() string {
+	if strings.TrimSpace(a.Transport) != "" {
+		return strings.TrimSpace(a.Transport)
+	}
+	return "direct"
+}
+
+func (a AIGC) BaseURLOrDefault() string {
+	if strings.TrimSpace(a.BaseURL) != "" {
+		return strings.TrimSpace(a.BaseURL)
+	}
+	return "https://api.openai.com/v1"
+}
+
+func (a AIGC) ModelOrDefault() string {
+	if strings.TrimSpace(a.Model) != "" {
+		return strings.TrimSpace(a.Model)
+	}
+	return "Kwai-Kolors/Kolors"
+}
+
+func (a AIGC) RequestQueueOrDefault() string {
+	if strings.TrimSpace(a.RequestQueue) != "" {
+		return strings.TrimSpace(a.RequestQueue)
+	}
+	return "ququchat.aigc.request"
+}
+
+func (a AIGC) WorkerSizeOrDefault() int {
+	if a.WorkerSize > 0 {
+		return a.WorkerSize
+	}
+	return 1
+}
+
+func (a AIGC) IPMOrDefault() int {
+	if a.IPM > 0 {
+		return a.IPM
+	}
+	return 0
+}
+
+func (a AIGC) IPDOrDefault() int {
+	if a.IPD > 0 {
+		return a.IPD
+	}
+	return 0
+}
+
+func (a AIGC) ResponseTimeoutOrDefault() time.Duration {
+	if a.ResponseTimeoutMs > 0 {
+		return time.Duration(a.ResponseTimeoutMs) * time.Millisecond
+	}
+	return 120 * time.Second
 }
 
 func (e Embedding) TransportOrDefault() string {

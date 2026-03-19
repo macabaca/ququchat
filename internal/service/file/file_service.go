@@ -12,7 +12,9 @@ import (
 	"image/jpeg"
 	_ "image/png"
 	"io"
+	stdmime "mime"
 	"mime/multipart"
+	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -296,6 +298,109 @@ func NewService(db *gorm.DB, objStorage serverstorage.ObjectStorage, bucket stri
 		thumbRetryDelay:     thumb.RetryDelay,
 		thumbMaxSourceBytes: thumb.MaxSourceBytes,
 	}
+}
+
+func (s *Service) SaveAIGCImageFromURL(ctx context.Context, imageURL string) (*models.Attachment, error) {
+	if strings.TrimSpace(imageURL) == "" {
+		return nil, ErrFileRequired
+	}
+	if s.storage == nil {
+		return nil, ErrStorageClientRequired
+	}
+	if strings.TrimSpace(s.bucket) == "" {
+		return nil, ErrBucketRequired
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSpace(imageURL), nil)
+	if err != nil {
+		return nil, err
+	}
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return nil, fmt.Errorf("download image failed: %s", httpResp.Status)
+	}
+	maxSize := s.maxSizeBytes
+	reader := io.Reader(httpResp.Body)
+	if maxSize > 0 {
+		reader = &countReader{r: httpResp.Body, max: maxSize}
+	}
+	var data bytes.Buffer
+	if _, err := io.Copy(&data, reader); err != nil {
+		if errors.Is(err, ErrFileTooLarge) {
+			return nil, ErrFileTooLarge
+		}
+		return nil, err
+	}
+	raw := data.Bytes()
+	if len(raw) == 0 {
+		return nil, ErrEmptyFile
+	}
+	detectedMime := http.DetectContentType(raw)
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(detectedMime)), "image/") {
+		return nil, ErrImageOnly
+	}
+	ext := ".img"
+	if exts, extErr := stdmime.ExtensionsByType(detectedMime); extErr == nil && len(exts) > 0 {
+		ext = strings.ToLower(strings.TrimSpace(exts[0]))
+		if ext == "" {
+			ext = ".img"
+		}
+	}
+	mimePtr := &detectedMime
+	id := uuid.NewString()
+	storedName := id + ext
+	storageKey := filepath.ToSlash(filepath.Join("uploads", "aigc", storedName))
+	sizeBytes := int64(len(raw))
+	if err := s.storage.PutObject(ctx, s.bucket, storageKey, bytes.NewReader(raw), sizeBytes, mimePtr); err != nil {
+		if errors.Is(err, ErrFileTooLarge) {
+			return nil, ErrFileTooLarge
+		}
+		return nil, fmt.Errorf("put object: %w", err)
+	}
+	stat, err := s.storage.StatObject(ctx, s.bucket, storageKey)
+	if err != nil {
+		return nil, fmt.Errorf("stat object: %w", err)
+	}
+	sizeBytes = stat.Size
+	if sizeBytes <= 0 {
+		_ = s.storage.RemoveObject(ctx, s.bucket, storageKey)
+		return nil, ErrEmptyFile
+	}
+	hashValue := sha256.Sum256(raw)
+	hashHex := hex.EncodeToString(hashValue[:])
+	provider := s.storage.Provider()
+	now := time.Now()
+	fileName := "aigc_" + id + ext
+	var expiresAtPtr *time.Time
+	if s.retention > 0 {
+		expiresAt := now.Add(s.retention)
+		expiresAtPtr = &expiresAt
+	}
+	attachment := models.Attachment{
+		ID:              id,
+		FileName:        &fileName,
+		StorageKey:      &storageKey,
+		MimeType:        mimePtr,
+		SizeBytes:       &sizeBytes,
+		Hash:            &hashHex,
+		StorageProvider: &provider,
+		ExpiresAt:       expiresAtPtr,
+		CreatedAt:       now,
+	}
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(raw)); err == nil {
+		w := cfg.Width
+		h := cfg.Height
+		attachment.ImageWidth = &w
+		attachment.ImageHeight = &h
+	}
+	if err := s.db.Create(&attachment).Error; err != nil {
+		return nil, fmt.Errorf("create attachment: %w", err)
+	}
+	s.ensureThumbnailForAttachment("", &attachment)
+	return &attachment, nil
 }
 
 func (s *Service) UploadAvatar(userID string, file *multipart.FileHeader, maxSizeBytes int64, permanent bool, retention time.Duration) (*models.Attachment, error) {

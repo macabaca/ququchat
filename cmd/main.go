@@ -13,7 +13,9 @@ import (
 	database "ququchat/internal/server/db"
 	"ququchat/internal/server/storage"
 	servertask "ququchat/internal/server/task"
+	filesvc "ququchat/internal/service/file"
 	tasksvc "ququchat/internal/service/task"
+	"ququchat/internal/service/task/aigcmq"
 	"ququchat/internal/service/task/embeddingmq"
 	"ququchat/internal/service/task/llmmq"
 	"ququchat/internal/service/task/openaicompat"
@@ -143,6 +145,10 @@ func main() {
 		LLMAPIKey:             cfg.LLM.APIKey,
 		LLMBaseURL:            cfg.LLM.BaseURLOrDefault(),
 		LLMModel:              cfg.LLM.ModelOrDefault(),
+		AIGCTransport:         cfg.AIGC.TransportOrDefault(),
+		AIGCMQURL:             cfg.AIGC.RabbitMQURL,
+		AIGCMQQueue:           cfg.AIGC.RequestQueueOrDefault(),
+		AIGCMQTimeout:         cfg.AIGC.ResponseTimeoutOrDefault(),
 		EmbeddingProvider:     ragEmbeddingProvider,
 		VectorStore:           ragVectorStore,
 		EmbeddingModelRaw:     cfg.Embedding.ModelOrDefault(),
@@ -218,6 +224,50 @@ func main() {
 			cfg.Embedding.WorkerSizeOrDefault(),
 			cfg.Embedding.RPMOrDefault(),
 			cfg.Embedding.TPMOrDefault(),
+		)
+	}
+	if cfg.AIGC.TransportOrDefault() == "rabbitmq" {
+		provider, err := openaicompat.NewAIGCClient(openaicompat.AIGCOptions{
+			APIKey:  cfg.AIGC.APIKey,
+			BaseURL: cfg.AIGC.BaseURLOrDefault(),
+			Model:   cfg.AIGC.ModelOrDefault(),
+		})
+		if err != nil {
+			log.Fatalf("初始化 AIGC provider 失败: %v", err)
+		}
+		thumb := filesvc.ThumbnailOptions{
+			MaxDimension:   cfg.File.Thumbnail.MaxDimensionOrDefault(),
+			JPEGQuality:    cfg.File.Thumbnail.JPEGQualityOrDefault(),
+			RetryCount:     cfg.File.Thumbnail.RetryCountOrDefault(),
+			RetryDelay:     cfg.File.Thumbnail.RetryDelayDuration(),
+			MaxSourceBytes: cfg.File.Thumbnail.MaxSourceBytesOrDefault(),
+		}
+		aigcFileService := filesvc.NewService(db, objStorage, bucket, cfg.File.MaxSizeBytes, cfg.File.RetentionDuration(), thumb)
+		aigcPool, err := aigcmq.NewPool(aigcmq.PoolOptions{
+			URL:             cfg.AIGC.RabbitMQURL,
+			RequestQueue:    cfg.AIGC.RequestQueueOrDefault(),
+			Provider:        provider,
+			AttachmentSaver: aigcFileService,
+			Size:            cfg.AIGC.WorkerSizeOrDefault(),
+			IPM:             cfg.AIGC.IPMOrDefault(),
+			IPD:             cfg.AIGC.IPDOrDefault(),
+		})
+		if err != nil {
+			log.Fatalf("初始化 AIGC worker pool 失败: %v", err)
+		}
+		if err := aigcPool.Start(context.Background()); err != nil {
+			log.Fatalf("启动 AIGC worker pool 失败: %v", err)
+		}
+		defer func() {
+			if err := aigcPool.Shutdown(context.Background()); err != nil {
+				log.Printf("AIGC worker pool 关闭失败: %v", err)
+			}
+		}()
+		log.Printf(
+			"AIGC worker pool 已启动，worker 数量: %d, IPM: %d, IPD: %d",
+			cfg.AIGC.WorkerSizeOrDefault(),
+			cfg.AIGC.IPMOrDefault(),
+			cfg.AIGC.IPDOrDefault(),
 		)
 	}
 

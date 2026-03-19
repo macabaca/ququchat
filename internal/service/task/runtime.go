@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ququchat/internal/service/task/aigcmq"
 	"ququchat/internal/service/task/llmmq"
 	"ququchat/internal/service/task/openaicompat"
 )
@@ -26,6 +27,11 @@ type RuntimeOptions struct {
 	LLMAPIKey             string
 	LLMBaseURL            string
 	LLMModel              string
+	AIGCClient            AIGCClient
+	AIGCTransport         string
+	AIGCMQURL             string
+	AIGCMQQueue           string
+	AIGCMQTimeout         time.Duration
 	EmbeddingProvider     EmbeddingProvider
 	VectorStore           VectorStore
 	EmbeddingModelRaw     string
@@ -72,9 +78,25 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 			}
 		}
 	}
+	aigcClient := opts.AIGCClient
+	if aigcClient == nil {
+		if strings.EqualFold(strings.TrimSpace(opts.AIGCTransport), "rabbitmq") &&
+			strings.TrimSpace(opts.AIGCMQURL) != "" &&
+			strings.TrimSpace(opts.AIGCMQQueue) != "" {
+			client, err := aigcmq.NewClient(aigcmq.ClientOptions{
+				URL:             opts.AIGCMQURL,
+				RequestQueue:    opts.AIGCMQQueue,
+				ResponseTimeout: opts.AIGCMQTimeout,
+			})
+			if err == nil {
+				aigcClient = client
+			}
+		}
+	}
 	exec := NewDefaultExecutor(ExecutorOptions{
 		LLMClient:  llmClient,
 		RAGHandler: opts.RAGHandler,
+		AIGCClient: aigcClient,
 	})
 	pool := NewPool(queue, store, exec, opts.WorkerSize, opts.OnFinish)
 	return &Runtime{
@@ -117,6 +139,7 @@ type SubmitAgentRequest struct {
 	Goal           string
 	RecentMessages []string
 	MaxSteps       int
+	RoomID         string
 }
 
 func (r *Runtime) SubmitFakeLLM(req SubmitFakeLLMRequest) (*Task, error) {
@@ -237,6 +260,7 @@ func (r *Runtime) SubmitAgent(req SubmitAgentRequest) (*Task, error) {
 				Goal:           goal,
 				RecentMessages: append([]string(nil), req.RecentMessages...),
 				MaxSteps:       req.MaxSteps,
+				RoomID:         strings.TrimSpace(req.RoomID),
 			},
 		},
 		CreatedAt: now,
@@ -310,6 +334,7 @@ func (r *Runtime) SubmitRAGSearch(req SubmitRAGSearchRequest) (*Task, error) {
 				RoomID: strings.TrimSpace(req.RoomID),
 				Query:  strings.TrimSpace(req.Query),
 				TopK:   req.TopK,
+				Vector: strings.TrimSpace(req.Vector),
 			},
 		},
 		CreatedAt: now,

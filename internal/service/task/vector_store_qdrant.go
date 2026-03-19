@@ -134,6 +134,14 @@ func (s *QdrantVectorStore) UpsertPoints(ctx context.Context, points []VectorPoi
 }
 
 func (s *QdrantVectorStore) SearchRaw(ctx context.Context, roomID string, vector []float32, topK int) ([]VectorSearchHit, error) {
+	return s.searchByNamedVector(ctx, roomID, "raw", vector, topK, false)
+}
+
+func (s *QdrantVectorStore) SearchSummary(ctx context.Context, roomID string, vector []float32, topK int) ([]VectorSearchHit, error) {
+	return s.searchByNamedVector(ctx, roomID, "summary", vector, topK, true)
+}
+
+func (s *QdrantVectorStore) searchByNamedVector(ctx context.Context, roomID string, vectorName string, vector []float32, topK int, requireSummaryReady bool) ([]VectorSearchHit, error) {
 	if s == nil {
 		return nil, errors.New("qdrant vector store is nil")
 	}
@@ -147,22 +155,31 @@ func (s *QdrantVectorStore) SearchRaw(ctx context.Context, roomID string, vector
 	if topK <= 0 {
 		topK = 5
 	}
+	mustFilters := []map[string]interface{}{
+		{
+			"key": "room_id",
+			"match": map[string]interface{}{
+				"value": cleanRoomID,
+			},
+		},
+	}
+	if requireSummaryReady {
+		mustFilters = append(mustFilters, map[string]interface{}{
+			"key": "summary_ready",
+			"match": map[string]interface{}{
+				"value": true,
+			},
+		})
+	}
 	body, err := json.Marshal(map[string]interface{}{
 		"vector": map[string]interface{}{
-			"name":   "raw",
+			"name":   vectorName,
 			"vector": vector,
 		},
 		"limit":        topK,
 		"with_payload": true,
 		"filter": map[string]interface{}{
-			"must": []map[string]interface{}{
-				{
-					"key": "room_id",
-					"match": map[string]interface{}{
-						"value": cleanRoomID,
-					},
-				},
-			},
+			"must": mustFilters,
 		},
 	})
 	if err != nil {

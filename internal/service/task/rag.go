@@ -19,6 +19,7 @@ type SubmitRAGSearchRequest struct {
 	RoomID    string
 	Query     string
 	TopK      int
+	Vector    string
 }
 
 type SubmitRAGAddMemoryRequest struct {
@@ -67,6 +68,7 @@ type EmbeddingProvider interface {
 type VectorStore interface {
 	UpsertPoints(ctx context.Context, points []VectorPoint) error
 	SearchRaw(ctx context.Context, roomID string, vector []float32, topK int) ([]VectorSearchHit, error)
+	SearchSummary(ctx context.Context, roomID string, vector []float32, topK int) ([]VectorSearchHit, error)
 }
 
 type RAGHandler interface {

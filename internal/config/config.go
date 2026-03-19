@@ -13,6 +13,7 @@ type Config struct {
 	Chat      Chat      `yaml:"chat" json:"chat"`
 	Task      Task      `yaml:"task" json:"task"`
 	LLM       LLM       `yaml:"llm" json:"llm"`
+	AIGC      AIGC      `yaml:"aigc" json:"aigc"`
 	Embedding Embedding `yaml:"embedding" json:"embedding"`
 	Vector    Vector    `yaml:"vector" json:"vector"`
 	File      File      `yaml:"file" json:"file"`

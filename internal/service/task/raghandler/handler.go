@@ -30,6 +30,8 @@ const defaultMaxSummaryChars = 2000
 const defaultMinSummaryMessageCount = 5
 const defaultRAGSearchTopK = 5
 const maxRAGSearchTopK = 20
+const ragSearchVectorRaw = "raw"
+const ragSearchVectorSummary = "summary"
 
 type Handler struct {
 	db                    *gorm.DB
@@ -356,7 +358,19 @@ func (h *Handler) ExecuteRAGSearch(ctx context.Context, payload *tasksvc.RAGSear
 	if len(vectors) == 0 || len(vectors[0]) == 0 {
 		return tasksvc.Result{}, errors.New("rag search embedding result is empty")
 	}
-	hits, err := h.vectorStore.SearchRaw(ctx, strings.TrimSpace(payload.RoomID), vectors[0], topK)
+	vectorMode := strings.ToLower(strings.TrimSpace(payload.Vector))
+	if vectorMode == "" {
+		vectorMode = ragSearchVectorRaw
+	}
+	var hits []tasksvc.VectorSearchHit
+	switch vectorMode {
+	case ragSearchVectorSummary:
+		hits, err = h.vectorStore.SearchSummary(ctx, strings.TrimSpace(payload.RoomID), vectors[0], topK)
+	case ragSearchVectorRaw:
+		hits, err = h.vectorStore.SearchRaw(ctx, strings.TrimSpace(payload.RoomID), vectors[0], topK)
+	default:
+		return tasksvc.Result{}, fmt.Errorf("invalid rag search vector: %s", vectorMode)
+	}
 	if err != nil {
 		return tasksvc.Result{}, err
 	}
@@ -415,6 +429,7 @@ func (h *Handler) ExecuteRAGSearch(ctx context.Context, payload *tasksvc.RAGSear
 		Payload: map[string]interface{}{
 			"room_id":      strings.TrimSpace(payload.RoomID),
 			"query":        query,
+			"vector":       vectorMode,
 			"top_k":        topK,
 			"result_count": len(results),
 			"results":      results,

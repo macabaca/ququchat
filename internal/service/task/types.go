@@ -51,6 +51,7 @@ type AgentPayload struct {
 	Goal           string
 	RecentMessages []string
 	MaxSteps       int
+	RoomID         string
 }
 
 type RAGPayload struct {
@@ -66,6 +67,7 @@ type RAGSearchPayload struct {
 	RoomID string
 	Query  string
 	TopK   int
+	Vector string
 }
 
 type RAGAddMemoryPayload struct {

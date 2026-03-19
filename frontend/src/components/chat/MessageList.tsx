@@ -39,6 +39,11 @@ interface RAGPayloadEntry {
     messageCount: string;
 }
 
+interface AIGCImageEntry {
+    attachmentID: string;
+    cachePath: string;
+}
+
 const parseMemoryEntries = (memoryText: string): MemoryEntry[] => {
     const normalized = memoryText.replace(/\r\n/g, '\n').trim();
     if (!normalized) {
@@ -150,12 +155,43 @@ const parseRAGPayloadEntries = (payloadObject: Record<string, any> | null): RAGP
     return entries;
 };
 
+const parseAIGCImageEntries = (payloadObject: Record<string, any> | null): AIGCImageEntry[] => {
+    if (!payloadObject) {
+        return [];
+    }
+    const rawIDs = payloadObject.aigc_attachment_ids;
+    if (!Array.isArray(rawIDs) || rawIDs.length === 0) {
+        return [];
+    }
+    const rawCachePathMap = payloadObject.aigc_cache_paths;
+    const cachePathMap = (!rawCachePathMap || typeof rawCachePathMap !== 'object' || Array.isArray(rawCachePathMap))
+        ? {}
+        : rawCachePathMap as Record<string, any>;
+    const entries: AIGCImageEntry[] = [];
+    const seen = new Set<string>();
+    for (const rawID of rawIDs) {
+        const attachmentID = String(rawID ?? '').trim();
+        if (!attachmentID || seen.has(attachmentID)) {
+            continue;
+        }
+        seen.add(attachmentID);
+        const rawPath = cachePathMap[attachmentID];
+        const cachePath = typeof rawPath === 'string' ? rawPath.trim() : '';
+        entries.push({
+            attachmentID,
+            cachePath
+        });
+    }
+    return entries;
+};
+
 const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; senderName: string; isHighlighted?: boolean }> = ({ msg, isMe, avatarUrl, senderName, isHighlighted }) => {
     const [thumbUrl, setThumbUrl] = useState<string>('');
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [originalUrl, setOriginalUrl] = useState<string>('');
     const [loadingOriginal, setLoadingOriginal] = useState(false);
     const [isDownloading, setIsDownloading] = useState(false);
+    const [aigcImageUrls, setAigcImageUrls] = useState<Array<{ attachmentID: string; url: string }>>([]);
 
     const isImage = msg.is_image || (typeof msg.content === 'string' && (msg.content.startsWith('http') || msg.content.startsWith('blob:')) && (msg.content.match(/\.(jpeg|jpg|gif|png|webp)(\?.*)?$/i) != null));
     // For temp messages, we might just have the content as the URL (blob or uploaded URL) even if is_image is not set correctly yet?
@@ -201,6 +237,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
     }, [payloadObject]);
     const memoryEntries = useMemo(() => parseMemoryEntries(memoryText), [memoryText]);
     const ragPayloadEntries = useMemo(() => parseRAGPayloadEntries(payloadObject), [payloadObject]);
+    const aigcImageEntries = useMemo(() => parseAIGCImageEntries(payloadObject), [payloadObject]);
 
     useEffect(() => {
         const isBlob = typeof msg.content === 'string' && msg.content.startsWith('blob:');
@@ -230,6 +267,54 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
         }
 
     }, [msg.id, msg.thumb_attachment_id, isImage, isFile, msg.content, contentIsUrl, msg.cache_path]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const objectUrls: string[] = [];
+        const loadAIGCImages = async () => {
+            setAigcImageUrls([]);
+            if (aigcImageEntries.length === 0) {
+                return;
+            }
+            const items: Array<{ attachmentID: string; url: string }> = [];
+            for (const entry of aigcImageEntries) {
+                if (cancelled) {
+                    return;
+                }
+                let url = '';
+                if (entry.cachePath) {
+                    url = (await localFileService.getLocalFileUrl(entry.cachePath)) || '';
+                    if (url && url.startsWith('blob:')) {
+                        objectUrls.push(url);
+                    }
+                }
+                if (!url) {
+                    try {
+                        const res = await fileService.getFileUrl(entry.attachmentID);
+                        url = String(res?.url || '').trim();
+                    } catch {
+                        url = '';
+                    }
+                }
+                if (url) {
+                    items.push({
+                        attachmentID: entry.attachmentID,
+                        url
+                    });
+                }
+            }
+            if (!cancelled) {
+                setAigcImageUrls(items);
+            }
+        };
+        void loadAIGCImages();
+        return () => {
+            cancelled = true;
+            for (const url of objectUrls) {
+                URL.revokeObjectURL(url);
+            }
+        };
+    }, [aigcImageEntries]);
 
     const handleImageClick = () => {
         setIsModalVisible(true);
@@ -469,6 +554,19 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                             wordBreak: 'break-word'
                         }}>
                             {renderContent()}
+                            {aigcImageUrls.length > 0 && (
+                                <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                    {aigcImageUrls.map((item) => (
+                                        <div key={`${msg.id || 'aigc'}-${item.attachmentID}`} style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid #f0f0f0', background: '#fff' }}>
+                                            <img
+                                                src={item.url}
+                                                alt={item.attachmentID}
+                                                style={{ maxWidth: 180, maxHeight: 180, display: 'block', objectFit: 'cover' }}
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                             {isRobotMessage && memoryEntries.length > 0 && (
                                 <details style={{ marginTop: 8, border: '1px solid #d9d9d9', borderRadius: 6, background: '#fafafa' }}>
                                     <summary style={{ cursor: 'pointer', padding: '6px 8px', color: '#595959', fontSize: 12 }}>payload / memory</summary>

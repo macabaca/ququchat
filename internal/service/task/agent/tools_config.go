@@ -19,7 +19,7 @@ type SchemaField struct {
 	Required bool
 }
 
-type PlannerSchemaConfig struct {
+type CoordinatorSchemaConfig struct {
 	ThoughtField             string
 	ActionField              string
 	ToolField                string
@@ -43,10 +43,31 @@ type AgentIdentityConfig struct {
 var toolSpecs = []ToolSpec{
 	{
 		Name:           "read_recent_messages",
-		Purpose:        "读取最近消息作为上下文",
+		Purpose:        "读取最近消息作为上下文（最近消息）",
 		Usage:          "action.tool=read_recent_messages",
-		InputGuideline: "action.input 可为空或正整数，表示读取最近N条",
+		InputGuideline: "仅在明确需要近期消息时使用；action.input 可为空或正整数，表示读取最近N条",
 		Aliases:        []string{"read_recent_message", "readrecentmessages"},
+	},
+	{
+		Name:           "search_rag",
+		Purpose:        "检索历史消息记忆（历史消息）",
+		Usage:          "action.tool=search_rag",
+		InputGuideline: "常规场景优先使用该工具；action.input 必填，直接填写检索关键词字符串",
+		Aliases:        []string{"rag_search", "searchrag"},
+	},
+	{
+		Name:           "generate_image",
+		Purpose:        "根据提示词生成图片并返回 attachment_id",
+		Usage:          "action.tool=generate_image",
+		InputGuideline: "action.input 必填，直接填写 prompt 文本；仅接受 prompt，其它参数由系统固定",
+		Aliases:        []string{"aigc", "gen_image", "image_generate"},
+	},
+	{
+		Name:           "replan",
+		Purpose:        "重新规划后续小任务",
+		Usage:          "action.tool=replan",
+		InputGuideline: "action.input 可填写重规划原因",
+		Aliases:        []string{"re_plan", "replanner"},
 	},
 	{
 		Name:           "finish",
@@ -69,11 +90,12 @@ var agentIdentityConfig = AgentIdentityConfig{
 	Principles: []string{
 		"优先基于群聊事实回答，不凭空编造",
 		"当上下文不足时先获取消息再回答",
+		"除非明确要求近期消息，否则优先用 search_rag，不先用 read_recent_messages",
 		"输出需遵守系统定义的JSON格式与工具约束",
 	},
 }
 
-var plannerSchemaConfig = PlannerSchemaConfig{
+var coordinatorSchemaConfig = CoordinatorSchemaConfig{
 	ThoughtField: "thought",
 	ActionField:  "action",
 	ToolField:    "tool",
@@ -114,14 +136,14 @@ func listToolSpecs() []ToolSpec {
 	return next
 }
 
-func getPlannerSchemaConfig() PlannerSchemaConfig {
-	cfg := plannerSchemaConfig
-	cfg.TopLevelFields = append([]SchemaField(nil), plannerSchemaConfig.TopLevelFields...)
-	cfg.ActionFields = append([]SchemaField(nil), plannerSchemaConfig.ActionFields...)
+func getCoordinatorSchemaConfig() CoordinatorSchemaConfig {
+	cfg := coordinatorSchemaConfig
+	cfg.TopLevelFields = append([]SchemaField(nil), coordinatorSchemaConfig.TopLevelFields...)
+	cfg.ActionFields = append([]SchemaField(nil), coordinatorSchemaConfig.ActionFields...)
 	return cfg
 }
 
-func buildPlannerToolSection() string {
+func buildCoordinatorToolSection() string {
 	specs := listToolSpecs()
 	builder := strings.Builder{}
 	for i, spec := range specs {
@@ -161,8 +183,8 @@ func buildFormatCheckerToolSection() string {
 	return builder.String()
 }
 
-func plannerPromptRuleLines() []string {
-	cfg := getPlannerSchemaConfig()
+func coordinatorPromptRuleLines() []string {
+	cfg := getCoordinatorSchemaConfig()
 	lines := make([]string, 0, 6)
 	if cfg.ToolEnumFromConfig {
 		line := cfg.ActionField + "." + cfg.ToolField + " 只能是 " + allowedToolNamesText()
@@ -185,6 +207,7 @@ func plannerPromptRuleLines() []string {
 		lines = append(lines, cfg.ActionField+"."+cfg.ToolField+"="+cfg.RequireFinalWhenToolName+" 时，"+cfg.ActionField+"."+cfg.FinalField+" 必须非空。")
 	}
 	lines = append(lines, "不符合格式会触发硬校验失败并要求重试。")
+	lines = append(lines, "工具选择优先级：除非明确需要近期消息，否则优先使用 search_rag，再考虑 read_recent_messages。")
 	lines = append(lines, "仅输出一个JSON对象，不要输出额外说明。")
 	return lines
 }
@@ -225,8 +248,8 @@ func buildAgentIdentityPrompt() string {
 	return builder.String()
 }
 
-func plannerSchemaTemplateText() string {
-	cfg := getPlannerSchemaConfig()
+func coordinatorSchemaTemplateText() string {
+	cfg := getCoordinatorSchemaConfig()
 	builder := strings.Builder{}
 	builder.WriteString("{\"")
 	builder.WriteString(cfg.ThoughtField)
