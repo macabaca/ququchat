@@ -112,7 +112,7 @@ func (c *AIGCClient) Generate(ctx context.Context, req aigcmq.GenerateRequest) (
 			URL string `json:"url"`
 		} `json:"images"`
 		Timings struct {
-			Inference int64 `json:"inference"`
+			Inference float64 `json:"inference"`
 		} `json:"timings"`
 		Seed    int64  `json:"seed"`
 		Message string `json:"message"`

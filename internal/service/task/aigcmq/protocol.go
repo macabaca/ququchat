@@ -14,7 +14,7 @@ type GeneratedImage struct {
 }
 
 type Timings struct {
-	Inference int64 `json:"inference"`
+	Inference float64 `json:"inference"`
 }
 
 type GenerateResult struct {
