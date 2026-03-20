@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-func buildToolFeedback(toolName string, input string, toolOutput string) string {
-	normalizedTool := normalizeToolFromConfig(toolName)
+func buildToolFeedback(toolName string, input string, toolOutput string, specs []ToolSpec) string {
+	normalizedTool := normalizeToolFromSpecs(specs, toolName)
 	trimmedOutput := strings.TrimSpace(toolOutput)
 	switch normalizedTool {
 	case "read_recent_messages":

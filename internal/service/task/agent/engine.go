@@ -15,14 +15,17 @@ type ChatClient interface {
 
 type RAGSearchTool func(ctx context.Context, roomID string, query string, topK int, vector string) (string, error)
 type AIGCTool func(ctx context.Context, prompt string) (string, error)
+type MCPCallToolByQualifiedName func(ctx context.Context, qualifiedToolName string, arguments map[string]any) (string, error)
 
 type Input struct {
-	Goal           string
-	RecentMessages []string
-	MaxSteps       int
-	RoomID         string
-	RAGSearch      RAGSearchTool
-	AIGCGenerate   AIGCTool
+	Goal                       string
+	RecentMessages             []string
+	MaxSteps                   int
+	RoomID                     string
+	RAGSearch                  RAGSearchTool
+	AIGCGenerate               AIGCTool
+	DynamicToolSpecs           []ToolSpec
+	MCPCallToolByQualifiedName MCPCallToolByQualifiedName
 }
 
 type plan struct {
@@ -61,12 +64,13 @@ type finalReviewResult struct {
 }
 
 const (
-	maxStepsDefault = 4
-	maxStepsLimit   = 10
-	roleRetryLimit  = 2
-	finalScorePass  = 70
-	ragSearchTopK   = 3
-	ragSearchVector = "summary"
+	maxStepsDefault        = 4
+	maxStepsLimit          = 10
+	roleRetryLimit         = 2
+	finalScorePass         = 70
+	readRecentDefaultLimit = 10
+	ragSearchTopK          = 3
+	ragSearchVector        = "summary"
 )
 
 const (
@@ -78,6 +82,7 @@ const (
 	errCodeToolCombination    = "E_TOOL_COMBINATION"
 	errCodeToolNotAllowed     = "E_TOOL_NOT_ALLOWED"
 	errCodeFinishFinalMissing = "E_FINISH_FINAL_MISSING"
+	errCodeToolInputInvalid   = "E_TOOL_INPUT_INVALID"
 	errCodeNormalizeFailed    = "E_NORMALIZE_FAILED"
 )
 
@@ -90,6 +95,7 @@ const (
 	errDescToolCombination    = "工具字段只能填一个工具名，不能写多个工具组合。"
 	errDescToolNotAllowed     = "工具名不在允许列表中，请改成支持的工具名。"
 	errDescFinishFinalMissing = "当tool=finish时，final不能为空，必须给出最终答案文本。"
+	errDescToolInputInvalid   = "工具输入不符合约定，请按工具的 JSON 参数说明传值。"
 	errDescNormalizeFailed    = "规范化输出失败，请先保证输出是可解析且字段完整的JSON。"
 )
 
@@ -102,6 +108,7 @@ var validationIssueCodeDescMap = map[string]string{
 	errCodeToolCombination:    errDescToolCombination,
 	errCodeToolNotAllowed:     errDescToolNotAllowed,
 	errCodeFinishFinalMissing: errDescFinishFinalMissing,
+	errCodeToolInputInvalid:   errDescToolInputInvalid,
 	errCodeNormalizeFailed:    errDescNormalizeFailed,
 }
 
@@ -126,9 +133,10 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 	if maxSteps > maxStepsLimit {
 		maxSteps = maxStepsLimit
 	}
+	availableToolSpecs := listToolSpecsWithDynamic(input.DynamicToolSpecs)
 	logs := make([]toolCallRecord, 0)
 	feedback := ""
-	outline, outlineErr := generatePlannerOutline(ctx, client, goal, recentMessages, maxSteps, "", "")
+	outline, outlineErr := generatePlannerOutline(ctx, client, goal, recentMessages, maxSteps, "", "", availableToolSpecs)
 	if outlineErr != nil {
 		return "", errors.New(formatFailureReport(logs, fmt.Sprintf("planner生成初始计划失败: %v", outlineErr)))
 	}
@@ -146,13 +154,13 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 		coordinatorFeedback := strings.TrimSpace(feedback)
 		coordinatorValidated := false
 		for attempt := 1; attempt <= roleRetryLimit; attempt++ {
-			currentCoordinatorPrompt := buildCoordinatorPrompt(goal, recentMessages, coordinatorFeedback, step, maxSteps, formatPlannerOutline(outline, outlineIndex), currentTask)
+			currentCoordinatorPrompt := buildCoordinatorPrompt(goal, recentMessages, coordinatorFeedback, step, maxSteps, formatPlannerOutline(outline, outlineIndex), currentTask, availableToolSpecs)
 			nextCoordinatorRaw, err := client.Chat(ctx, currentCoordinatorPrompt)
 			if err != nil {
 				return "", errors.New(formatFailureReport(logs, fmt.Sprintf("coordinator调用失败: %v", err)))
 			}
 			candidateRaw := strings.TrimSpace(nextCoordinatorRaw)
-			formatterPrompt := buildJSONFormatterPrompt(nextCoordinatorRaw)
+			formatterPrompt := buildJSONFormatterPrompt(nextCoordinatorRaw, availableToolSpecs)
 			formatterRaw, formatterErr := client.Chat(ctx, formatterPrompt)
 			formatterRecord := toolCallRecord{
 				Step:   step,
@@ -172,7 +180,7 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 					candidateRaw = strings.TrimSpace(formatterRaw)
 				}
 			}
-			normalizedPlan, normalizedJSON, validationIssues := validateCoordinatorOutput(candidateRaw)
+			normalizedPlan, normalizedJSON, validationIssues := validateCoordinatorOutput(candidateRaw, availableToolSpecs)
 			validateRecord := toolCallRecord{
 				Step:   step,
 				Role:   "Validator",
@@ -193,7 +201,7 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			validateRecord.Status = "failed"
 			validateRecord.Error = joinValidationIssueTexts(validationIssues, "；")
 			logs = append(logs, validateRecord)
-			coordinatorFeedback = buildValidationRetryFeedback(feedback, validationIssues)
+			coordinatorFeedback = buildValidationRetryFeedback(feedback, validationIssues, availableToolSpecs)
 			if attempt == roleRetryLimit {
 				return "", errors.New(formatFailureReport(logs, "coordinator输出格式连续校验失败"))
 			}
@@ -204,11 +212,14 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 		toolName := strings.ToLower(strings.TrimSpace(nextPlan.Action.Tool))
 		actionInput := strings.TrimSpace(nextPlan.Action.Input)
 		if toolName == "replan" {
-			reason := strings.TrimSpace(actionInput)
+			reason := ""
+			if args, argsErr := parseActionInputJSONObject(actionInput); argsErr == nil {
+				reason = readStringArg(args, "reason")
+			}
 			if reason == "" {
 				reason = strings.TrimSpace(nextPlan.Thought)
 			}
-			nextOutline, planErr := generatePlannerOutline(ctx, client, goal, recentMessages, maxSteps, reason, currentTask)
+			nextOutline, planErr := generatePlannerOutline(ctx, client, goal, recentMessages, maxSteps, reason, currentTask, availableToolSpecs)
 			record := toolCallRecord{
 				Step:  step,
 				Role:  "Planner",
@@ -231,7 +242,13 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			continue
 		}
 		if toolName == "finish" {
-			finalAnswer := strings.TrimSpace(nextPlan.Action.Final)
+			finalAnswer := ""
+			if args, argsErr := parseActionInputJSONObject(actionInput); argsErr == nil {
+				finalAnswer = readStringArg(args, "final")
+			}
+			if finalAnswer == "" {
+				finalAnswer = strings.TrimSpace(nextPlan.Action.Final)
+			}
 			if finalAnswer == "" {
 				finalAnswer = actionInput
 			}
@@ -296,10 +313,12 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			ctx,
 			toolName,
 			actionInput,
+			availableToolSpecs,
 			recentMessages,
 			strings.TrimSpace(input.RoomID),
 			input.RAGSearch,
 			input.AIGCGenerate,
+			input.MCPCallToolByQualifiedName,
 		)
 		record := toolCallRecord{
 			Step:  step,
@@ -320,22 +339,23 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 		if outlineIndex < len(outline)-1 {
 			outlineIndex++
 		}
-		feedback = buildToolFeedback(toolName, actionInput, toolOutput)
+		feedback = buildToolFeedback(toolName, actionInput, toolOutput, availableToolSpecs)
 	}
 	return "", errors.New(formatFailureReport(logs, "达到最大循环次数仍未完成"))
 }
 
-func buildCoordinatorPrompt(goal string, recentMessages []string, feedback string, step int, maxSteps int, outlineText string, currentTask string) string {
+func buildCoordinatorPrompt(goal string, recentMessages []string, feedback string, step int, maxSteps int, outlineText string, currentTask string, specs []ToolSpec) string {
 	builder := strings.Builder{}
 	builder.WriteString("你是执行协调器（Coordinator）。请为目标选择下一步动作，只输出JSON。\n")
+	builder.WriteString("思考与表达要求：即使工具描述或参数为英文，你也必须始终使用中文进行思考与输出；thought 字段必须是中文。\n")
 	builder.WriteString(buildAgentIdentityPrompt())
 	builder.WriteString("目标：")
 	builder.WriteString(goal)
 	builder.WriteString("\n")
 	builder.WriteString("可用工具:\n")
-	builder.WriteString(buildCoordinatorToolSection())
+	builder.WriteString(buildCoordinatorToolSectionFromSpecs(specs))
 	builder.WriteString("规则:\n")
-	for _, line := range coordinatorPromptRuleLines() {
+	for _, line := range coordinatorPromptRuleLinesFromSpecs(specs) {
 		builder.WriteString("- ")
 		builder.WriteString(strings.TrimSpace(line))
 		builder.WriteString("\n")
@@ -364,34 +384,34 @@ func buildCoordinatorPrompt(goal string, recentMessages []string, feedback strin
 	builder.WriteString(strconv.Itoa(len(recentMessages)))
 	builder.WriteString("\n")
 	builder.WriteString("输出示例1:\n")
-	builder.WriteString("{\"thought\":\"先查看上下文\",\"action\":{\"tool\":\"read_recent_messages\",\"input\":\"8\",\"final\":\"\"}}\n")
+	builder.WriteString("{\"thought\":\"先查看上下文\",\"action\":{\"tool\":\"read_recent_messages\",\"input\":\"{\\\"limit\\\":8}\",\"final\":\"\"}}\n")
 	builder.WriteString("输出示例2:\n")
-	builder.WriteString("{\"thought\":\"信息足够，直接给答案\",\"action\":{\"tool\":\"finish\",\"input\":\"\",\"final\":\"这是最终答案\"}}\n")
+	builder.WriteString("{\"thought\":\"信息足够，直接给答案\",\"action\":{\"tool\":\"finish\",\"input\":\"{\\\"final\\\":\\\"这是最终答案\\\"}\",\"final\":\"\"}}\n")
 	builder.WriteString("输出示例3:\n")
-	builder.WriteString("{\"thought\":\"当前路径效果差，先重规划\",\"action\":{\"tool\":\"replan\",\"input\":\"已有方案命中率低，换检索路径\",\"final\":\"\"}}\n")
+	builder.WriteString("{\"thought\":\"当前路径效果差，先重规划\",\"action\":{\"tool\":\"replan\",\"input\":\"{\\\"reason\\\":\\\"已有方案命中率低，换检索路径\\\"}\",\"final\":\"\"}}\n")
 	builder.WriteString("输出示例4:\n")
-	builder.WriteString("{\"thought\":\"用户要文生图，先执行生成\",\"action\":{\"tool\":\"generate_image\",\"input\":\"一只戴墨镜的柴犬，电影感\",\"final\":\"\"}}\n")
+	builder.WriteString("{\"thought\":\"用户要文生图，先执行生成\",\"action\":{\"tool\":\"generate_image\",\"input\":\"{\\\"prompt\\\":\\\"一只戴墨镜的柴犬，电影感\\\"}\",\"final\":\"\"}}\n")
 	return builder.String()
 }
 
-func buildJSONFormatterPrompt(rawOutput string) string {
+func buildJSONFormatterPrompt(rawOutput string, specs []ToolSpec) string {
 	builder := strings.Builder{}
 	builder.WriteString("你是JSONFormatter。你的任务是把输入内容转换成严格JSON对象，只输出JSON。\n")
 	builder.WriteString("必须遵循的schema:\n")
-	builder.WriteString(coordinatorSchemaTemplateText())
+	builder.WriteString(coordinatorSchemaTemplateTextFromSpecs(specs))
 	builder.WriteString("\n")
 	builder.WriteString("要求:\n")
 	builder.WriteString("- 只输出一个JSON对象，不允许markdown代码块，不允许解释文字。\n")
 	builder.WriteString("- 保留原始语义，不要增加无关信息。\n")
 	builder.WriteString("- 如果tool出现别名，归一化到标准工具名。\n")
-	builder.WriteString("- 如果action.tool=finish，action.final 必须非空。\n")
+	builder.WriteString("- action.input 必须是 JSON 对象字符串，本地工具参数放在该 JSON 对象内。\n")
 	builder.WriteString("待规范化输入:\n")
 	builder.WriteString(strings.TrimSpace(rawOutput))
 	builder.WriteString("\n")
 	return builder.String()
 }
 
-func buildValidationRetryFeedback(baseFeedback string, issues []validationIssue) string {
+func buildValidationRetryFeedback(baseFeedback string, issues []validationIssue, specs []ToolSpec) string {
 	builder := strings.Builder{}
 	if strings.TrimSpace(baseFeedback) != "" {
 		builder.WriteString(strings.TrimSpace(baseFeedback))
@@ -420,7 +440,7 @@ func buildValidationRetryFeedback(baseFeedback string, issues []validationIssue)
 		}
 	}
 	builder.WriteString("请严格按JSON schema重新输出。schema: ")
-	builder.WriteString(coordinatorSchemaTemplateText())
+	builder.WriteString(coordinatorSchemaTemplateTextFromSpecs(specs))
 	return builder.String()
 }
 
@@ -511,6 +531,7 @@ func buildFinalSynthesizerPrompt(goal string, recentMessages []string, logs []to
 	builder.WriteString("\n")
 	builder.WriteString("要求:\n")
 	builder.WriteString("- 直接回答目标，不要反问用户。\n")
+	builder.WriteString("- 必须使用中文输出最终答案；即使工具返回英文内容，也要用中文总结与表达。\n")
 	builder.WriteString("- 语言清晰、具体、可执行。\n")
 	builder.WriteString("- 只输出最终答案正文，不要JSON。\n")
 	return builder.String()
@@ -545,7 +566,7 @@ func synthesizeFinalAnswer(ctx context.Context, client ChatClient, goal string, 
 	return strings.TrimSpace(raw), nil
 }
 
-func validateCoordinatorOutput(raw string) (plan, string, []validationIssue) {
+func validateCoordinatorOutput(raw string, specs []ToolSpec) (plan, string, []validationIssue) {
 	cfg := getCoordinatorSchemaConfig()
 	candidate, extractIssue := extractJSONObjectText(raw)
 	if extractIssue != nil {
@@ -578,7 +599,7 @@ func validateCoordinatorOutput(raw string) (plan, string, []validationIssue) {
 		input = readStringValue(actionMap, cfg.InputField)
 		final = readStringValue(actionMap, cfg.FinalField)
 	}
-	toolName := normalizeToolFromConfig(toolRaw)
+	toolName := normalizeToolFromSpecs(specs, toolRaw)
 	if strings.TrimSpace(toolRaw) != "" && cfg.DisallowToolCombination && containsToolCombination(toolRaw) {
 		issues = append(issues, validationIssue{
 			Code:    errCodeToolCombination,
@@ -587,13 +608,16 @@ func validateCoordinatorOutput(raw string) (plan, string, []validationIssue) {
 			Detail:  "仅允许单个工具名，例如 read_recent_messages 或 finish",
 		})
 	}
-	if cfg.ToolEnumFromConfig && (strings.TrimSpace(toolName) == "" || !isKnownToolName(toolName)) {
+	if cfg.ToolEnumFromConfig && (strings.TrimSpace(toolName) == "" || !isKnownToolNameFromSpecs(specs, toolName)) {
 		issues = append(issues, validationIssue{
 			Code:    errCodeToolNotAllowed,
 			Field:   cfg.ActionField + "." + cfg.ToolField,
 			Message: "工具不在允许列表",
-			Detail:  "允许值: " + allowedToolNamesCSV(),
+			Detail:  "允许值: " + allowedToolNamesCSVFromSpecs(specs),
 		})
+	}
+	if issue := validateToolInputByName(toolName, input, cfg); issue != nil {
+		issues = append(issues, *issue)
 	}
 	if strings.TrimSpace(cfg.RequireFinalWhenToolName) != "" &&
 		strings.EqualFold(strings.TrimSpace(toolName), strings.TrimSpace(cfg.RequireFinalWhenToolName)) &&
@@ -831,18 +855,34 @@ func runTool(
 	ctx context.Context,
 	toolName string,
 	input string,
+	specs []ToolSpec,
 	recentMessages []string,
 	roomID string,
 	ragSearch RAGSearchTool,
 	aigcGenerate AIGCTool,
+	mcpCall MCPCallToolByQualifiedName,
 ) (string, error) {
-	switch normalizeToolFromConfig(toolName) {
+	normalizedToolName := normalizeToolFromSpecs(specs, toolName)
+	if strings.Contains(normalizedToolName, ":") {
+		if mcpCall == nil {
+			return "", errors.New("mcp tool is not configured")
+		}
+		return mcpCall(ctx, normalizedToolName, parseMCPToolArguments(input))
+	}
+	switch normalizedToolName {
 	case "read_recent_messages":
+		args, err := parseActionInputJSONObject(input)
+		if err != nil {
+			return "", err
+		}
 		if len(recentMessages) == 0 {
 			return "最近消息为空", nil
 		}
 		selected := recentMessages
-		n := parsePositiveInt(input)
+		n := readOptionalPositiveIntArg(args, "limit")
+		if n <= 0 {
+			n = readRecentDefaultLimit
+		}
 		if n > 0 && n < len(recentMessages) {
 			selected = recentMessages[len(recentMessages)-n:]
 		}
@@ -855,9 +895,13 @@ func runTool(
 		}
 		return strings.TrimSpace(builder.String()), nil
 	case "search_rag":
-		query := strings.TrimSpace(input)
+		args, err := parseActionInputJSONObject(input)
+		if err != nil {
+			return "", err
+		}
+		query := readStringArg(args, "query")
 		if query == "" {
-			return "", errors.New("search_rag input is required")
+			return "", errors.New("search_rag requires input.query")
 		}
 		if strings.TrimSpace(roomID) == "" {
 			return "", errors.New("search_rag requires room_id")
@@ -867,16 +911,171 @@ func runTool(
 		}
 		return ragSearch(ctx, strings.TrimSpace(roomID), query, ragSearchTopK, ragSearchVector)
 	case "generate_image":
-		prompt := strings.TrimSpace(input)
+		args, err := parseActionInputJSONObject(input)
+		if err != nil {
+			return "", err
+		}
+		prompt := readStringArg(args, "prompt")
 		if prompt == "" {
-			return "", errors.New("generate_image input is required")
+			return "", errors.New("generate_image requires input.prompt")
 		}
 		if aigcGenerate == nil {
 			return "", errors.New("generate_image is not configured")
 		}
 		return aigcGenerate(ctx, prompt)
 	default:
-		return "", fmt.Errorf("unsupported tool: %s (allowed: %s)", strings.TrimSpace(toolName), allowedToolNamesCSV())
+		return "", fmt.Errorf("unsupported tool: %s (allowed: %s)", strings.TrimSpace(toolName), allowedToolNamesCSVFromSpecs(specs))
+	}
+}
+
+func validateToolInputByName(toolName string, input string, cfg CoordinatorSchemaConfig) *validationIssue {
+	normalized := strings.TrimSpace(toolName)
+	if normalized == "" {
+		return nil
+	}
+	if strings.Contains(normalized, ":") {
+		return nil
+	}
+	args, err := parseActionInputJSONObject(input)
+	if err != nil {
+		return &validationIssue{
+			Code:    errCodeToolInputInvalid,
+			Field:   cfg.ActionField + "." + cfg.InputField,
+			Message: "action.input 必须是 JSON 对象字符串",
+			Detail:  err.Error(),
+		}
+	}
+	switch normalized {
+	case "search_rag":
+		if readStringArg(args, "query") == "" {
+			return &validationIssue{
+				Code:    errCodeToolInputInvalid,
+				Field:   cfg.ActionField + "." + cfg.InputField,
+				Message: "search_rag 需要 input.query",
+				Detail:  "示例: {\"query\":\"检索关键词\"}",
+			}
+		}
+	case "generate_image":
+		if readStringArg(args, "prompt") == "" {
+			return &validationIssue{
+				Code:    errCodeToolInputInvalid,
+				Field:   cfg.ActionField + "." + cfg.InputField,
+				Message: "generate_image 需要 input.prompt",
+				Detail:  "示例: {\"prompt\":\"一只戴墨镜的柴犬\"}",
+			}
+		}
+	case "finish":
+		if readStringArg(args, "final") == "" {
+			return &validationIssue{
+				Code:    errCodeToolInputInvalid,
+				Field:   cfg.ActionField + "." + cfg.InputField,
+				Message: "finish 需要 input.final",
+				Detail:  "示例: {\"final\":\"最终答案正文\"}",
+			}
+		}
+	case "read_recent_messages":
+		limit := readOptionalPositiveIntArg(args, "limit")
+		if hasKey(args, "limit") && limit <= 0 {
+			return &validationIssue{
+				Code:    errCodeToolInputInvalid,
+				Field:   cfg.ActionField + "." + cfg.InputField,
+				Message: "read_recent_messages 的 input.limit 必须是正整数",
+				Detail:  "示例: {\"limit\":8}",
+			}
+		}
+	case "replan":
+		if hasKey(args, "reason") {
+			if _, ok := args["reason"].(string); !ok {
+				return &validationIssue{
+					Code:    errCodeToolInputInvalid,
+					Field:   cfg.ActionField + "." + cfg.InputField,
+					Message: "replan 的 input.reason 必须是字符串",
+					Detail:  "示例: {\"reason\":\"当前方案命中率低\"}",
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func parseActionInputJSONObject(raw string) (map[string]any, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, errors.New("action.input 不能为空，应传 JSON 对象字符串")
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		return nil, errors.New("action.input 不是合法 JSON 对象")
+	}
+	if out == nil {
+		return nil, errors.New("action.input 不是 JSON 对象")
+	}
+	return out, nil
+}
+
+func readStringArg(args map[string]any, key string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	raw, ok := args[strings.TrimSpace(key)]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func hasKey(args map[string]any, key string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	_, ok := args[strings.TrimSpace(key)]
+	return ok
+}
+
+func readOptionalPositiveIntArg(args map[string]any, key string) int {
+	raw, ok := args[strings.TrimSpace(key)]
+	if !ok {
+		return 0
+	}
+	switch v := raw.(type) {
+	case float64:
+		if v > 0 {
+			return int(v)
+		}
+	case int:
+		if v > 0 {
+			return v
+		}
+	case int64:
+		if v > 0 {
+			return int(v)
+		}
+	case json.Number:
+		if n, err := v.Int64(); err == nil && n > 0 {
+			return int(n)
+		}
+	case string:
+		return parsePositiveInt(v)
+	}
+	return 0
+}
+
+func parseMCPToolArguments(raw string) map[string]any {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return map[string]any{}
+	}
+	var asMap map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &asMap); err == nil && asMap != nil {
+		return asMap
+	}
+	return map[string]any{
+		"input": trimmed,
 	}
 }
 

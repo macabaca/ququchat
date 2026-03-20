@@ -10,6 +10,7 @@ import (
 
 	"ququchat/internal/service/task/aigcmq"
 	"ququchat/internal/service/task/llmmq"
+	"ququchat/internal/service/task/mcpclient"
 	"ququchat/internal/service/task/openaicompat"
 )
 
@@ -38,6 +39,7 @@ type RuntimeOptions struct {
 	EmbeddingModelSummary string
 	SummaryVectorDim      int
 	RAGHandler            RAGHandler
+	MCPMultiClient        *mcpclient.MultiClient
 	OnFinish              func(ctx context.Context, doneTask *Task)
 }
 
@@ -93,10 +95,18 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 			}
 		}
 	}
+	mcpMultiClient := opts.MCPMultiClient
+	if mcpMultiClient == nil {
+		client, err := mcpclient.NewMultiClientFromDefaultConfig(context.Background())
+		if err == nil {
+			mcpMultiClient = client
+		}
+	}
 	exec := NewDefaultExecutor(ExecutorOptions{
-		LLMClient:  llmClient,
-		RAGHandler: opts.RAGHandler,
-		AIGCClient: aigcClient,
+		LLMClient:      llmClient,
+		RAGHandler:     opts.RAGHandler,
+		AIGCClient:     aigcClient,
+		MCPMultiClient: mcpMultiClient,
 	})
 	pool := NewPool(queue, store, exec, opts.WorkerSize, opts.OnFinish)
 	return &Runtime{

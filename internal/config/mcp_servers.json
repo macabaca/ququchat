@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "tavily": {
+      "endpoint": "https://mcp.tavily.com/mcp/",
+      "apiKey": "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",
+      "headers": {
+        "DEFAULT_PARAMETERS": "{\"include_images\":true,\"search_depth\":\"basic\",\"max_results\":10}"
+      },
+      "name": "ququchat",
+      "version": "0.1.0",
+      "timeoutMs": 60000
+    }
+  }
+}

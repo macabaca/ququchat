@@ -45,35 +45,35 @@ var toolSpecs = []ToolSpec{
 		Name:           "read_recent_messages",
 		Purpose:        "读取最近消息作为上下文（最近消息）",
 		Usage:          "action.tool=read_recent_messages",
-		InputGuideline: "仅在明确需要近期消息时使用；action.input 可为空或正整数，表示读取最近N条",
+		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：limit（integer，可选，默认10，含义=读取最近N条，最小值1）",
 		Aliases:        []string{"read_recent_message", "readrecentmessages"},
 	},
 	{
 		Name:           "search_rag",
 		Purpose:        "检索历史消息记忆（历史消息）",
 		Usage:          "action.tool=search_rag",
-		InputGuideline: "常规场景优先使用该工具；action.input 必填，直接填写检索关键词字符串",
+		InputGuideline: "常规场景优先使用该工具；action.input 必须是 JSON 对象字符串。参数：query（string，必填，检索关键词）",
 		Aliases:        []string{"rag_search", "searchrag"},
 	},
 	{
 		Name:           "generate_image",
 		Purpose:        "根据提示词生成图片并返回 attachment_id",
 		Usage:          "action.tool=generate_image",
-		InputGuideline: "action.input 必填，直接填写 prompt 文本；仅接受 prompt，其它参数由系统固定",
+		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：prompt（string，必填，文生图提示词）；仅接受 prompt，其它参数由系统固定",
 		Aliases:        []string{"aigc", "gen_image", "image_generate"},
 	},
 	{
 		Name:           "replan",
 		Purpose:        "重新规划后续小任务",
 		Usage:          "action.tool=replan",
-		InputGuideline: "action.input 可填写重规划原因",
+		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：reason（string，可选，重规划原因）",
 		Aliases:        []string{"re_plan", "replanner"},
 	},
 	{
 		Name:           "finish",
 		Purpose:        "结束任务并输出最终答案",
 		Usage:          "action.tool=finish",
-		InputGuideline: "action.final 必填，action.input 建议为空",
+		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：final（string，必填，最终答案）；action.final 建议留空",
 		Aliases:        []string{"done", "final", "finalize"},
 	},
 }
@@ -112,7 +112,7 @@ var coordinatorSchemaConfig = CoordinatorSchemaConfig{
 	},
 	DisallowToolCombination:  true,
 	ToolEnumFromConfig:       true,
-	RequireFinalWhenToolName: "finish",
+	RequireFinalWhenToolName: "",
 }
 
 func getAgentIdentityConfig() AgentIdentityConfig {
@@ -123,14 +123,68 @@ func getAgentIdentityConfig() AgentIdentityConfig {
 }
 
 func listToolSpecs() []ToolSpec {
-	next := make([]ToolSpec, 0, len(toolSpecs))
-	for _, spec := range toolSpecs {
+	return normalizeToolSpecs(toolSpecs)
+}
+
+func listToolSpecsWithDynamic(dynamic []ToolSpec) []ToolSpec {
+	base := listToolSpecs()
+	if len(dynamic) == 0 {
+		return base
+	}
+	merged := make([]ToolSpec, 0, len(base)+len(dynamic))
+	seen := make(map[string]struct{}, len(base)+len(dynamic))
+	for _, spec := range base {
+		name := strings.ToLower(strings.TrimSpace(spec.Name))
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		merged = append(merged, spec)
+	}
+	for _, spec := range normalizeToolSpecs(dynamic) {
+		name := strings.ToLower(strings.TrimSpace(spec.Name))
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		merged = append(merged, spec)
+	}
+	return merged
+}
+
+func normalizeToolSpecs(specs []ToolSpec) []ToolSpec {
+	next := make([]ToolSpec, 0, len(specs))
+	for _, spec := range specs {
+		name := strings.TrimSpace(spec.Name)
+		if name == "" {
+			continue
+		}
+		aliases := make([]string, 0, len(spec.Aliases))
+		seenAlias := make(map[string]struct{}, len(spec.Aliases))
+		for _, alias := range spec.Aliases {
+			trimmed := strings.TrimSpace(alias)
+			if trimmed == "" {
+				continue
+			}
+			key := strings.ToLower(trimmed)
+			if _, exists := seenAlias[key]; exists {
+				continue
+			}
+			seenAlias[key] = struct{}{}
+			aliases = append(aliases, trimmed)
+		}
 		next = append(next, ToolSpec{
-			Name:           strings.TrimSpace(spec.Name),
+			Name:           name,
 			Purpose:        strings.TrimSpace(spec.Purpose),
 			Usage:          strings.TrimSpace(spec.Usage),
 			InputGuideline: strings.TrimSpace(spec.InputGuideline),
-			Aliases:        append([]string(nil), spec.Aliases...),
+			Aliases:        aliases,
 		})
 	}
 	return next
@@ -144,7 +198,10 @@ func getCoordinatorSchemaConfig() CoordinatorSchemaConfig {
 }
 
 func buildCoordinatorToolSection() string {
-	specs := listToolSpecs()
+	return buildCoordinatorToolSectionFromSpecs(listToolSpecs())
+}
+
+func buildCoordinatorToolSectionFromSpecs(specs []ToolSpec) string {
 	builder := strings.Builder{}
 	for i, spec := range specs {
 		builder.WriteString(strconv.Itoa(i + 1))
@@ -162,7 +219,10 @@ func buildCoordinatorToolSection() string {
 }
 
 func buildFormatCheckerToolSection() string {
-	specs := listToolSpecs()
+	return buildFormatCheckerToolSectionFromSpecs(listToolSpecs())
+}
+
+func buildFormatCheckerToolSectionFromSpecs(specs []ToolSpec) string {
 	builder := strings.Builder{}
 	for i, spec := range specs {
 		builder.WriteString(strconv.Itoa(i + 1))
@@ -184,10 +244,14 @@ func buildFormatCheckerToolSection() string {
 }
 
 func coordinatorPromptRuleLines() []string {
+	return coordinatorPromptRuleLinesFromSpecs(listToolSpecs())
+}
+
+func coordinatorPromptRuleLinesFromSpecs(specs []ToolSpec) []string {
 	cfg := getCoordinatorSchemaConfig()
 	lines := make([]string, 0, 6)
 	if cfg.ToolEnumFromConfig {
-		line := cfg.ActionField + "." + cfg.ToolField + " 只能是 " + allowedToolNamesText()
+		line := cfg.ActionField + "." + cfg.ToolField + " 只能是 " + allowedToolNamesTextFromSpecs(specs)
 		if cfg.DisallowToolCombination {
 			line += "，不能写组合值"
 		}
@@ -249,6 +313,10 @@ func buildAgentIdentityPrompt() string {
 }
 
 func coordinatorSchemaTemplateText() string {
+	return coordinatorSchemaTemplateTextFromSpecs(listToolSpecs())
+}
+
+func coordinatorSchemaTemplateTextFromSpecs(specs []ToolSpec) string {
 	cfg := getCoordinatorSchemaConfig()
 	builder := strings.Builder{}
 	builder.WriteString("{\"")
@@ -258,7 +326,7 @@ func coordinatorSchemaTemplateText() string {
 	builder.WriteString("\":{\"")
 	builder.WriteString(cfg.ToolField)
 	builder.WriteString("\":\"")
-	builder.WriteString(allowedToolNamesCSV())
+	builder.WriteString(allowedToolNamesCSVFromSpecs(specs))
 	builder.WriteString("\",\"")
 	builder.WriteString(cfg.InputField)
 	builder.WriteString("\":\"string\",\"")
@@ -268,7 +336,10 @@ func coordinatorSchemaTemplateText() string {
 }
 
 func allowedToolNamesText() string {
-	specs := listToolSpecs()
+	return allowedToolNamesTextFromSpecs(listToolSpecs())
+}
+
+func allowedToolNamesTextFromSpecs(specs []ToolSpec) string {
 	names := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		if strings.TrimSpace(spec.Name) != "" {
@@ -282,7 +353,10 @@ func allowedToolNamesText() string {
 }
 
 func allowedToolNamesCSV() string {
-	specs := listToolSpecs()
+	return allowedToolNamesCSVFromSpecs(listToolSpecs())
+}
+
+func allowedToolNamesCSVFromSpecs(specs []ToolSpec) string {
 	names := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		if strings.TrimSpace(spec.Name) != "" {
@@ -293,11 +367,15 @@ func allowedToolNamesCSV() string {
 }
 
 func isKnownToolName(name string) bool {
+	return isKnownToolNameFromSpecs(listToolSpecs(), name)
+}
+
+func isKnownToolNameFromSpecs(specs []ToolSpec, name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 	if normalized == "" {
 		return false
 	}
-	for _, spec := range listToolSpecs() {
+	for _, spec := range specs {
 		if normalized == strings.ToLower(strings.TrimSpace(spec.Name)) {
 			return true
 		}
@@ -306,11 +384,15 @@ func isKnownToolName(name string) bool {
 }
 
 func normalizeToolFromConfig(raw string) string {
+	return normalizeToolFromSpecs(listToolSpecs(), raw)
+}
+
+func normalizeToolFromSpecs(specs []ToolSpec, raw string) string {
 	tool := strings.ToLower(strings.TrimSpace(raw))
 	if tool == "" {
 		return ""
 	}
-	for _, spec := range listToolSpecs() {
+	for _, spec := range specs {
 		name := strings.ToLower(strings.TrimSpace(spec.Name))
 		if tool == name {
 			return strings.TrimSpace(spec.Name)
@@ -324,7 +406,7 @@ func normalizeToolFromConfig(raw string) string {
 		if normalized == "" {
 			continue
 		}
-		for _, spec := range listToolSpecs() {
+		for _, spec := range specs {
 			if normalized == strings.ToLower(strings.TrimSpace(spec.Name)) {
 				return strings.TrimSpace(spec.Name)
 			}
@@ -335,7 +417,7 @@ func normalizeToolFromConfig(raw string) string {
 			}
 		}
 	}
-	for _, spec := range listToolSpecs() {
+	for _, spec := range specs {
 		for _, alias := range spec.Aliases {
 			if tool == strings.ToLower(strings.TrimSpace(alias)) {
 				return strings.TrimSpace(spec.Name)

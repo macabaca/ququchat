@@ -2,13 +2,16 @@ package tasksvc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
 	taskagent "ququchat/internal/service/task/agent"
 	"ququchat/internal/service/task/aigcmq"
+	"ququchat/internal/service/task/mcpclient"
 )
 
 type AIGCClient interface {
@@ -27,12 +30,14 @@ func (e *DefaultExecutor) executeAgent(ctx context.Context, t *Task) (Result, er
 		return Result{}, errors.New("agent goal is required")
 	}
 	text, err := taskagent.Execute(ctx, e.llmClient, taskagent.Input{
-		Goal:           goal,
-		RecentMessages: append([]string(nil), t.Payload.Agent.RecentMessages...),
-		MaxSteps:       t.Payload.Agent.MaxSteps,
-		RoomID:         strings.TrimSpace(t.Payload.Agent.RoomID),
-		RAGSearch:      e.agentSearchRAG,
-		AIGCGenerate:   e.agentGenerateAIGC,
+		Goal:                       goal,
+		RecentMessages:             append([]string(nil), t.Payload.Agent.RecentMessages...),
+		MaxSteps:                   t.Payload.Agent.MaxSteps,
+		RoomID:                     strings.TrimSpace(t.Payload.Agent.RoomID),
+		RAGSearch:                  e.agentSearchRAG,
+		AIGCGenerate:               e.agentGenerateAIGC,
+		DynamicToolSpecs:           e.listAgentMCPToolSpecs(ctx),
+		MCPCallToolByQualifiedName: e.agentCallMCPToolByQualifiedName,
 	})
 	if err != nil {
 		return Result{}, err
@@ -172,6 +177,232 @@ func (e *DefaultExecutor) agentGenerateAIGC(ctx context.Context, prompt string) 
 		return "", errors.New("aigc result does not contain attachment ids")
 	}
 	return "图片生成成功，attachment_id: " + strings.Join(ids, ", "), nil
+}
+
+func (e *DefaultExecutor) listAgentMCPToolSpecs(ctx context.Context) []taskagent.ToolSpec {
+	if e == nil || e.mcpMultiClient == nil {
+		return nil
+	}
+	tools, err := e.mcpMultiClient.ListTools(ctx)
+	if err != nil || len(tools) == 0 {
+		return nil
+	}
+	specs := make([]taskagent.ToolSpec, 0, len(tools))
+	for _, routed := range tools {
+		spec, ok := routedMCPToolToSpec(routed)
+		if !ok {
+			continue
+		}
+		specs = append(specs, spec)
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+	return specs
+}
+
+func routedMCPToolToSpec(routed mcpclient.RoutedTool) (taskagent.ToolSpec, bool) {
+	qualifiedName := strings.TrimSpace(routed.QualifiedName)
+	if qualifiedName == "" {
+		return taskagent.ToolSpec{}, false
+	}
+	purpose := "远程 MCP 工具"
+	if routed.Tool != nil {
+		desc := strings.TrimSpace(fmt.Sprint(routed.Tool.Description))
+		if desc != "" {
+			purpose = desc
+		}
+	}
+	return taskagent.ToolSpec{
+		Name:           qualifiedName,
+		Purpose:        purpose,
+		Usage:          "action.tool=" + qualifiedName,
+		InputGuideline: buildMCPInputGuideline(routed),
+	}, true
+}
+
+func buildMCPInputGuideline(routed mcpclient.RoutedTool) string {
+	base := "action.input 必须为 JSON 对象字符串。若输入不是 JSON 对象，将自动包装为 {\"input\":\"原始字符串\"}。"
+	if routed.Tool == nil {
+		return base
+	}
+	schema := schemaAsMap(routed.Tool.InputSchema)
+	if len(schema) == 0 {
+		return base
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	if len(properties) == 0 {
+		return base
+	}
+	requiredSet := make(map[string]struct{})
+	if requiredList, ok := schema["required"].([]any); ok {
+		for _, item := range requiredList {
+			name := strings.TrimSpace(fmt.Sprint(item))
+			if name == "" {
+				continue
+			}
+			requiredSet[name] = struct{}{}
+		}
+	}
+	keys := make([]string, 0, len(properties))
+	for key := range properties {
+		name := strings.TrimSpace(key)
+		if name == "" {
+			continue
+		}
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return base
+	}
+	parts := make([]string, 0, len(keys)+1)
+	parts = append(parts, base, "参数说明：")
+	for _, key := range keys {
+		line := buildMCPParamLine(key, properties[key], requiredSet)
+		if line == "" {
+			continue
+		}
+		parts = append(parts, line)
+	}
+	if len(parts) == 2 {
+		return base
+	}
+	return strings.Join(parts, " ")
+}
+
+func schemaAsMap(raw any) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	if m, ok := raw.(map[string]any); ok {
+		return m
+	}
+	data, err := json.Marshal(raw)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func buildMCPParamLine(name string, raw any, requiredSet map[string]struct{}) string {
+	prop := schemaAsMap(raw)
+	if len(prop) == 0 {
+		return ""
+	}
+	typeText := readSchemaTypeText(prop)
+	if typeText == "" {
+		typeText = "any"
+	}
+	requiredText := "可选"
+	if _, ok := requiredSet[name]; ok {
+		requiredText = "必填"
+	}
+	segments := []string{name + "（" + typeText + "，" + requiredText + "）"}
+	desc := strings.TrimSpace(fmt.Sprint(prop["description"]))
+	if desc != "" && desc != "<nil>" {
+		segments = append(segments, shortText(desc, 110))
+	}
+	if enums := readSchemaEnumValues(prop["enum"]); len(enums) > 0 {
+		segments = append(segments, "可选值="+strings.Join(enums, "/"))
+	}
+	if v, ok := prop["default"]; ok {
+		segments = append(segments, "默认="+formatSchemaValue(v))
+	}
+	if v, ok := prop["minimum"]; ok {
+		segments = append(segments, "最小值="+strings.TrimSpace(fmt.Sprint(v)))
+	}
+	if v, ok := prop["maximum"]; ok {
+		segments = append(segments, "最大值="+strings.TrimSpace(fmt.Sprint(v)))
+	}
+	if items, ok := prop["items"]; ok {
+		itemsType := readSchemaTypeText(schemaAsMap(items))
+		if itemsType != "" {
+			segments = append(segments, "元素类型="+itemsType)
+		}
+	}
+	return strings.Join(segments, "；")
+}
+
+func readSchemaTypeText(prop map[string]any) string {
+	if len(prop) == 0 {
+		return ""
+	}
+	switch typed := prop["type"].(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		types := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text := strings.TrimSpace(fmt.Sprint(item))
+			if text == "" {
+				continue
+			}
+			types = append(types, text)
+		}
+		return strings.Join(types, "|")
+	}
+	if anyOf, ok := prop["anyOf"].([]any); ok {
+		types := make([]string, 0, len(anyOf))
+		for _, item := range anyOf {
+			m := schemaAsMap(item)
+			t := strings.TrimSpace(fmt.Sprint(m["type"]))
+			if t == "" || t == "<nil>" {
+				continue
+			}
+			types = append(types, t)
+		}
+		if len(types) > 0 {
+			return strings.Join(types, "|")
+		}
+	}
+	return ""
+}
+
+func readSchemaEnumValues(raw any) []string {
+	items, ok := raw.([]any)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		text := strings.TrimSpace(fmt.Sprint(item))
+		if text == "" || text == "<nil>" {
+			continue
+		}
+		values = append(values, text)
+	}
+	return values
+}
+
+func formatSchemaValue(v any) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (e *DefaultExecutor) agentCallMCPToolByQualifiedName(ctx context.Context, qualifiedToolName string, arguments map[string]any) (string, error) {
+	if e == nil || e.mcpMultiClient == nil {
+		return "", errors.New("mcp client is not configured")
+	}
+	result, err := e.mcpMultiClient.CallToolByQualifiedName(ctx, qualifiedToolName, arguments)
+	if err != nil {
+		return "", err
+	}
+	if result == nil {
+		return "", nil
+	}
+	encoded, encodeErr := json.Marshal(result)
+	if encodeErr != nil {
+		return strings.TrimSpace(fmt.Sprint(result)), nil
+	}
+	return strings.TrimSpace(string(encoded)), nil
 }
 
 func formatAgentRAGSearchOutput(result Result) string {

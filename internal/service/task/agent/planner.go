@@ -18,24 +18,24 @@ type plannerOutline struct {
 	Steps []plannerTask `json:"steps"`
 }
 
-func generatePlannerOutline(ctx context.Context, client ChatClient, goal string, recentMessages []string, maxSteps int, reason string, currentTask string) ([]plannerTask, error) {
+func generatePlannerOutline(ctx context.Context, client ChatClient, goal string, recentMessages []string, maxSteps int, reason string, currentTask string, specs []ToolSpec) ([]plannerTask, error) {
 	feedback := ""
 	for attempt := 1; attempt <= roleRetryLimit; attempt++ {
-		raw, err := client.Chat(ctx, buildPlannerPrompt(goal, recentMessages, maxSteps, reason, currentTask, feedback))
+		raw, err := client.Chat(ctx, buildPlannerPrompt(goal, recentMessages, maxSteps, reason, currentTask, feedback, specs))
 		if err != nil {
 			return nil, err
 		}
 		candidateRaw := strings.TrimSpace(raw)
-		formatterPrompt := buildPlannerJSONFormatterPrompt(raw)
+		formatterPrompt := buildPlannerJSONFormatterPrompt(raw, specs)
 		formatterRaw, formatterErr := client.Chat(ctx, formatterPrompt)
 		if formatterErr == nil && strings.TrimSpace(formatterRaw) != "" {
 			candidateRaw = strings.TrimSpace(formatterRaw)
 		}
-		steps, _, issues := validatePlannerOutlineOutput(candidateRaw, maxSteps)
+		steps, _, issues := validatePlannerOutlineOutput(candidateRaw, maxSteps, specs)
 		if len(issues) == 0 {
 			return steps, nil
 		}
-		feedback = buildPlannerValidationRetryFeedback(feedback, issues)
+		feedback = buildPlannerValidationRetryFeedback(feedback, issues, specs)
 		if attempt == roleRetryLimit {
 			return nil, fmt.Errorf("planner输出格式连续校验失败: %s", joinValidationIssueTexts(issues, "；"))
 		}
@@ -43,7 +43,7 @@ func generatePlannerOutline(ctx context.Context, client ChatClient, goal string,
 	return nil, errors.New("planner输出未通过规则校验")
 }
 
-func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reason string, currentTask string, feedback string) string {
+func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reason string, currentTask string, feedback string, specs []ToolSpec) string {
 	builder := strings.Builder{}
 	builder.WriteString("你是初始规划器（Planner）。请先规划一组可执行的小任务步骤，只输出JSON。\n")
 	builder.WriteString("目标：")
@@ -64,7 +64,7 @@ func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reas
 	builder.WriteString("\n")
 	builder.WriteString("约束：\n")
 	builder.WriteString("- 仅使用允许工具：")
-	builder.WriteString(allowedToolNamesCSV())
+	builder.WriteString(allowedToolNamesCSVFromSpecs(specs))
 	builder.WriteString("。\n")
 	builder.WriteString("- steps 至少1步，最多")
 	builder.WriteString(strconv.Itoa(maxSteps))
@@ -80,11 +80,11 @@ func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reas
 	return builder.String()
 }
 
-func buildPlannerJSONFormatterPrompt(rawOutput string) string {
+func buildPlannerJSONFormatterPrompt(rawOutput string, specs []ToolSpec) string {
 	builder := strings.Builder{}
 	builder.WriteString("你是JSONFormatter。你的任务是把输入内容转换成严格JSON对象，只输出JSON。\n")
 	builder.WriteString("必须遵循的schema:\n")
-	builder.WriteString(plannerOutlineSchemaTemplateText())
+	builder.WriteString(plannerOutlineSchemaTemplateText(specs))
 	builder.WriteString("\n")
 	builder.WriteString("要求:\n")
 	builder.WriteString("- 只输出一个JSON对象，不允许markdown代码块，不允许解释文字。\n")
@@ -97,15 +97,15 @@ func buildPlannerJSONFormatterPrompt(rawOutput string) string {
 	return builder.String()
 }
 
-func plannerOutlineSchemaTemplateText() string {
+func plannerOutlineSchemaTemplateText(specs []ToolSpec) string {
 	builder := strings.Builder{}
 	builder.WriteString("{\"steps\":[{\"task\":\"string\",\"tool\":\"")
-	builder.WriteString(allowedToolNamesCSV())
+	builder.WriteString(allowedToolNamesCSVFromSpecs(specs))
 	builder.WriteString("\"}]}")
 	return builder.String()
 }
 
-func buildPlannerValidationRetryFeedback(baseFeedback string, issues []validationIssue) string {
+func buildPlannerValidationRetryFeedback(baseFeedback string, issues []validationIssue, specs []ToolSpec) string {
 	builder := strings.Builder{}
 	if strings.TrimSpace(baseFeedback) != "" {
 		builder.WriteString(strings.TrimSpace(baseFeedback))
@@ -134,11 +134,11 @@ func buildPlannerValidationRetryFeedback(baseFeedback string, issues []validatio
 		}
 	}
 	builder.WriteString("请严格按JSON schema重新输出。schema: ")
-	builder.WriteString(plannerOutlineSchemaTemplateText())
+	builder.WriteString(plannerOutlineSchemaTemplateText(specs))
 	return builder.String()
 }
 
-func validatePlannerOutlineOutput(raw string, maxSteps int) ([]plannerTask, string, []validationIssue) {
+func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([]plannerTask, string, []validationIssue) {
 	objectText, objectIssue := extractJSONObjectText(raw)
 	if objectIssue != nil {
 		return nil, "", []validationIssue{*objectIssue}
@@ -218,13 +218,13 @@ func validatePlannerOutlineOutput(raw string, maxSteps int) ([]plannerTask, stri
 			})
 			continue
 		}
-		tool := normalizeToolFromConfig(toolRaw)
-		if strings.TrimSpace(tool) == "" || !isKnownToolName(tool) {
+		tool := normalizeToolFromSpecs(specs, toolRaw)
+		if strings.TrimSpace(tool) == "" || !isKnownToolNameFromSpecs(specs, tool) {
 			issues = append(issues, validationIssue{
 				Code:    errCodeToolNotAllowed,
 				Field:   "steps[" + strconv.Itoa(i) + "].tool",
 				Message: "工具不在允许列表",
-				Detail:  "允许值: " + allowedToolNamesCSV(),
+				Detail:  "允许值: " + allowedToolNamesCSVFromSpecs(specs),
 			})
 			continue
 		}
@@ -235,7 +235,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int) ([]plannerTask, stri
 			})
 		}
 	}
-	normalized := normalizePlannerOutline(steps, maxSteps)
+	normalized := normalizePlannerOutline(steps, maxSteps, specs)
 	if len(normalized) == 0 {
 		issues = append(issues, validationIssue{
 			Code:    errCodeFieldMissing,
@@ -262,15 +262,15 @@ func validatePlannerOutlineOutput(raw string, maxSteps int) ([]plannerTask, stri
 	return normalized, string(b), nil
 }
 
-func normalizePlannerOutline(raw []plannerTask, maxSteps int) []plannerTask {
+func normalizePlannerOutline(raw []plannerTask, maxSteps int, specs []ToolSpec) []plannerTask {
 	if maxSteps <= 0 {
 		maxSteps = maxStepsDefault
 	}
 	steps := make([]plannerTask, 0, len(raw))
 	for _, item := range raw {
 		task := strings.TrimSpace(item.Task)
-		tool := normalizeToolFromConfig(item.Tool)
-		if task == "" || tool == "" || !isKnownToolName(tool) {
+		tool := normalizeToolFromSpecs(specs, item.Tool)
+		if task == "" || tool == "" || !isKnownToolNameFromSpecs(specs, tool) {
 			continue
 		}
 		steps = append(steps, plannerTask{

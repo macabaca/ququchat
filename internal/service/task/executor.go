@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"ququchat/internal/service/task/mcpclient"
 )
 
 var ErrUnsupportedTask = errors.New("unsupported task type")
@@ -15,22 +17,25 @@ type Executor interface {
 }
 
 type ExecutorOptions struct {
-	LLMClient  LLMClient
-	RAGHandler RAGHandler
-	AIGCClient AIGCClient
+	LLMClient      LLMClient
+	RAGHandler     RAGHandler
+	AIGCClient     AIGCClient
+	MCPMultiClient *mcpclient.MultiClient
 }
 
 type DefaultExecutor struct {
-	llmClient  LLMClient
-	ragHandler RAGHandler
-	aigcClient AIGCClient
+	llmClient      LLMClient
+	ragHandler     RAGHandler
+	aigcClient     AIGCClient
+	mcpMultiClient *mcpclient.MultiClient
 }
 
 func NewDefaultExecutor(opts ExecutorOptions) *DefaultExecutor {
 	return &DefaultExecutor{
-		llmClient:  opts.LLMClient,
-		ragHandler: opts.RAGHandler,
-		aigcClient: opts.AIGCClient,
+		llmClient:      opts.LLMClient,
+		ragHandler:     opts.RAGHandler,
+		aigcClient:     opts.AIGCClient,
+		mcpMultiClient: opts.MCPMultiClient,
 	}
 }
 
