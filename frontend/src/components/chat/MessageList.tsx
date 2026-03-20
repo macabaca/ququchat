@@ -41,7 +41,6 @@ interface RAGPayloadEntry {
 
 interface AIGCImageEntry {
     attachmentID: string;
-    cachePath: string;
 }
 
 const parseMemoryEntries = (memoryText: string): MemoryEntry[] => {
@@ -163,10 +162,6 @@ const parseAIGCImageEntries = (payloadObject: Record<string, any> | null): AIGCI
     if (!Array.isArray(rawIDs) || rawIDs.length === 0) {
         return [];
     }
-    const rawCachePathMap = payloadObject.aigc_cache_paths;
-    const cachePathMap = (!rawCachePathMap || typeof rawCachePathMap !== 'object' || Array.isArray(rawCachePathMap))
-        ? {}
-        : rawCachePathMap as Record<string, any>;
     const entries: AIGCImageEntry[] = [];
     const seen = new Set<string>();
     for (const rawID of rawIDs) {
@@ -175,11 +170,8 @@ const parseAIGCImageEntries = (payloadObject: Record<string, any> | null): AIGCI
             continue;
         }
         seen.add(attachmentID);
-        const rawPath = cachePathMap[attachmentID];
-        const cachePath = typeof rawPath === 'string' ? rawPath.trim() : '';
         entries.push({
-            attachmentID,
-            cachePath
+            attachmentID
         });
     }
     return entries;
@@ -192,6 +184,9 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
     const [loadingOriginal, setLoadingOriginal] = useState(false);
     const [isDownloading, setIsDownloading] = useState(false);
     const [aigcImageUrls, setAigcImageUrls] = useState<Array<{ attachmentID: string; url: string }>>([]);
+    const [isAIGCModalVisible, setIsAIGCModalVisible] = useState(false);
+    const [activeAIGCImage, setActiveAIGCImage] = useState<{ attachmentID: string; url: string } | null>(null);
+    const [isAIGCDownloading, setIsAIGCDownloading] = useState(false);
 
     const isImage = msg.is_image || (typeof msg.content === 'string' && (msg.content.startsWith('http') || msg.content.startsWith('blob:')) && (msg.content.match(/\.(jpeg|jpg|gif|png|webp)(\?.*)?$/i) != null));
     // For temp messages, we might just have the content as the URL (blob or uploaded URL) even if is_image is not set correctly yet?
@@ -208,6 +203,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
         : (typeof msg.content === 'string' && msg.content.trim() && !contentIsUrl ? msg.content : `File (${msg.attachment_id || 'attachment'})`);
     const isRobotMessage = msg.from_user_id === ROBOT_USER_ID;
     const sequenceID = typeof msg.sequence_id === 'number' ? msg.sequence_id : null;
+    const currentUserCode = useAuthStore((state) => state.user?.user_code ? String(state.user.user_code) : '');
     const payloadObject = useMemo(() => {
         const rawPayload = msg.payload_json;
         if (!rawPayload) {
@@ -282,10 +278,19 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                     return;
                 }
                 let url = '';
-                if (entry.cachePath) {
-                    url = (await localFileService.getLocalFileUrl(entry.cachePath)) || '';
-                    if (url && url.startsWith('blob:')) {
-                        objectUrls.push(url);
+                if (currentUserCode) {
+                    try {
+                        const deterministicPath = await localFileService.buildUserImageCachePath(entry.attachmentID, currentUserCode, false);
+                        url = deterministicPath ? ((await localFileService.getLocalFileUrl(deterministicPath)) || '') : '';
+                        if (!url) {
+                            const localPath = await localFileService.downloadAndSave(entry.attachmentID, entry.attachmentID, currentUserCode);
+                            url = localPath ? ((await localFileService.getLocalFileUrl(localPath)) || '') : '';
+                        }
+                        if (url && url.startsWith('blob:')) {
+                            objectUrls.push(url);
+                        }
+                    } catch {
+                        url = '';
                     }
                 }
                 if (!url) {
@@ -314,7 +319,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                 URL.revokeObjectURL(url);
             }
         };
-    }, [aigcImageEntries]);
+    }, [aigcImageEntries, currentUserCode]);
 
     const handleImageClick = () => {
         setIsModalVisible(true);
@@ -392,6 +397,38 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
             message.error('下载失败');
         } finally {
             setIsDownloading(false);
+        }
+    };
+
+    const handleOpenAIGCPreview = (item: { attachmentID: string; url: string }) => {
+        setActiveAIGCImage(item);
+        setIsAIGCModalVisible(true);
+    };
+
+    const inferAIGCDownloadFileName = () => {
+        const attachmentID = (activeAIGCImage?.attachmentID || 'aigc-image').trim();
+        const normalized = attachmentID.replace(/[\\/:*?"<>|]/g, '_') || 'aigc-image';
+        return /\.[a-zA-Z0-9]{1,8}$/.test(normalized) ? normalized : `${normalized}.png`;
+    };
+
+    const handleDownloadAIGC = async () => {
+        const attachmentID = activeAIGCImage?.attachmentID;
+        if (!attachmentID) {
+            message.warning('缺少附件ID，无法下载');
+            return;
+        }
+        setIsAIGCDownloading(true);
+        try {
+            const savedPath = await localFileService.downloadAndSaveAs(attachmentID, inferAIGCDownloadFileName());
+            if (!savedPath) {
+                message.info('已取消下载');
+                return;
+            }
+            message.success(`已保存到：${savedPath}`);
+        } catch {
+            message.error('下载失败');
+        } finally {
+            setIsAIGCDownloading(false);
         }
     };
 
@@ -561,12 +598,39 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                                             <img
                                                 src={item.url}
                                                 alt={item.attachmentID}
-                                                style={{ maxWidth: 180, maxHeight: 180, display: 'block', objectFit: 'cover' }}
+                                                onClick={() => handleOpenAIGCPreview(item)}
+                                                style={{ maxWidth: 180, maxHeight: 180, display: 'block', objectFit: 'cover', cursor: 'zoom-in' }}
                                             />
                                         </div>
                                     ))}
                                 </div>
                             )}
+                            <Modal
+                                open={isAIGCModalVisible}
+                                onCancel={() => setIsAIGCModalVisible(false)}
+                                footer={[
+                                    <Button
+                                        key="download-aigc"
+                                        type="primary"
+                                        icon={<DownloadOutlined />}
+                                        onClick={handleDownloadAIGC}
+                                        disabled={!activeAIGCImage?.attachmentID}
+                                        loading={isAIGCDownloading}
+                                    >
+                                        下载
+                                    </Button>
+                                ]}
+                                width={900}
+                                centered
+                            >
+                                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '220px' }}>
+                                    {activeAIGCImage?.url ? (
+                                        <img src={activeAIGCImage.url} alt={activeAIGCImage.attachmentID} style={{ maxWidth: '100%', maxHeight: '72vh' }} />
+                                    ) : (
+                                        <span>暂无可预览图片</span>
+                                    )}
+                                </div>
+                            </Modal>
                             {isRobotMessage && memoryEntries.length > 0 && (
                                 <details style={{ marginTop: 8, border: '1px solid #d9d9d9', borderRadius: 6, background: '#fafafa' }}>
                                     <summary style={{ cursor: 'pointer', padding: '6px 8px', color: '#595959', fontSize: 12 }}>payload / memory</summary>

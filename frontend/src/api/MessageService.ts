@@ -22,22 +22,6 @@ const normalizeAIGCAttachmentIDs = (input: any): string[] => {
     return ids;
 };
 
-const normalizeAIGCCachePathMap = (input: any): Record<string, string> => {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) {
-        return {};
-    }
-    const next: Record<string, string> = {};
-    for (const [rawID, rawPath] of Object.entries(input)) {
-        const id = String(rawID ?? '').trim();
-        const cachePath = typeof rawPath === 'string' ? rawPath.trim() : '';
-        if (!id || !cachePath) {
-            continue;
-        }
-        next[id] = cachePath;
-    }
-    return next;
-};
-
 export const messageService = {
     // Save message to local DB and handle file downloads
     saveMessage: async (msg: Message) => {
@@ -63,11 +47,6 @@ export const messageService = {
             rawMsg.aigc_attachment_ids
             ?? payload.aigc_attachment_ids
             ?? payload?.payload?.aigc_attachment_ids
-        );
-        const normalizedAIGCCachePaths = normalizeAIGCCachePathMap(
-            rawMsg.aigc_cache_paths
-            ?? payload.aigc_cache_paths
-            ?? payload?.payload?.aigc_cache_paths
         );
         const normalizedContentType = rawMsg.content_type || payload.content_type || (rawMsg.is_image ? 'image' : (normalizedAttachmentId ? 'file' : 'text'));
         const isImageMessage = !!rawMsg.is_image || normalizedContentType === 'image' || !!normalizedThumbAttachmentId;
@@ -143,21 +122,14 @@ export const messageService = {
             rawMsg.cache_path = messageRow.cache_path;
         }
         if (normalizedAIGCAttachmentIDs.length > 0) {
-            const nextAIGCCachePaths = { ...normalizedAIGCCachePaths };
             if (currentUserCode && window.electronAPI) {
                 for (const attachmentID of normalizedAIGCAttachmentIDs) {
-                    if (nextAIGCCachePaths[attachmentID]) {
-                        continue;
-                    }
                     try {
-                        const cachePath = await localFileService.downloadAndSave(
+                        await localFileService.downloadAndSave(
                             attachmentID,
                             attachmentID,
                             String(currentUserCode)
                         );
-                        if (cachePath) {
-                            nextAIGCCachePaths[attachmentID] = cachePath;
-                        }
                     } catch (error) {
                         console.warn('[MessageService] failed to cache aigc attachment locally', {
                             id: rawMsg.id,
@@ -168,9 +140,6 @@ export const messageService = {
                 }
             }
             rawMsg.aigc_attachment_ids = normalizedAIGCAttachmentIDs;
-            if (Object.keys(nextAIGCCachePaths).length > 0) {
-                rawMsg.aigc_cache_paths = nextAIGCCachePaths;
-            }
         }
         messageRow.payload_json = JSON.stringify(rawMsg);
 
