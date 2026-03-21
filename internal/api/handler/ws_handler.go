@@ -18,7 +18,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"ququchat/internal/models"
-	servertask "ququchat/internal/server/task"
+	taskservice "ququchat/internal/service"
 	tasksvc "ququchat/internal/service/task"
 )
 
@@ -31,14 +31,17 @@ const (
 )
 
 type WsHandler struct {
-	db          *gorm.DB
-	hub         *Hub
-	taskService *servertask.Service
-	robotInit   sync.Once
-	robotErr    error
+	db              *gorm.DB
+	hub             *Hub
+	taskService     *taskservice.MainService
+	robotInit       sync.Once
+	robotErr        error
+	doneConsumerMu  sync.Mutex
+	doneConsumerUp  bool
+	doneConsumerErr error
 }
 
-func NewWsHandler(db *gorm.DB, hub *Hub, taskService *servertask.Service) *WsHandler {
+func NewWsHandler(db *gorm.DB, hub *Hub, taskService *taskservice.MainService) *WsHandler {
 	if hub == nil {
 		hub = NewHub()
 	}
@@ -284,6 +287,7 @@ var upgrader = websocket.Upgrader{
 }
 
 func (h *WsHandler) Handle(c *gin.Context) {
+	_ = h.StartTaskDoneConsumer(context.Background())
 	userID := c.GetString("user_id")
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
@@ -419,27 +423,10 @@ func (c *Client) readLoop(h *WsHandler) {
 				}
 				userID := c.userID
 				roomID := msg.RoomID
-				_, err = h.taskService.SubmitCommand(servertask.SubmitCommandRequest{
+				_, err = h.taskService.SubmitCommand(taskservice.SubmitCommandRequest{
 					UserID:  userID,
 					RoomID:  roomID,
 					Content: msg.Content,
-				}, func(cbCtx context.Context, doneTask *tasksvc.Task, final string, payload map[string]interface{}) {
-					if doneTask == nil {
-						return
-					}
-					replyText := strings.TrimSpace(final)
-					if replyText == "" && doneTask.ErrorMessage != "" {
-						replyText = doneTask.ErrorMessage
-					}
-					if replyText == "" && doneTask.Status == tasksvc.StatusFailed {
-						replyText = "对话失败"
-					}
-					if strings.TrimSpace(replyText) == "" {
-						return
-					}
-					if sendErr := h.sendRobotGroupMessage(roomID, replyText, payload); sendErr != nil {
-						log.Printf("send robot message failed room=%s err=%v", roomID, sendErr)
-					}
 				})
 				if err != nil {
 					log.Printf("submit command failed user=%s room=%s err=%v", userID, roomID, err)
@@ -693,6 +680,34 @@ func (h *WsHandler) ensureRobotUser() error {
 		h.robotErr = h.db.Create(&robot).Error
 	})
 	return h.robotErr
+}
+
+func (h *WsHandler) StartTaskDoneConsumer(ctx context.Context) error {
+	if h == nil || h.taskService == nil {
+		return nil
+	}
+	h.doneConsumerMu.Lock()
+	defer h.doneConsumerMu.Unlock()
+	if h.doneConsumerUp {
+		return h.doneConsumerErr
+	}
+	h.doneConsumerErr = h.taskService.StartDoneEventConsumer(ctx, func(handlerCtx context.Context, event taskservice.DoneEvent) error {
+		replyText := strings.TrimSpace(event.Final)
+		if replyText == "" {
+			replyText = strings.TrimSpace(event.ErrorMessage)
+		}
+		if replyText == "" && event.Status == tasksvc.StatusFailed {
+			replyText = "对话失败"
+		}
+		if strings.TrimSpace(replyText) == "" || strings.TrimSpace(event.RoomID) == "" {
+			return nil
+		}
+		return h.sendRobotGroupMessage(event.RoomID, replyText, event.Payload)
+	})
+	if h.doneConsumerErr == nil {
+		h.doneConsumerUp = true
+	}
+	return h.doneConsumerErr
 }
 
 func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[string]interface{}) error {

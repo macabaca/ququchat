@@ -1,0 +1,44 @@
+{
+  "rules": [
+    {
+      "task": "task:fake_llm",
+      "priority": 2
+    },
+    {
+      "task": "task:llm",
+      "priority": 2
+    },
+    {
+      "task": "对话",
+      "priority": 2
+    },
+    {
+      "task": "生成摘要",
+      "priority": 3
+    },
+    {
+      "task": "agent",
+      "priority": 1
+    },
+    {
+      "task": "智能体",
+      "priority": 1
+    },
+    {
+      "task": "rag检索",
+      "priority": 1
+    },
+    {
+      "task": "添加记忆",
+      "priority": 2
+    },
+    {
+      "task": "生成rag",
+      "priority": 2
+    },
+    {
+      "task": "rag",
+      "priority": 2
+    }
+  ]
+}

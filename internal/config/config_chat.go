@@ -10,10 +10,23 @@ type Chat struct {
 }
 
 type Task struct {
-	QueueHighCap   int `yaml:"queue_high_cap" json:"queue_high_cap"`
-	QueueNormalCap int `yaml:"queue_normal_cap" json:"queue_normal_cap"`
-	QueueLowCap    int `yaml:"queue_low_cap" json:"queue_low_cap"`
-	WorkerSize     int `yaml:"worker_size" json:"worker_size"`
+	QueueHighCap                int    `yaml:"queue_high_cap" json:"queue_high_cap"`
+	QueueNormalCap              int    `yaml:"queue_normal_cap" json:"queue_normal_cap"`
+	QueueLowCap                 int    `yaml:"queue_low_cap" json:"queue_low_cap"`
+	QueueTransport              string `yaml:"queue_transport" json:"queue_transport"`
+	QueueRabbitMQURL            string `yaml:"queue_rabbitmq_url" json:"queue_rabbitmq_url"`
+	QueueRabbitMQName           string `yaml:"queue_rabbitmq_name" json:"queue_rabbitmq_name"`
+	QueueRabbitMQExchange       string `yaml:"queue_rabbitmq_exchange" json:"queue_rabbitmq_exchange"`
+	QueueRabbitMQMaxPriority    int    `yaml:"queue_rabbitmq_max_priority" json:"queue_rabbitmq_max_priority"`
+	DoneEventMQURL              string `yaml:"done_event_rabbitmq_url" json:"done_event_rabbitmq_url"`
+	DoneEventQueue              string `yaml:"done_event_queue_name" json:"done_event_queue_name"`
+	InputRetryMaxAttempts       int    `yaml:"input_retry_max_attempts" json:"input_retry_max_attempts"`
+	InputRetryDelayMs           int    `yaml:"input_retry_delay_ms" json:"input_retry_delay_ms"`
+	DonePublishRetryMaxAttempts int    `yaml:"done_publish_retry_max_attempts" json:"done_publish_retry_max_attempts"`
+	DonePublishRetryDelayMs     int    `yaml:"done_publish_retry_delay_ms" json:"done_publish_retry_delay_ms"`
+	DoneConsumeRetryMaxAttempts int    `yaml:"done_consume_retry_max_attempts" json:"done_consume_retry_max_attempts"`
+	DoneConsumeRetryDelayMs     int    `yaml:"done_consume_retry_delay_ms" json:"done_consume_retry_delay_ms"`
+	WorkerSize                  int    `yaml:"worker_size" json:"worker_size"`
 }
 
 type LLM struct {
@@ -309,6 +322,90 @@ func (t Task) WorkerSizeOrDefault() int {
 		return t.WorkerSize
 	}
 	return 2
+}
+
+func (t Task) QueueTransportOrDefault() string {
+	if strings.TrimSpace(t.QueueTransport) != "" {
+		return strings.TrimSpace(t.QueueTransport)
+	}
+	return "rabbitmq"
+}
+
+func (t Task) QueueRabbitMQNameOrDefault() string {
+	if strings.TrimSpace(t.QueueRabbitMQName) != "" {
+		return strings.TrimSpace(t.QueueRabbitMQName)
+	}
+	return "ququchat.task.queue"
+}
+
+func (t Task) QueueRabbitMQExchangeOrDefault() string {
+	if strings.TrimSpace(t.QueueRabbitMQExchange) != "" {
+		return strings.TrimSpace(t.QueueRabbitMQExchange)
+	}
+	return t.QueueRabbitMQNameOrDefault() + ".exchange"
+}
+
+func (t Task) QueueRabbitMQMaxPriorityOrDefault() int {
+	if t.QueueRabbitMQMaxPriority > 0 {
+		return t.QueueRabbitMQMaxPriority
+	}
+	return 10
+}
+
+func (t Task) DoneEventQueueOrDefault() string {
+	if strings.TrimSpace(t.DoneEventQueue) != "" {
+		return strings.TrimSpace(t.DoneEventQueue)
+	}
+	return "ququchat.task.done"
+}
+
+func (t Task) DoneEventMQURLOrDefault() string {
+	if strings.TrimSpace(t.DoneEventMQURL) != "" {
+		return strings.TrimSpace(t.DoneEventMQURL)
+	}
+	return strings.TrimSpace(t.QueueRabbitMQURL)
+}
+
+func (t Task) InputRetryMaxAttemptsOrDefault() int {
+	if t.InputRetryMaxAttempts > 0 {
+		return t.InputRetryMaxAttempts
+	}
+	return 3
+}
+
+func (t Task) InputRetryDelayOrDefault() time.Duration {
+	if t.InputRetryDelayMs > 0 {
+		return time.Duration(t.InputRetryDelayMs) * time.Millisecond
+	}
+	return 500 * time.Millisecond
+}
+
+func (t Task) DonePublishRetryMaxAttemptsOrDefault() int {
+	if t.DonePublishRetryMaxAttempts > 0 {
+		return t.DonePublishRetryMaxAttempts
+	}
+	return 3
+}
+
+func (t Task) DonePublishRetryDelayOrDefault() time.Duration {
+	if t.DonePublishRetryDelayMs > 0 {
+		return time.Duration(t.DonePublishRetryDelayMs) * time.Millisecond
+	}
+	return 500 * time.Millisecond
+}
+
+func (t Task) DoneConsumeRetryMaxAttemptsOrDefault() int {
+	if t.DoneConsumeRetryMaxAttempts > 0 {
+		return t.DoneConsumeRetryMaxAttempts
+	}
+	return 3
+}
+
+func (t Task) DoneConsumeRetryDelayOrDefault() time.Duration {
+	if t.DoneConsumeRetryDelayMs > 0 {
+		return time.Duration(t.DoneConsumeRetryDelayMs) * time.Millisecond
+	}
+	return 500 * time.Millisecond
 }
 
 type File struct {

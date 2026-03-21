@@ -12,7 +12,7 @@ import (
 	"ququchat/internal/config"
 	database "ququchat/internal/server/db"
 	"ququchat/internal/server/storage"
-	servertask "ququchat/internal/server/task"
+	taskservice "ququchat/internal/service"
 	filesvc "ququchat/internal/service/file"
 	tasksvc "ququchat/internal/service/task"
 	"ququchat/internal/service/task/aigcmq"
@@ -26,6 +26,10 @@ func main() {
 	cfg, err := config.LoadDefault()
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
+	}
+	taskPriorityCfg, taskPriorityErr := config.LoadTaskPriorityDefault()
+	if taskPriorityErr != nil {
+		log.Printf("加载任务优先级配置失败，将使用默认优先级: %v", taskPriorityErr)
 	}
 
 	// 初始化数据库连接（使用 server/db 包）
@@ -132,30 +136,54 @@ func main() {
 	}
 
 	authCfg := cfg.Auth.ToSettings()
-	taskService := servertask.NewService(db, tasksvc.RuntimeOptions{
-		QueueHighCap:          cfg.Task.QueueHighCapOrDefault(),
-		QueueNormalCap:        cfg.Task.QueueNormalCapOrDefault(),
-		QueueLowCap:           cfg.Task.QueueLowCapOrDefault(),
-		WorkerSize:            cfg.Task.WorkerSizeOrDefault(),
-		LLMTransport:          cfg.LLM.TransportOrDefault(),
-		LLMMQURL:              cfg.LLM.RabbitMQURL,
-		LLMMQQueue:            cfg.LLM.RequestQueueOrDefault(),
-		LLMMQTimeout:          cfg.LLM.ResponseTimeoutOrDefault(),
-		LLMClient:             ragLLMClient,
-		LLMAPIKey:             cfg.LLM.APIKey,
-		LLMBaseURL:            cfg.LLM.BaseURLOrDefault(),
-		LLMModel:              cfg.LLM.ModelOrDefault(),
-		AIGCTransport:         cfg.AIGC.TransportOrDefault(),
-		AIGCMQURL:             cfg.AIGC.RabbitMQURL,
-		AIGCMQQueue:           cfg.AIGC.RequestQueueOrDefault(),
-		AIGCMQTimeout:         cfg.AIGC.ResponseTimeoutOrDefault(),
-		EmbeddingProvider:     ragEmbeddingProvider,
-		VectorStore:           ragVectorStore,
-		EmbeddingModelRaw:     cfg.Embedding.ModelOrDefault(),
-		EmbeddingModelSummary: cfg.Embedding.ModelOrDefault(),
-		SummaryVectorDim:      cfg.Vector.SummaryVectorDimOrDefault(),
+	commandPriorityRules := make([]taskservice.CommandPriorityRule, 0)
+	if taskPriorityCfg != nil {
+		for _, item := range taskPriorityCfg.NormalizedRules() {
+			commandPriorityRules = append(commandPriorityRules, taskservice.CommandPriorityRule{
+				Prefix:   item.Task,
+				Priority: tasksvc.Priority(item.Priority),
+			})
+		}
+	}
+	taskService := taskservice.NewMainServiceWithOptions(db, tasksvc.RuntimeOptions{
+		QueueHighCap:                     cfg.Task.QueueHighCapOrDefault(),
+		QueueNormalCap:                   cfg.Task.QueueNormalCapOrDefault(),
+		QueueLowCap:                      cfg.Task.QueueLowCapOrDefault(),
+		QueueTransport:                   cfg.Task.QueueTransportOrDefault(),
+		QueueRabbitMQURL:                 cfg.Task.QueueRabbitMQURL,
+		QueueRabbitMQName:                cfg.Task.QueueRabbitMQNameOrDefault(),
+		QueueRabbitMQExchange:            cfg.Task.QueueRabbitMQExchangeOrDefault(),
+		QueueRabbitMQMaxPriority:         cfg.Task.QueueRabbitMQMaxPriorityOrDefault(),
+		DoneEventRabbitMQURL:             cfg.Task.DoneEventMQURLOrDefault(),
+		DoneEventQueueName:               cfg.Task.DoneEventQueueOrDefault(),
+		DoneEventPublishRetryMaxAttempts: cfg.Task.DonePublishRetryMaxAttemptsOrDefault(),
+		DoneEventPublishRetryDelay:       cfg.Task.DonePublishRetryDelayOrDefault(),
+		DoneEventConsumeRetryMaxAttempts: cfg.Task.DoneConsumeRetryMaxAttemptsOrDefault(),
+		DoneEventConsumeRetryDelay:       cfg.Task.DoneConsumeRetryDelayOrDefault(),
+		InputRetryMaxAttempts:            cfg.Task.InputRetryMaxAttemptsOrDefault(),
+		InputRetryDelay:                  cfg.Task.InputRetryDelayOrDefault(),
+		WorkerSize:                       cfg.Task.WorkerSizeOrDefault(),
+		LLMTransport:                     cfg.LLM.TransportOrDefault(),
+		LLMMQURL:                         cfg.LLM.RabbitMQURL,
+		LLMMQQueue:                       cfg.LLM.RequestQueueOrDefault(),
+		LLMMQTimeout:                     cfg.LLM.ResponseTimeoutOrDefault(),
+		LLMClient:                        ragLLMClient,
+		LLMAPIKey:                        cfg.LLM.APIKey,
+		LLMBaseURL:                       cfg.LLM.BaseURLOrDefault(),
+		LLMModel:                         cfg.LLM.ModelOrDefault(),
+		AIGCTransport:                    cfg.AIGC.TransportOrDefault(),
+		AIGCMQURL:                        cfg.AIGC.RabbitMQURL,
+		AIGCMQQueue:                      cfg.AIGC.RequestQueueOrDefault(),
+		AIGCMQTimeout:                    cfg.AIGC.ResponseTimeoutOrDefault(),
+		EmbeddingProvider:                ragEmbeddingProvider,
+		VectorStore:                      ragVectorStore,
+		EmbeddingModelRaw:                cfg.Embedding.ModelOrDefault(),
+		EmbeddingModelSummary:            cfg.Embedding.ModelOrDefault(),
+		SummaryVectorDim:                 cfg.Vector.SummaryVectorDimOrDefault(),
+	}, taskservice.ServiceOptions{
+		CommandPriorityRules: commandPriorityRules,
 	})
-	taskService.Start(context.Background())
+	log.Printf("主进程不启动 Task Runtime，仅提供任务提交与状态能力")
 	if cfg.LLM.TransportOrDefault() == "rabbitmq" {
 		provider, err := openaicompat.NewLLMClient(openaicompat.LLMOptions{
 			APIKey:  cfg.LLM.APIKey,

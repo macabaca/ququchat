@@ -1,0 +1,2 @@
+nohup: ignoring input
+2026/03/21 19:19:03 独立 Task Service 已启动，queue=ququchat.task.queue exchange=ququchat.task.exchange worker=8

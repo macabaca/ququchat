@@ -4,7 +4,7 @@
       "endpoint": "https://mcp.tavily.com/mcp/",
       "apiKey": "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",
       "headers": {
-        "DEFAULT_PARAMETERS": "{\"include_images\":true,\"search_depth\":\"basic\",\"max_results\":10}"
+        "DEFAULT_PARAMETERS": "{\"include_images\":false,\"search_depth\":\"basic\",\"max_results\":10,\"exclude_domains\":[\"youtube.com\",\"youtu.be\",\"bilibili.com\",\"vimeo.com\",\"youku.com\",\"iqiyi.com\",\"qq.com/x/page\",\"douyin.com\",\"tiktok.com\"]}"
       },
       "name": "ququchat",
       "version": "0.1.0",

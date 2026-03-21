@@ -1,17 +1,19 @@
-package task
+package taskservice
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"strconv"
 	"strings"
-	"sync"
+	"time"
 
 	"gorm.io/gorm"
 
-	tasksvc "ququchat/internal/service/task"
-	"ququchat/internal/service/task/raghandler"
+	tasksvc "ququchat/internal/taskservice/task"
+	"ququchat/internal/taskservice/task/raghandler"
 )
 
 var ErrServiceNotInitialized = errors.New("task service not initialized")
@@ -42,20 +44,54 @@ const ragOverlapMessages = 3
 const ragSearchTopKDefault = 5
 const ragSearchTopKMax = 20
 
-type TaskCallback func(ctx context.Context, doneTask *tasksvc.Task, final string, payload map[string]interface{})
-
 type Service struct {
-	db         *gorm.DB
-	runtime    *tasksvc.Runtime
-	callbackMu sync.Mutex
-	callbacks  map[string]TaskCallback
+	db                          *gorm.DB
+	runtime                     *tasksvc.Runtime
+	commandPriorityRules        []CommandPriorityRule
+	doneEventURL                string
+	doneEventQueue              string
+	doneEventPub                DoneEventPublisher
+	donePublishRetryMaxAttempts int
+	donePublishRetryDelay       time.Duration
+}
+
+type CommandPriorityRule struct {
+	Prefix   string
+	Priority tasksvc.Priority
+}
+
+type ServiceOptions struct {
+	CommandPriorityRules []CommandPriorityRule
 }
 
 func NewService(db *gorm.DB, opts tasksvc.RuntimeOptions) *Service {
-	s := &Service{callbacks: make(map[string]TaskCallback)}
+	return NewServiceWithOptions(db, opts, ServiceOptions{})
+}
+
+func NewServiceWithOptions(db *gorm.DB, opts tasksvc.RuntimeOptions, svcOpts ServiceOptions) *Service {
+	doneEventURL := strings.TrimSpace(opts.DoneEventRabbitMQURL)
+	if doneEventURL == "" {
+		doneEventURL = strings.TrimSpace(opts.QueueRabbitMQURL)
+	}
+	doneEventQueue := strings.TrimSpace(opts.DoneEventQueueName)
+	if doneEventQueue == "" {
+		doneEventQueue = "ququchat.task.done"
+	}
+	s := &Service{
+		doneEventURL:                doneEventURL,
+		doneEventQueue:              doneEventQueue,
+		commandPriorityRules:        normalizeCommandPriorityRules(svcOpts.CommandPriorityRules),
+		donePublishRetryMaxAttempts: normalizeRetryMaxAttempts(opts.DoneEventPublishRetryMaxAttempts),
+		donePublishRetryDelay:       normalizeRetryDelay(opts.DoneEventPublishRetryDelay),
+	}
+	if doneEventURL != "" && doneEventQueue != "" {
+		if pub, err := NewRabbitMQDoneEventPublisher(doneEventURL, doneEventQueue); err == nil {
+			s.doneEventPub = pub
+		}
+	}
 	upstreamOnFinish := opts.OnFinish
 	opts.OnFinish = func(ctx context.Context, doneTask *tasksvc.Task) {
-		s.dispatchCallback(ctx, doneTask)
+		_ = s.publishDoneEventWithRetry(ctx, doneTask)
 		if upstreamOnFinish != nil {
 			upstreamOnFinish(ctx, doneTask)
 		}
@@ -90,208 +126,98 @@ func (s *Service) SubmitFakeLLM(req tasksvc.SubmitFakeLLMRequest) (*tasksvc.Task
 	if s == nil || s.runtime == nil {
 		return nil, ErrServiceNotInitialized
 	}
-	return s.runtime.SubmitFakeLLM(req)
+	return nil, ErrUnsupportedCommand
 }
 
 func (s *Service) SubmitLLM(req tasksvc.SubmitLLMRequest) (*tasksvc.Task, error) {
 	if s == nil || s.runtime == nil {
 		return nil, ErrServiceNotInitialized
 	}
-	return s.runtime.SubmitLLM(req)
+	return nil, ErrUnsupportedCommand
 }
 
 func (s *Service) SubmitAgent(req tasksvc.SubmitAgentRequest) (*tasksvc.Task, error) {
 	if s == nil || s.runtime == nil {
 		return nil, ErrServiceNotInitialized
 	}
-	return s.runtime.SubmitAgent(req)
+	return nil, ErrUnsupportedCommand
 }
 
 func (s *Service) SubmitRAG(req tasksvc.SubmitRAGRequest) (*tasksvc.Task, error) {
 	if s == nil || s.runtime == nil {
 		return nil, ErrServiceNotInitialized
 	}
-	return s.runtime.SubmitRAG(req)
+	return nil, ErrUnsupportedCommand
 }
 
 func (s *Service) SubmitRAGAddMemory(req tasksvc.SubmitRAGAddMemoryRequest) (*tasksvc.Task, error) {
 	if s == nil || s.runtime == nil {
 		return nil, ErrServiceNotInitialized
 	}
-	return s.runtime.SubmitRAGAddMemory(req)
+	return nil, ErrUnsupportedCommand
 }
 
 func (s *Service) Get(taskID string) (*tasksvc.Task, bool) {
 	if s == nil || s.runtime == nil {
 		return nil, false
 	}
-	return s.runtime.Get(taskID)
+	return s.runtime.Get(strings.TrimSpace(taskID))
 }
 
 type SubmitCommandRequest struct {
-	UserID  string
-	RoomID  string
-	Content string
+	UserID   string
+	RoomID   string
+	Content  string
+	Priority tasksvc.Priority
 }
 
-func (s *Service) SubmitCommand(req SubmitCommandRequest, cb TaskCallback) (string, error) {
+func (s *Service) SubmitCommand(req SubmitCommandRequest) (string, error) {
 	if s == nil || s.runtime == nil {
 		return "", ErrServiceNotInitialized
 	}
-	raw := strings.TrimSpace(req.Content)
-	if raw == "" {
-		return "", ErrCommandRequired
-	}
-	if !strings.HasPrefix(raw, "\\") {
-		return "", ErrUnsupportedCommand
-	}
-	cmd := strings.TrimSpace(strings.TrimPrefix(raw, "\\"))
-	var (
-		t   *tasksvc.Task
-		err error
-	)
-	if strings.HasPrefix(cmd, "task:fake_llm") {
-		prompt := strings.TrimSpace(strings.TrimPrefix(cmd, "task:fake_llm"))
-		if prompt == "" {
-			prompt = cmd
-		}
-		t, err = s.runtime.SubmitFakeLLM(tasksvc.SubmitFakeLLMRequest{
-			Priority: tasksvc.PriorityNormal,
-			Prompt:   prompt,
-			SleepMs:  800,
-		})
-	} else if strings.HasPrefix(cmd, "task:llm") {
-		prompt := strings.TrimSpace(strings.TrimPrefix(cmd, "task:llm"))
-		if prompt == "" {
-			prompt = cmd
-		}
-		t, err = s.runtime.SubmitLLM(tasksvc.SubmitLLMRequest{
-			Priority: tasksvc.PriorityNormal,
-			Prompt:   prompt,
-		})
-	} else if strings.HasPrefix(cmd, "对话") {
-		prompt := strings.TrimSpace(strings.TrimPrefix(cmd, "对话"))
-		if prompt == "" {
-			return "", ErrCommandRequired
-		}
-		t, err = s.runtime.SubmitLLM(tasksvc.SubmitLLMRequest{
-			Priority: tasksvc.PriorityNormal,
-			Prompt:   prompt,
-		})
-	} else if strings.HasPrefix(cmd, "生成摘要") {
-		if strings.TrimSpace(req.RoomID) == "" {
-			return "", ErrSummaryRoomRequired
-		}
-		summaryCount, parseErr := parseSummaryCount(cmd)
-		if parseErr != nil {
-			return "", parseErr
-		}
-		prompt, promptErr := s.buildSummaryPrompt(req.RoomID, summaryCount)
-		if promptErr != nil {
-			return "", promptErr
-		}
-		t, err = s.runtime.SubmitSummary(tasksvc.SubmitSummaryRequest{
-			Priority: tasksvc.PriorityNormal,
-			Prompt:   prompt,
-		})
-	} else if strings.HasPrefix(cmd, "agent") || strings.HasPrefix(cmd, "智能体") {
-		if strings.TrimSpace(req.RoomID) == "" {
-			return "", ErrAgentRoomRequired
-		}
-		goal, parseErr := parseAgentGoal(cmd)
-		if parseErr != nil {
-			return "", parseErr
-		}
-		recentMessages, recentErr := s.loadAgentRecentMessages(req.RoomID, agentRecentMessageLimit)
-		if recentErr != nil {
-			return "", recentErr
-		}
-		t, err = s.runtime.SubmitAgent(tasksvc.SubmitAgentRequest{
-			Priority:       tasksvc.PriorityNormal,
-			Goal:           goal,
-			RecentMessages: recentMessages,
-			MaxSteps:       agentMaxSteps,
-			RoomID:         strings.TrimSpace(req.RoomID),
-		})
-	} else if strings.HasPrefix(cmd, "rag检索") {
-		if strings.TrimSpace(req.RoomID) == "" {
-			return "", ErrRAGRoomRequired
-		}
-		ragQuery, topK, vectorMode, parseErr := parseRAGSearchQuery(cmd)
-		if parseErr != nil {
-			return "", parseErr
-		}
-		t, err = s.runtime.SubmitRAGSearch(tasksvc.SubmitRAGSearchRequest{
-			Priority: tasksvc.PriorityNormal,
-			RoomID:   strings.TrimSpace(req.RoomID),
-			Query:    ragQuery,
-			TopK:     topK,
-			Vector:   vectorMode,
-		})
-	} else if strings.HasPrefix(cmd, "添加记忆") {
-		if strings.TrimSpace(req.RoomID) == "" {
-			return "", ErrRAGRoomRequired
-		}
-		startSeq, endSeq, parseErr := parseRAGMemorySequenceRange(cmd)
-		if parseErr != nil {
-			return "", parseErr
-		}
-		t, err = s.runtime.SubmitRAGAddMemory(tasksvc.SubmitRAGAddMemoryRequest{
-			Priority:           tasksvc.PriorityNormal,
-			RoomID:             strings.TrimSpace(req.RoomID),
-			StartSequenceID:    startSeq,
-			EndSequenceID:      endSeq,
-			SegmentGapSeconds:  ragSegmentGapSeconds,
-			MaxCharsPerSegment: ragMaxCharsPerSegment,
-			MaxMessagesPerSeg:  ragMaxMessagesPerSeg,
-			OverlapMessages:    ragOverlapMessages,
-		})
-	} else if strings.HasPrefix(cmd, "生成rag") || strings.HasPrefix(cmd, "rag") {
-		if strings.TrimSpace(req.RoomID) == "" {
-			return "", ErrRAGRoomRequired
-		}
-		t, err = s.runtime.SubmitRAG(tasksvc.SubmitRAGRequest{
-			Priority:           tasksvc.PriorityNormal,
-			RoomID:             strings.TrimSpace(req.RoomID),
-			SegmentGapSeconds:  ragSegmentGapSeconds,
-			MaxCharsPerSegment: ragMaxCharsPerSegment,
-			MaxMessagesPerSeg:  ragMaxMessagesPerSeg,
-			OverlapMessages:    ragOverlapMessages,
-		})
-	} else {
-		return "", ErrUnsupportedCommand
-	}
-	if err != nil {
-		return "", err
-	}
-	s.registerCallback(t.ID, cb)
-	return t.ID, nil
+	return "", ErrUnsupportedCommand
 }
 
-func (s *Service) registerCallback(taskID string, cb TaskCallback) {
-	if cb == nil || strings.TrimSpace(taskID) == "" {
-		return
+func (s *Service) publishDoneEventWithRetry(ctx context.Context, doneTask *tasksvc.Task) error {
+	if s == nil || s.doneEventPub == nil || doneTask == nil {
+		return nil
 	}
-	s.callbackMu.Lock()
-	s.callbacks[taskID] = cb
-	s.callbackMu.Unlock()
+	var lastErr error
+	for attempt := 1; attempt <= s.donePublishRetryMaxAttempts; attempt++ {
+		lastErr = s.doneEventPub.Publish(ctx, doneTask)
+		if lastErr == nil {
+			return nil
+		}
+		log.Printf("[done-event-publish] task=%s attempt=%d/%d err=%v", doneTask.ID, attempt, s.donePublishRetryMaxAttempts, lastErr)
+		if attempt == s.donePublishRetryMaxAttempts {
+			break
+		}
+		if !sleepWithContext(ctx, s.donePublishRetryDelay) {
+			lastErr = ctx.Err()
+			break
+		}
+	}
+	failureErr := fmt.Errorf("done event publish exhausted retries task=%s: %w", doneTask.ID, lastErr)
+	log.Printf("[done-event-publish] final failure task=%s err=%v", doneTask.ID, failureErr)
+	if err := s.markTaskFailed(doneTask.ID, failureErr.Error()); err != nil {
+		log.Printf("[done-event-publish] mark failed to db failed task=%s err=%v", doneTask.ID, err)
+	}
+	return failureErr
 }
 
-func (s *Service) dispatchCallback(ctx context.Context, doneTask *tasksvc.Task) {
-	if doneTask == nil {
-		return
+func (s *Service) markTaskFailed(taskID string, message string) error {
+	trimmedID := strings.TrimSpace(taskID)
+	if s == nil || trimmedID == "" {
+		return nil
 	}
-	s.callbackMu.Lock()
-	cb := s.callbacks[doneTask.ID]
-	delete(s.callbacks, doneTask.ID)
-	s.callbackMu.Unlock()
-	if cb != nil {
-		final, payload := extractCallbackResult(doneTask)
-		cb(ctx, doneTask.Clone(), final, payload)
+	if s.runtime != nil {
+		_, err := s.runtime.MarkFailed(trimmedID, message)
+		return err
 	}
+	return ErrServiceNotInitialized
 }
 
-func extractCallbackResult(doneTask *tasksvc.Task) (string, map[string]interface{}) {
+func extractDoneResult(doneTask *tasksvc.Task) (string, map[string]interface{}) {
 	if doneTask == nil {
 		return "", nil
 	}
@@ -484,4 +410,43 @@ func parseRAGMemorySequenceRange(cmd string) (int64, int64, error) {
 		return 0, 0, ErrRAGMemorySequenceRangeInvalid
 	}
 	return startSeq, endSeq, nil
+}
+
+func normalizePriority(p tasksvc.Priority) tasksvc.Priority {
+	switch p {
+	case tasksvc.PriorityHigh, tasksvc.PriorityNormal, tasksvc.PriorityLow:
+		return p
+	default:
+		return tasksvc.PriorityNormal
+	}
+}
+
+func normalizeCommandPriorityRules(rules []CommandPriorityRule) []CommandPriorityRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	normalized := make([]CommandPriorityRule, 0, len(rules))
+	for _, item := range rules {
+		prefix := strings.TrimSpace(item.Prefix)
+		if prefix == "" {
+			continue
+		}
+		normalized = append(normalized, CommandPriorityRule{
+			Prefix:   prefix,
+			Priority: normalizePriority(item.Priority),
+		})
+	}
+	return normalized
+}
+
+func (s *Service) matchCommandPriority(cmd string, fallback tasksvc.Priority) tasksvc.Priority {
+	if s == nil {
+		return normalizePriority(fallback)
+	}
+	for _, item := range s.commandPriorityRules {
+		if strings.HasPrefix(cmd, item.Prefix) {
+			return item.Priority
+		}
+	}
+	return normalizePriority(fallback)
 }
