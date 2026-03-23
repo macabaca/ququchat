@@ -102,6 +102,7 @@ func main() {
 		QueueRabbitMQName:                cfg.Task.QueueRabbitMQNameOrDefault(),
 		QueueRabbitMQExchange:            cfg.Task.QueueRabbitMQExchangeOrDefault(),
 		QueueRabbitMQMaxPriority:         cfg.Task.QueueRabbitMQMaxPriorityOrDefault(),
+		QueueRabbitMQMaxLength:           cfg.Task.QueueRabbitMQMaxLengthOrDefault(),
 		DoneEventRabbitMQURL:             cfg.Task.DoneEventMQURLOrDefault(),
 		DoneEventQueueName:               cfg.Task.DoneEventQueueOrDefault(),
 		DoneEventPublishRetryMaxAttempts: cfg.Task.DonePublishRetryMaxAttemptsOrDefault(),
@@ -132,6 +133,43 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	dlqURLs := make([]string, 0, 4)
+	if strings.EqualFold(cfg.Task.QueueTransportOrDefault(), "rabbitmq") {
+		dlqURLs = append(dlqURLs, cfg.Task.QueueRabbitMQURL)
+	}
+	if strings.EqualFold(cfg.LLM.TransportOrDefault(), "rabbitmq") {
+		dlqURLs = append(dlqURLs, cfg.LLM.RabbitMQURL)
+	}
+	if strings.EqualFold(cfg.AIGC.TransportOrDefault(), "rabbitmq") {
+		dlqURLs = append(dlqURLs, cfg.AIGC.RabbitMQURL)
+	}
+	if strings.EqualFold(cfg.Embedding.TransportOrDefault(), "rabbitmq") {
+		dlqURLs = append(dlqURLs, cfg.Embedding.RabbitMQURL)
+	}
+	startedDLQ := map[string]struct{}{}
+	for _, rawURL := range dlqURLs {
+		url := strings.TrimSpace(rawURL)
+		if url == "" {
+			continue
+		}
+		if _, exists := startedDLQ[url]; exists {
+			continue
+		}
+		dlqConsumer, err := taskservice.NewRabbitMQTaskDeadLetterConsumer(taskservice.RabbitMQTaskDeadLetterConsumerOptions{
+			URL: url,
+			DB:  db,
+		})
+		if err != nil {
+			log.Fatalf("初始化 Task DLQ consumer 失败 url=%s err=%v", url, err)
+		}
+		startedDLQ[url] = struct{}{}
+		consumer := dlqConsumer
+		go func(targetURL string) {
+			if runErr := consumer.Start(ctx); runErr != nil {
+				log.Printf("Task DLQ consumer 退出 url=%s err=%v", targetURL, runErr)
+			}
+		}(url)
+	}
 	taskService.Start(ctx)
 	log.Printf("独立 Task Service 已启动，queue=%s exchange=%s worker=%d", cfg.Task.QueueRabbitMQNameOrDefault(), cfg.Task.QueueRabbitMQExchangeOrDefault(), cfg.Task.WorkerSizeOrDefault())
 	<-ctx.Done()

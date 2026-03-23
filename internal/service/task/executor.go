@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"ququchat/internal/service/task/mcpclient"
 )
 
 var ErrUnsupportedTask = errors.New("unsupported task type")
@@ -17,25 +15,19 @@ type Executor interface {
 }
 
 type ExecutorOptions struct {
-	LLMClient      LLMClient
-	RAGHandler     RAGHandler
-	AIGCClient     AIGCClient
-	MCPMultiClient *mcpclient.MultiClient
+	LLMClient  LLMClient
+	RAGHandler RAGHandler
 }
 
 type DefaultExecutor struct {
-	llmClient      LLMClient
-	ragHandler     RAGHandler
-	aigcClient     AIGCClient
-	mcpMultiClient *mcpclient.MultiClient
+	llmClient  LLMClient
+	ragHandler RAGHandler
 }
 
 func NewDefaultExecutor(opts ExecutorOptions) *DefaultExecutor {
 	return &DefaultExecutor{
-		llmClient:      opts.LLMClient,
-		ragHandler:     opts.RAGHandler,
-		aigcClient:     opts.AIGCClient,
-		mcpMultiClient: opts.MCPMultiClient,
+		llmClient:  opts.LLMClient,
+		ragHandler: opts.RAGHandler,
 	}
 }
 
@@ -84,7 +76,7 @@ func (e *DefaultExecutor) Execute(ctx context.Context, t *Task) (Result, error) 
 		final := text
 		return Result{Text: &text, Final: &final}, nil
 	case TypeAgent:
-		return e.executeAgent(ctx, t)
+		return Result{}, ErrUnsupportedTask
 	case TypeRAG:
 		if t.Payload.RAG == nil {
 			return Result{}, errors.New("missing rag payload")

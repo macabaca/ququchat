@@ -2,6 +2,7 @@ package aigcmq
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
 )
@@ -11,20 +12,20 @@ type RateLimiterOptions struct {
 	IPD int
 }
 
-type countEvent struct {
-	at    time.Time
-	count int
-}
-
 type RateLimiter struct {
 	ipm int
 	ipd int
 
-	mu         sync.Mutex
-	minuteSum  int
-	daySum     int
-	minuteHits []countEvent
-	dayHits    []countEvent
+	mu           sync.Mutex
+	minuteBucket *tokenBucket
+	dayBucket    *tokenBucket
+}
+
+type tokenBucket struct {
+	capacity     float64
+	tokens       float64
+	refillPerSec float64
+	lastRefill   time.Time
 }
 
 func NewRateLimiter(opts RateLimiterOptions) *RateLimiter {
@@ -37,8 +38,10 @@ func NewRateLimiter(opts RateLimiterOptions) *RateLimiter {
 		ipd = 0
 	}
 	return &RateLimiter{
-		ipm: ipm,
-		ipd: ipd,
+		ipm:          ipm,
+		ipd:          ipd,
+		minuteBucket: newTokenBucket(float64(ipm), float64(ipm)/60.0),
+		dayBucket:    newTokenBucket(float64(ipd), float64(ipd)/(24.0*60.0*60.0)),
 	}
 }
 
@@ -69,107 +72,59 @@ func (l *RateLimiter) Wait(ctx context.Context, imageCount int) error {
 func (l *RateLimiter) tryReserve(now time.Time, imageCount int) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	l.prune(now)
 	waitMinute := l.waitByIPM(now, imageCount)
 	waitDay := l.waitByIPD(now, imageCount)
 	wait := maxDuration(waitMinute, waitDay)
 	if wait > 0 {
 		return wait
 	}
-
-	l.minuteHits = append(l.minuteHits, countEvent{at: now, count: imageCount})
-	l.dayHits = append(l.dayHits, countEvent{at: now, count: imageCount})
-	l.minuteSum += imageCount
-	l.daySum += imageCount
+	if l.minuteBucket != nil {
+		reserveMinute := float64(imageCount)
+		if l.minuteBucket.capacity > 0 && reserveMinute > l.minuteBucket.capacity {
+			reserveMinute = l.minuteBucket.capacity
+		}
+		if reserveMinute > 0 {
+			l.minuteBucket.consume(now, reserveMinute)
+		}
+	}
+	if l.dayBucket != nil {
+		reserveDay := float64(imageCount)
+		if l.dayBucket.capacity > 0 && reserveDay > l.dayBucket.capacity {
+			reserveDay = l.dayBucket.capacity
+		}
+		if reserveDay > 0 {
+			l.dayBucket.consume(now, reserveDay)
+		}
+	}
 	return 0
 }
 
-func (l *RateLimiter) prune(now time.Time) {
-	minuteCutoff := now.Add(-time.Minute)
-	dayCutoff := now.Add(-24 * time.Hour)
-
-	keptMinute := l.minuteHits[:0]
-	minuteSum := 0
-	for _, event := range l.minuteHits {
-		if event.at.After(minuteCutoff) {
-			keptMinute = append(keptMinute, event)
-			minuteSum += event.count
-		}
-	}
-	l.minuteHits = keptMinute
-	l.minuteSum = minuteSum
-
-	keptDay := l.dayHits[:0]
-	daySum := 0
-	for _, event := range l.dayHits {
-		if event.at.After(dayCutoff) {
-			keptDay = append(keptDay, event)
-			daySum += event.count
-		}
-	}
-	l.dayHits = keptDay
-	l.daySum = daySum
-}
-
 func (l *RateLimiter) waitByIPM(now time.Time, imageCount int) time.Duration {
-	if l.ipm <= 0 {
+	if l.ipm <= 0 || l.minuteBucket == nil {
 		return 0
 	}
-	if imageCount > l.ipm {
-		imageCount = l.ipm
+	reserve := float64(imageCount)
+	if l.minuteBucket.capacity > 0 && reserve > l.minuteBucket.capacity {
+		reserve = l.minuteBucket.capacity
 	}
-	if l.minuteSum+imageCount <= l.ipm {
+	if reserve <= 0 {
 		return 0
 	}
-	sum := l.minuteSum
-	for _, event := range l.minuteHits {
-		sum -= event.count
-		waitUntil := event.at.Add(time.Minute)
-		if sum+imageCount <= l.ipm {
-			if waitUntil.After(now) {
-				return waitUntil.Sub(now)
-			}
-			return 0
-		}
-	}
-	if len(l.minuteHits) > 0 {
-		waitUntil := l.minuteHits[0].at.Add(time.Minute)
-		if waitUntil.After(now) {
-			return waitUntil.Sub(now)
-		}
-	}
-	return 50 * time.Millisecond
+	return l.minuteBucket.waitDuration(now, reserve)
 }
 
 func (l *RateLimiter) waitByIPD(now time.Time, imageCount int) time.Duration {
-	if l.ipd <= 0 {
+	if l.ipd <= 0 || l.dayBucket == nil {
 		return 0
 	}
-	if imageCount > l.ipd {
-		imageCount = l.ipd
+	reserve := float64(imageCount)
+	if l.dayBucket.capacity > 0 && reserve > l.dayBucket.capacity {
+		reserve = l.dayBucket.capacity
 	}
-	if l.daySum+imageCount <= l.ipd {
+	if reserve <= 0 {
 		return 0
 	}
-	sum := l.daySum
-	for _, event := range l.dayHits {
-		sum -= event.count
-		waitUntil := event.at.Add(24 * time.Hour)
-		if sum+imageCount <= l.ipd {
-			if waitUntil.After(now) {
-				return waitUntil.Sub(now)
-			}
-			return 0
-		}
-	}
-	if len(l.dayHits) > 0 {
-		waitUntil := l.dayHits[0].at.Add(24 * time.Hour)
-		if waitUntil.After(now) {
-			return waitUntil.Sub(now)
-		}
-	}
-	return 50 * time.Millisecond
+	return l.dayBucket.waitDuration(now, reserve)
 }
 
 func maxDuration(a, b time.Duration) time.Duration {
@@ -177,4 +132,68 @@ func maxDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func newTokenBucket(capacity float64, refillPerSec float64) *tokenBucket {
+	if capacity <= 0 || refillPerSec <= 0 {
+		return nil
+	}
+	now := time.Now()
+	return &tokenBucket{
+		capacity:     capacity,
+		tokens:       capacity,
+		refillPerSec: refillPerSec,
+		lastRefill:   now,
+	}
+}
+
+func (b *tokenBucket) refill(now time.Time) {
+	if b == nil {
+		return
+	}
+	if b.lastRefill.IsZero() {
+		b.lastRefill = now
+		return
+	}
+	if now.Before(b.lastRefill) {
+		return
+	}
+	elapsed := now.Sub(b.lastRefill).Seconds()
+	if elapsed <= 0 {
+		return
+	}
+	b.tokens = math.Min(b.capacity, b.tokens+elapsed*b.refillPerSec)
+	b.lastRefill = now
+}
+
+func (b *tokenBucket) waitDuration(now time.Time, needed float64) time.Duration {
+	if b == nil || needed <= 0 {
+		return 0
+	}
+	b.refill(now)
+	if b.tokens >= needed {
+		return 0
+	}
+	deficit := needed - b.tokens
+	if b.refillPerSec <= 0 {
+		return time.Second
+	}
+	seconds := deficit / b.refillPerSec
+	wait := time.Duration(math.Ceil(seconds * float64(time.Second)))
+	if wait <= 0 {
+		return time.Millisecond
+	}
+	return wait
+}
+
+func (b *tokenBucket) consume(now time.Time, amount float64) {
+	if b == nil || amount <= 0 {
+		return
+	}
+	b.refill(now)
+	if amount >= b.tokens {
+		b.tokens = 0
+		return
+	}
+	b.tokens -= amount
 }

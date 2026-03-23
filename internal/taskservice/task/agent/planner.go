@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	agentmemory "ququchat/internal/taskservice/task/agent/memory"
 )
 
 type plannerTask struct {
@@ -61,7 +63,7 @@ func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reas
 		builder.WriteString("\n")
 	}
 	builder.WriteString("最近消息（节选）：\n")
-	builder.WriteString(buildRecentMessagesSnippet(recentMessages, 8))
+	builder.WriteString(agentmemory.BuildRecentMessagesSnippet(recentMessages, 8))
 	builder.WriteString("\n")
 	builder.WriteString("约束：\n")
 	builder.WriteString("- 仅使用允许工具：")
@@ -77,7 +79,7 @@ func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reas
 		builder.WriteString("\n")
 	}
 	builder.WriteString("输出格式：\n")
-	builder.WriteString("{\"steps\":[{\"task\":\"读取最近上下文\",\"tool\":\"read_recent_messages\"},{\"task\":\"检索相关历史片段\",\"tool\":\"search_rag\"}]}\n")
+	builder.WriteString("{\"steps\":[{\"task\":\"检索相关历史片段\",\"tool\":\"search_rag\"},{\"task\":\"整理答案并准备收敛\",\"tool\":\"finish\"}]}\n")
 	return builder.String()
 }
 
@@ -285,8 +287,8 @@ func normalizePlannerOutline(raw []plannerTask, maxSteps int, specs []ToolSpec) 
 	if len(steps) == 0 {
 		return []plannerTask{
 			{
-				Task: "读取最近消息补充上下文",
-				Tool: "read_recent_messages",
+				Task: "检索相关历史消息补充上下文",
+				Tool: "search_rag",
 			},
 		}
 	}

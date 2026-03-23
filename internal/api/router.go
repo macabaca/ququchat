@@ -10,12 +10,13 @@ import (
 	"ququchat/internal/api/handler"
 	"ququchat/internal/config"
 	"ququchat/internal/middleware"
+	cachepkg "ququchat/internal/server/cache"
 	serverstorage "ququchat/internal/server/storage"
 	taskservice "ququchat/internal/service"
 )
 
 // SetupRouter 初始化 Gin 路由，并将数据库句柄注入到上下文中
-func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string, taskService *taskservice.MainService) *gin.Engine {
+func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string, redisClient *cachepkg.RedisClient, taskService *taskservice.MainService) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
@@ -40,7 +41,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	api.POST("/auth/logout", middleware.JWTAuth(authCfg.JWTSecret), auth.Logout)
 
 	hub := handler.NewHub()
-	userHandler := handler.NewUserHandler(db, fileCfg, avatarCfg, objStorage, bucket, hub)
+	userHandler := handler.NewUserHandler(db, fileCfg, avatarCfg, objStorage, bucket, hub, redisClient)
 	friends := api.Group("/friends", middleware.JWTAuth(authCfg.JWTSecret))
 	friends.POST("/add", userHandler.AddFriend)
 	friends.POST("/remove", userHandler.RemoveFriend)
@@ -53,7 +54,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	users.GET("/:user_id/avatar/url", userHandler.GetAvatarURL)
 	users.GET("/:user_id/avatar/thumb/url", userHandler.GetAvatarThumbURL)
 
-	groupHandler := handler.NewGroupHandler(db, hub)
+	groupHandler := handler.NewGroupHandler(db, hub, redisClient)
 	groups := api.Group("/groups", middleware.JWTAuth(authCfg.JWTSecret))
 	groups.POST("/create", groupHandler.CreateGroup)
 	groups.GET("/:group_id", groupHandler.GetGroupDetail)
@@ -82,7 +83,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	files.POST("/multipart/complete", fileHandler.CompleteMultipartUpload)
 	files.POST("/multipart/abort", fileHandler.AbortMultipartUpload)
 
-	wsHandler := handler.NewWsHandler(db, hub, taskService)
+	wsHandler := handler.NewWsHandler(db, hub, redisClient, taskService)
 	if err := wsHandler.StartTaskDoneConsumer(context.Background()); err != nil {
 		log.Printf("start done-event consumer failed: %v", err)
 	}

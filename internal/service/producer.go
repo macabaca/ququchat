@@ -15,7 +15,9 @@ import (
 
 type Producer struct {
 	store                 tasksvc.Store
-	queue                 tasksvc.ProducerQueue
+	highQueue             tasksvc.ProducerQueue
+	normalQueue           tasksvc.ProducerQueue
+	lowQueue              tasksvc.ProducerQueue
 	inputRetryMaxAttempts int
 	inputRetryDelay       time.Duration
 }
@@ -32,20 +34,28 @@ func NewProducer(db *gorm.DB, opts tasksvc.RuntimeOptions) *Producer {
 	if queueTransport == "" {
 		queueTransport = "rabbitmq"
 	}
-	queue := tasksvc.ProducerQueue(localUnavailableQueue{reason: fmt.Errorf("unsupported queue transport: %s", queueTransport)})
+	highQueue := tasksvc.ProducerQueue(localUnavailableQueue{reason: fmt.Errorf("unsupported queue transport: %s", queueTransport)})
+	normalQueue := tasksvc.ProducerQueue(localUnavailableQueue{reason: fmt.Errorf("unsupported queue transport: %s", queueTransport)})
+	lowQueue := tasksvc.ProducerQueue(localUnavailableQueue{reason: fmt.Errorf("unsupported queue transport: %s", queueTransport)})
 	if queueTransport == "rabbitmq" {
-		rmqQueue, err := tasksvc.NewRabbitMQProducer(tasksvc.RabbitMQQueueOptions{
-			URL:          opts.QueueRabbitMQURL,
-			QueueName:    opts.QueueRabbitMQName,
-			ExchangeName: opts.QueueRabbitMQExchange,
-			MaxPriority:  opts.QueueRabbitMQMaxPriority,
-		})
-		if err == nil {
-			queue = rmqQueue
-		} else {
-			log.Printf("init producer rabbitmq queue failed: %v", err)
-			queue = localUnavailableQueue{reason: fmt.Errorf("init producer rabbitmq queue failed: %w", err)}
+		topology := resolveRabbitMQPriorityTopology(opts)
+		newQueue := func(queueName string, exchangeName string) tasksvc.ProducerQueue {
+			rmqQueue, err := tasksvc.NewRabbitMQProducer(tasksvc.RabbitMQQueueOptions{
+				URL:          opts.QueueRabbitMQURL,
+				QueueName:    queueName,
+				ExchangeName: exchangeName,
+				MaxPriority:  opts.QueueRabbitMQMaxPriority,
+				MaxLength:    opts.QueueRabbitMQMaxLength,
+			})
+			if err == nil {
+				return rmqQueue
+			}
+			log.Printf("init producer rabbitmq queue failed queue=%s: %v", queueName, err)
+			return localUnavailableQueue{reason: fmt.Errorf("init producer rabbitmq queue failed queue=%s: %w", queueName, err)}
 		}
+		highQueue = newQueue(topology.HighQueueName, topology.HighExchangeName)
+		normalQueue = newQueue(topology.NormalQueueName, topology.NormalExchangeName)
+		lowQueue = newQueue(topology.LowQueueName, topology.LowExchangeName)
 	}
 	inputRetryMaxAttempts := opts.InputRetryMaxAttempts
 	if inputRetryMaxAttempts <= 0 {
@@ -57,18 +67,25 @@ func NewProducer(db *gorm.DB, opts tasksvc.RuntimeOptions) *Producer {
 	}
 	return &Producer{
 		store:                 store,
-		queue:                 queue,
+		highQueue:             highQueue,
+		normalQueue:           normalQueue,
+		lowQueue:              lowQueue,
 		inputRetryMaxAttempts: inputRetryMaxAttempts,
 		inputRetryDelay:       inputRetryDelay,
 	}
 }
 
 func (p *Producer) Close() {
-	if p == nil || p.queue == nil {
+	if p == nil {
 		return
 	}
-	if closer, ok := p.queue.(interface{ Close() error }); ok {
-		_ = closer.Close()
+	for _, queue := range []tasksvc.ProducerQueue{p.highQueue, p.normalQueue, p.lowQueue} {
+		if queue == nil {
+			continue
+		}
+		if closer, ok := queue.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
 	}
 }
 
@@ -106,10 +123,11 @@ func (p *Producer) SubmitFakeLLM(req tasksvc.SubmitFakeLLMRequest) (*tasksvc.Tas
 	if t.Payload.FakeLLM.Prompt == "" {
 		return nil, tasksvc.ErrInvalidFakeLLMPrompt
 	}
-	if err := p.createAndEnqueue(t); err != nil {
+	doneTask, err := p.createAndEnqueue(t)
+	if err != nil {
 		return nil, err
 	}
-	return t.Clone(), nil
+	return doneTask.Clone(), nil
 }
 
 func (p *Producer) SubmitLLM(req tasksvc.SubmitLLMRequest) (*tasksvc.Task, error) {
@@ -131,10 +149,11 @@ func (p *Producer) SubmitLLM(req tasksvc.SubmitLLMRequest) (*tasksvc.Task, error
 	if t.Payload.LLM.Prompt == "" {
 		return nil, tasksvc.ErrInvalidLLMPrompt
 	}
-	if err := p.createAndEnqueue(t); err != nil {
+	doneTask, err := p.createAndEnqueue(t)
+	if err != nil {
 		return nil, err
 	}
-	return t.Clone(), nil
+	return doneTask.Clone(), nil
 }
 
 func (p *Producer) SubmitSummary(req tasksvc.SubmitSummaryRequest) (*tasksvc.Task, error) {
@@ -156,10 +175,11 @@ func (p *Producer) SubmitSummary(req tasksvc.SubmitSummaryRequest) (*tasksvc.Tas
 	if t.Payload.Summary.Prompt == "" {
 		return nil, tasksvc.ErrInvalidSummaryPrompt
 	}
-	if err := p.createAndEnqueue(t); err != nil {
+	doneTask, err := p.createAndEnqueue(t)
+	if err != nil {
 		return nil, err
 	}
-	return t.Clone(), nil
+	return doneTask.Clone(), nil
 }
 
 func (p *Producer) SubmitAgent(req tasksvc.SubmitAgentRequest) (*tasksvc.Task, error) {
@@ -184,10 +204,11 @@ func (p *Producer) SubmitAgent(req tasksvc.SubmitAgentRequest) (*tasksvc.Task, e
 	if t.Payload.Agent.Goal == "" {
 		return nil, tasksvc.ErrInvalidAgentGoal
 	}
-	if err := p.createAndEnqueue(t); err != nil {
+	doneTask, err := p.createAndEnqueue(t)
+	if err != nil {
 		return nil, err
 	}
-	return t.Clone(), nil
+	return doneTask.Clone(), nil
 }
 
 func (p *Producer) SubmitRAG(req tasksvc.SubmitRAGRequest) (*tasksvc.Task, error) {
@@ -214,10 +235,11 @@ func (p *Producer) SubmitRAG(req tasksvc.SubmitRAGRequest) (*tasksvc.Task, error
 	if t.Payload.RAG.RoomID == "" {
 		return nil, tasksvc.ErrInvalidRAGRoomID
 	}
-	if err := p.createAndEnqueue(t); err != nil {
+	doneTask, err := p.createAndEnqueue(t)
+	if err != nil {
 		return nil, err
 	}
-	return t.Clone(), nil
+	return doneTask.Clone(), nil
 }
 
 func (p *Producer) SubmitRAGSearch(req tasksvc.SubmitRAGSearchRequest) (*tasksvc.Task, error) {
@@ -245,10 +267,11 @@ func (p *Producer) SubmitRAGSearch(req tasksvc.SubmitRAGSearchRequest) (*tasksvc
 	if t.Payload.RAGSearch.Query == "" {
 		return nil, tasksvc.ErrInvalidRAGSearchQuery
 	}
-	if err := p.createAndEnqueue(t); err != nil {
+	doneTask, err := p.createAndEnqueue(t)
+	if err != nil {
 		return nil, err
 	}
-	return t.Clone(), nil
+	return doneTask.Clone(), nil
 }
 
 func (p *Producer) SubmitRAGAddMemory(req tasksvc.SubmitRAGAddMemoryRequest) (*tasksvc.Task, error) {
@@ -279,24 +302,32 @@ func (p *Producer) SubmitRAGAddMemory(req tasksvc.SubmitRAGAddMemoryRequest) (*t
 	if t.Payload.RAGAddMem.StartSequenceID <= 0 || t.Payload.RAGAddMem.EndSequenceID <= 0 || t.Payload.RAGAddMem.StartSequenceID > t.Payload.RAGAddMem.EndSequenceID {
 		return nil, tasksvc.ErrInvalidRAGMemorySequenceRange
 	}
-	if err := p.createAndEnqueue(t); err != nil {
+	doneTask, err := p.createAndEnqueue(t)
+	if err != nil {
 		return nil, err
 	}
-	return t.Clone(), nil
+	return doneTask.Clone(), nil
 }
 
-func (p *Producer) createAndEnqueue(t *tasksvc.Task) error {
-	if p == nil || p.store == nil || p.queue == nil || t == nil {
-		return errors.New("producer not initialized")
+func (p *Producer) createAndEnqueue(t *tasksvc.Task) (*tasksvc.Task, error) {
+	if p == nil || p.store == nil || t == nil {
+		return nil, errors.New("producer not initialized")
 	}
+	t.RequestID = normalizeRequestID(t.RequestID, t.ID)
 	if err := p.store.Create(t); err != nil {
-		return err
+		if errors.Is(err, tasksvc.ErrTaskDuplicateRequestID) {
+			existing, ok := p.store.GetByRequestID(t.RequestID)
+			if ok && existing != nil {
+				return existing.Clone(), nil
+			}
+		}
+		return nil, err
 	}
 	if err := p.enqueueWithRetry(t.Clone()); err != nil {
 		_, _ = p.store.MarkFailed(t.ID, err.Error())
-		return err
+		return nil, err
 	}
-	return nil
+	return t.Clone(), nil
 }
 
 func (p *Producer) enqueueWithRetry(task *tasksvc.Task) error {
@@ -308,19 +339,99 @@ func (p *Producer) enqueueWithRetry(task *tasksvc.Task) error {
 	if delay <= 0 {
 		delay = 100 * time.Millisecond
 	}
+	queue := p.queueForPriority(task.Priority)
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		lastErr = p.queue.Push(task)
+		lastErr = queue.Push(task)
 		if lastErr == nil {
 			return nil
 		}
-		log.Printf("[task-producer-enqueue-retry] task=%s attempt=%d/%d err=%v", task.ID, attempt, maxAttempts, lastErr)
+		log.Printf("[task-producer-enqueue-retry] task=%s priority=%d attempt=%d/%d err=%v", task.ID, task.Priority, attempt, maxAttempts, lastErr)
 		if attempt == maxAttempts {
 			break
 		}
 		time.Sleep(delay)
 	}
-	return fmt.Errorf("enqueue failed after retries task=%s: %w", task.ID, lastErr)
+	return fmt.Errorf("enqueue failed after retries task=%s priority=%d: %w", task.ID, task.Priority, lastErr)
+}
+
+func (p *Producer) queueForPriority(priority tasksvc.Priority) tasksvc.ProducerQueue {
+	if p == nil {
+		return localUnavailableQueue{reason: errors.New("producer is nil")}
+	}
+	switch priority {
+	case tasksvc.PriorityHigh:
+		if p.highQueue != nil {
+			return p.highQueue
+		}
+	case tasksvc.PriorityLow:
+		if p.lowQueue != nil {
+			return p.lowQueue
+		}
+	default:
+		if p.normalQueue != nil {
+			return p.normalQueue
+		}
+	}
+	if p.normalQueue != nil {
+		return p.normalQueue
+	}
+	if p.highQueue != nil {
+		return p.highQueue
+	}
+	if p.lowQueue != nil {
+		return p.lowQueue
+	}
+	return localUnavailableQueue{reason: errors.New("producer queue is unavailable")}
+}
+
+type rabbitMQPriorityTopology struct {
+	HighQueueName      string
+	NormalQueueName    string
+	LowQueueName       string
+	HighExchangeName   string
+	NormalExchangeName string
+	LowExchangeName    string
+}
+
+func resolveRabbitMQPriorityTopology(opts tasksvc.RuntimeOptions) rabbitMQPriorityTopology {
+	baseQueueName := strings.TrimSpace(opts.QueueRabbitMQName)
+	if baseQueueName == "" {
+		baseQueueName = "ququchat.task.queue"
+	}
+	baseExchangeName := strings.TrimSpace(opts.QueueRabbitMQExchange)
+	if baseExchangeName == "" {
+		baseExchangeName = baseQueueName + ".exchange"
+	}
+	return rabbitMQPriorityTopology{
+		HighQueueName:      firstNonEmpty(opts.QueueRabbitMQHighName, baseQueueName+".high"),
+		NormalQueueName:    firstNonEmpty(opts.QueueRabbitMQNormalName, baseQueueName+".normal"),
+		LowQueueName:       firstNonEmpty(opts.QueueRabbitMQLowName, baseQueueName+".low"),
+		HighExchangeName:   firstNonEmpty(opts.QueueRabbitMQHighExchange, baseExchangeName+".high"),
+		NormalExchangeName: firstNonEmpty(opts.QueueRabbitMQNormalExchange, baseExchangeName+".normal"),
+		LowExchangeName:    firstNonEmpty(opts.QueueRabbitMQLowExchange, baseExchangeName+".low"),
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func normalizeRequestID(requestID string, fallbackTaskID string) string {
+	requestID = strings.TrimSpace(requestID)
+	if requestID != "" {
+		return requestID
+	}
+	if strings.TrimSpace(fallbackTaskID) != "" {
+		return strings.TrimSpace(fallbackTaskID)
+	}
+	return uuid.NewString()
 }
 
 type localUnavailableQueue struct {

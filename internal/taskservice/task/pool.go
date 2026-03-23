@@ -78,6 +78,8 @@ func (p *Pool) runWorker(ctx context.Context, workerID int) {
 		if err != nil {
 			if errors.Is(err, ErrTaskNotFound) {
 				_ = msg.Ack()
+			} else if errors.Is(err, ErrTaskAlreadyStarted) || errors.Is(err, ErrTaskAlreadyCompleted) {
+				_ = msg.Ack()
 			} else {
 				recoveredRunningTask := (*Task)(nil)
 				processErr := p.retryInputOperation(ctx, t.ID, "mark_running", func() error {
@@ -104,6 +106,10 @@ func (p *Pool) runWorker(ctx context.Context, workerID int) {
 		if execErr != nil {
 			doneTask, err := p.store.MarkFailed(t.ID, execErr.Error())
 			if err != nil {
+				if errors.Is(err, ErrTaskAlreadyCompleted) || errors.Is(err, ErrTaskAlreadyStarted) {
+					_ = msg.Ack()
+					continue
+				}
 				log.Printf("[task-worker-%d] mark failed failed task=%s err=%v", workerID, t.ID, err)
 			} else {
 				p.publishDone(ctx, doneTask.Clone())
@@ -113,15 +119,22 @@ func (p *Pool) runWorker(ctx context.Context, workerID int) {
 		}
 		doneTask, err := p.store.MarkSucceeded(t.ID, result)
 		if err != nil {
-			processErr := p.retryInputOperation(ctx, t.ID, "mark_succeeded", func() error {
-				_, opErr := p.store.MarkSucceeded(t.ID, result)
-				return opErr
-			})
-			if processErr != nil {
-				_ = p.markFailedWithLog(t.ID, processErr)
-				log.Printf("[task-worker-%d] mark succeeded failed and reached retry limit task=%s err=%v", workerID, t.ID, processErr)
+			if errors.Is(err, ErrTaskAlreadyCompleted) || errors.Is(err, ErrTaskAlreadyStarted) {
+				currentTask, ok := p.store.Get(t.ID)
+				if ok && currentTask != nil {
+					doneTask = currentTask
+				}
 			} else {
-				doneTask, _ = p.store.Get(t.ID)
+				processErr := p.retryInputOperation(ctx, t.ID, "mark_succeeded", func() error {
+					_, opErr := p.store.MarkSucceeded(t.ID, result)
+					return opErr
+				})
+				if processErr != nil {
+					_ = p.markFailedWithLog(t.ID, processErr)
+					log.Printf("[task-worker-%d] mark succeeded failed and reached retry limit task=%s err=%v", workerID, t.ID, processErr)
+				} else {
+					doneTask, _ = p.store.Get(t.ID)
+				}
 			}
 		}
 		p.publishDone(ctx, doneTask.Clone())

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -252,6 +253,14 @@ func (s *MainService) StartDoneEventConsumer(ctx context.Context, handler DoneEv
 	if strings.TrimSpace(s.doneEventURL) == "" || strings.TrimSpace(s.doneEventQueue) == "" {
 		return nil
 	}
+	dlqConsumer, err := NewRabbitMQDoneEventDeadLetterConsumer(RabbitMQDoneEventDeadLetterConsumerOptions{
+		URL: s.doneEventURL,
+		DB:  s.db,
+	})
+	if err != nil {
+		s.doneConsumerErr = err
+		return err
+	}
 	consumer, err := NewRabbitMQDoneEventConsumer(RabbitMQDoneEventConsumerOptions{
 		URL:              s.doneEventURL,
 		QueueName:        s.doneEventQueue,
@@ -264,6 +273,11 @@ func (s *MainService) StartDoneEventConsumer(ctx context.Context, handler DoneEv
 		return err
 	}
 	s.doneConsumerUp = true
+	go func() {
+		if runErr := dlqConsumer.Start(ctx); runErr != nil {
+			log.Printf("done-event dlq consumer exited: %v", runErr)
+		}
+	}()
 	go func() {
 		runErr := consumer.Start(ctx, handler)
 		s.doneConsumerMu.Lock()

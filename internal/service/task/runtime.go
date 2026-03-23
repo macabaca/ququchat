@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"time"
-
-	"ququchat/internal/service/task/mcpclient"
 )
 
 type RuntimeOptions struct {
@@ -16,7 +14,14 @@ type RuntimeOptions struct {
 	QueueRabbitMQURL                 string
 	QueueRabbitMQName                string
 	QueueRabbitMQExchange            string
+	QueueRabbitMQHighName            string
+	QueueRabbitMQNormalName          string
+	QueueRabbitMQLowName             string
+	QueueRabbitMQHighExchange        string
+	QueueRabbitMQNormalExchange      string
+	QueueRabbitMQLowExchange         string
 	QueueRabbitMQMaxPriority         int
+	QueueRabbitMQMaxLength           int
 	DoneEventRabbitMQURL             string
 	DoneEventQueueName               string
 	DoneEventPublishRetryMaxAttempts int
@@ -35,7 +40,6 @@ type RuntimeOptions struct {
 	LLMAPIKey                        string
 	LLMBaseURL                       string
 	LLMModel                         string
-	AIGCClient                       AIGCClient
 	AIGCTransport                    string
 	AIGCMQURL                        string
 	AIGCMQQueue                      string
@@ -46,7 +50,6 @@ type RuntimeOptions struct {
 	EmbeddingModelSummary            string
 	SummaryVectorDim                 int
 	RAGHandler                       RAGHandler
-	MCPMultiClient                   *mcpclient.MultiClient
 	OnFinish                         func(ctx context.Context, doneTask *Task)
 }
 

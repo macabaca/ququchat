@@ -29,7 +29,13 @@ func (s *GormStore) Create(t *Task) error {
 	if err != nil {
 		return err
 	}
-	return s.db.Create(row).Error
+	if err := s.db.Create(row).Error; err != nil {
+		if isDuplicateRequestIDError(err) {
+			return ErrTaskDuplicateRequestID
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *GormStore) Get(taskID string) (*Task, bool) {
@@ -51,31 +57,81 @@ func (s *GormStore) Get(taskID string) (*Task, bool) {
 	return t, true
 }
 
+func (s *GormStore) GetByRequestID(requestID string) (*Task, bool) {
+	if s == nil || s.db == nil {
+		return nil, false
+	}
+	reqID := strings.TrimSpace(requestID)
+	if reqID == "" {
+		return nil, false
+	}
+	var row models.TaskJob
+	err := s.db.Where("request_id = ?", reqID).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false
+	}
+	if err != nil {
+		return nil, false
+	}
+	t, convertErr := fromTaskJob(&row)
+	if convertErr != nil {
+		return nil, false
+	}
+	return t, true
+}
+
 func (s *GormStore) MarkRunning(taskID string) (*Task, error) {
-	return s.updateStatus(strings.TrimSpace(taskID), func(t *Task) {
+	return s.updateStatus(strings.TrimSpace(taskID), func(t *Task) error {
+		if t.Status == StatusRunning {
+			return ErrTaskAlreadyStarted
+		}
+		if t.Status == StatusSucceeded || t.Status == StatusFailed {
+			return ErrTaskAlreadyCompleted
+		}
 		t.Status = StatusRunning
 		t.UpdatedAt = time.Now()
+		return nil
 	})
 }
 
 func (s *GormStore) MarkSucceeded(taskID string, result Result) (*Task, error) {
-	return s.updateStatus(strings.TrimSpace(taskID), func(t *Task) {
+	return s.updateStatus(strings.TrimSpace(taskID), func(t *Task) error {
+		if t.Status == StatusSucceeded {
+			return nil
+		}
+		if t.Status == StatusFailed {
+			return ErrTaskAlreadyCompleted
+		}
+		if t.Status != StatusRunning {
+			return ErrTaskAlreadyStarted
+		}
 		t.Status = StatusSucceeded
 		t.Result = result
 		t.ErrorMessage = ""
 		t.UpdatedAt = time.Now()
+		return nil
 	})
 }
 
 func (s *GormStore) MarkFailed(taskID string, message string) (*Task, error) {
-	return s.updateStatus(strings.TrimSpace(taskID), func(t *Task) {
+	return s.updateStatus(strings.TrimSpace(taskID), func(t *Task) error {
+		if t.Status == StatusFailed {
+			return nil
+		}
+		if t.Status == StatusSucceeded {
+			return ErrTaskAlreadyCompleted
+		}
+		if t.Status != StatusRunning {
+			return ErrTaskAlreadyStarted
+		}
 		t.Status = StatusFailed
 		t.ErrorMessage = message
 		t.UpdatedAt = time.Now()
+		return nil
 	})
 }
 
-func (s *GormStore) updateStatus(taskID string, mutate func(t *Task)) (*Task, error) {
+func (s *GormStore) updateStatus(taskID string, mutate func(t *Task) error) (*Task, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("gorm store db is nil")
 	}
@@ -92,7 +148,10 @@ func (s *GormStore) updateStatus(taskID string, mutate func(t *Task)) (*Task, er
 		if err != nil {
 			return err
 		}
-		mutate(t)
+		if err := mutate(t); err != nil {
+			doneTask = t.Clone()
+			return err
+		}
 		nextRow, err := toTaskJob(t)
 		if err != nil {
 			return err
@@ -112,6 +171,17 @@ func (s *GormStore) updateStatus(taskID string, mutate func(t *Task)) (*Task, er
 		return nil, err
 	}
 	return doneTask, nil
+}
+
+func isDuplicateRequestIDError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate") && strings.Contains(msg, "request_id")
 }
 
 func toTaskJob(t *Task) (*models.TaskJob, error) {

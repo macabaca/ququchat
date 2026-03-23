@@ -4,21 +4,17 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"ququchat/internal/api"
 	"ququchat/internal/config"
+	cachepkg "ququchat/internal/server/cache"
 	database "ququchat/internal/server/db"
 	"ququchat/internal/server/storage"
 	taskservice "ququchat/internal/service"
-	filesvc "ququchat/internal/service/file"
 	tasksvc "ququchat/internal/service/task"
-	"ququchat/internal/service/task/aigcmq"
-	"ququchat/internal/service/task/embeddingmq"
-	"ququchat/internal/service/task/llmmq"
-	"ququchat/internal/service/task/openaicompat"
 )
 
 func main() {
@@ -77,64 +73,6 @@ func main() {
 		log.Fatalf("不支持的对象存储 provider: %s", provider)
 	}
 
-	var ragEmbeddingProvider tasksvc.EmbeddingProvider
-	if cfg.Embedding.TransportOrDefault() == "rabbitmq" {
-		ragEmbeddingProvider, err = tasksvc.NewMQEmbeddingProvider(tasksvc.MQEmbeddingProviderOptions{
-			URL:             cfg.Embedding.RabbitMQURL,
-			RequestQueue:    cfg.Embedding.RequestQueueOrDefault(),
-			ResponseTimeout: cfg.Embedding.ResponseTimeoutOrDefault(),
-		})
-		if err != nil {
-			log.Fatalf("初始化 RAG Embedding MQ client 失败: %v", err)
-		}
-	} else {
-		directEmbeddingClient, directErr := openaicompat.NewEmbeddingClient(openaicompat.EmbeddingOptions{
-			APIKey:  cfg.Embedding.APIKey,
-			BaseURL: cfg.Embedding.BaseURLOrDefault(),
-			Model:   cfg.Embedding.ModelOrDefault(),
-		})
-		if directErr != nil {
-			log.Fatalf("初始化 RAG Embedding 直连 client 失败: %v", directErr)
-		}
-		ragEmbeddingProvider = tasksvc.NewDirectEmbeddingProvider(directEmbeddingClient.Embed)
-	}
-	var ragVectorStore tasksvc.VectorStore
-	if strings.EqualFold(cfg.Vector.ProviderOrDefault(), "qdrant") {
-		ragVectorStore, err = tasksvc.NewQdrantVectorStore(tasksvc.QdrantVectorStoreOptions{
-			BaseURL:          cfg.Vector.QdrantURLOrDefault(),
-			APIKey:           cfg.Vector.APIKey,
-			Collection:       cfg.Vector.CollectionOrDefault(),
-			Timeout:          cfg.Vector.TimeoutOrDefault(),
-			SummaryVectorDim: cfg.Vector.SummaryVectorDimOrDefault(),
-		})
-		if err != nil {
-			log.Fatalf("初始化 Qdrant vector store 失败: %v", err)
-		}
-	} else {
-		log.Fatalf("不支持的向量存储 provider: %s", cfg.Vector.ProviderOrDefault())
-	}
-	var ragLLMClient tasksvc.LLMClient
-	if cfg.LLM.TransportOrDefault() == "rabbitmq" {
-		ragLLMClient, err = llmmq.NewClient(llmmq.ClientOptions{
-			URL:             cfg.LLM.RabbitMQURL,
-			RequestQueue:    cfg.LLM.RequestQueueOrDefault(),
-			ResponseTimeout: cfg.LLM.ResponseTimeoutOrDefault(),
-		})
-		if err != nil {
-			log.Fatalf("初始化 RAG LLM MQ client 失败: %v", err)
-		}
-	} else {
-		directLLMClient, directErr := openaicompat.NewLLMClient(openaicompat.LLMOptions{
-			APIKey:  cfg.LLM.APIKey,
-			BaseURL: cfg.LLM.BaseURLOrDefault(),
-			Model:   cfg.LLM.ModelOrDefault(),
-		})
-		if directErr != nil {
-			log.Fatalf("初始化 RAG LLM 直连 client 失败: %v", directErr)
-		}
-		ragLLMClient = directLLMClient
-	}
-
 	authCfg := cfg.Auth.ToSettings()
 	commandPriorityRules := make([]taskservice.CommandPriorityRule, 0)
 	if taskPriorityCfg != nil {
@@ -146,160 +84,40 @@ func main() {
 		}
 	}
 	taskService := taskservice.NewMainServiceWithOptions(db, tasksvc.RuntimeOptions{
-		QueueHighCap:                     cfg.Task.QueueHighCapOrDefault(),
-		QueueNormalCap:                   cfg.Task.QueueNormalCapOrDefault(),
-		QueueLowCap:                      cfg.Task.QueueLowCapOrDefault(),
 		QueueTransport:                   cfg.Task.QueueTransportOrDefault(),
 		QueueRabbitMQURL:                 cfg.Task.QueueRabbitMQURL,
 		QueueRabbitMQName:                cfg.Task.QueueRabbitMQNameOrDefault(),
 		QueueRabbitMQExchange:            cfg.Task.QueueRabbitMQExchangeOrDefault(),
 		QueueRabbitMQMaxPriority:         cfg.Task.QueueRabbitMQMaxPriorityOrDefault(),
+		QueueRabbitMQMaxLength:           cfg.Task.QueueRabbitMQMaxLengthOrDefault(),
 		DoneEventRabbitMQURL:             cfg.Task.DoneEventMQURLOrDefault(),
 		DoneEventQueueName:               cfg.Task.DoneEventQueueOrDefault(),
-		DoneEventPublishRetryMaxAttempts: cfg.Task.DonePublishRetryMaxAttemptsOrDefault(),
-		DoneEventPublishRetryDelay:       cfg.Task.DonePublishRetryDelayOrDefault(),
 		DoneEventConsumeRetryMaxAttempts: cfg.Task.DoneConsumeRetryMaxAttemptsOrDefault(),
 		DoneEventConsumeRetryDelay:       cfg.Task.DoneConsumeRetryDelayOrDefault(),
 		InputRetryMaxAttempts:            cfg.Task.InputRetryMaxAttemptsOrDefault(),
 		InputRetryDelay:                  cfg.Task.InputRetryDelayOrDefault(),
-		WorkerSize:                       cfg.Task.WorkerSizeOrDefault(),
-		LLMTransport:                     cfg.LLM.TransportOrDefault(),
-		LLMMQURL:                         cfg.LLM.RabbitMQURL,
-		LLMMQQueue:                       cfg.LLM.RequestQueueOrDefault(),
-		LLMMQTimeout:                     cfg.LLM.ResponseTimeoutOrDefault(),
-		LLMClient:                        ragLLMClient,
-		LLMAPIKey:                        cfg.LLM.APIKey,
-		LLMBaseURL:                       cfg.LLM.BaseURLOrDefault(),
-		LLMModel:                         cfg.LLM.ModelOrDefault(),
-		AIGCTransport:                    cfg.AIGC.TransportOrDefault(),
-		AIGCMQURL:                        cfg.AIGC.RabbitMQURL,
-		AIGCMQQueue:                      cfg.AIGC.RequestQueueOrDefault(),
-		AIGCMQTimeout:                    cfg.AIGC.ResponseTimeoutOrDefault(),
-		EmbeddingProvider:                ragEmbeddingProvider,
-		VectorStore:                      ragVectorStore,
-		EmbeddingModelRaw:                cfg.Embedding.ModelOrDefault(),
-		EmbeddingModelSummary:            cfg.Embedding.ModelOrDefault(),
-		SummaryVectorDim:                 cfg.Vector.SummaryVectorDimOrDefault(),
 	}, taskservice.ServiceOptions{
 		CommandPriorityRules: commandPriorityRules,
 	})
 	log.Printf("主进程不启动 Task Runtime，仅提供任务提交与状态能力")
-	if cfg.LLM.TransportOrDefault() == "rabbitmq" {
-		provider, err := openaicompat.NewLLMClient(openaicompat.LLMOptions{
-			APIKey:  cfg.LLM.APIKey,
-			BaseURL: cfg.LLM.BaseURLOrDefault(),
-			Model:   cfg.LLM.ModelOrDefault(),
-		})
-		if err != nil {
-			log.Fatalf("初始化 LLM provider 失败: %v", err)
-		}
-		llmPool, err := llmmq.NewPool(llmmq.PoolOptions{
-			URL:          cfg.LLM.RabbitMQURL,
-			RequestQueue: cfg.LLM.RequestQueueOrDefault(),
-			Provider:     provider,
-			Size:         cfg.LLM.WorkerSizeOrDefault(),
-			RPM:          cfg.LLM.RPMOrDefault(),
-			TPM:          cfg.LLM.TPMOrDefault(),
-		})
-		if err != nil {
-			log.Fatalf("初始化 LLM worker pool 失败: %v", err)
-		}
-		if err := llmPool.Start(context.Background()); err != nil {
-			log.Fatalf("启动 LLM worker pool 失败: %v", err)
-		}
-		defer func() {
-			if err := llmPool.Shutdown(context.Background()); err != nil {
-				log.Printf("LLM worker pool 关闭失败: %v", err)
-			}
-		}()
-		log.Printf(
-			"LLM worker pool 已启动，worker 数量: %d, RPM: %d, TPM: %d",
-			cfg.LLM.WorkerSizeOrDefault(),
-			cfg.LLM.RPMOrDefault(),
-			cfg.LLM.TPMOrDefault(),
-		)
+
+	redisClient := cachepkg.NewRedisClient(cachepkg.RedisOptions{})
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := redisClient.Ping(pingCtx); err != nil {
+		log.Printf("Redis 不可用，缓存已降级为 DB 直连: %v", err)
+		_ = redisClient.Close()
+		redisClient = nil
 	}
-	if cfg.Embedding.TransportOrDefault() == "rabbitmq" {
-		provider, err := openaicompat.NewEmbeddingClient(openaicompat.EmbeddingOptions{
-			APIKey:  cfg.Embedding.APIKey,
-			BaseURL: cfg.Embedding.BaseURLOrDefault(),
-			Model:   cfg.Embedding.ModelOrDefault(),
-		})
-		if err != nil {
-			log.Fatalf("初始化 Embedding provider 失败: %v", err)
-		}
-		embeddingPool, err := embeddingmq.NewPool(embeddingmq.PoolOptions{
-			URL:          cfg.Embedding.RabbitMQURL,
-			RequestQueue: cfg.Embedding.RequestQueueOrDefault(),
-			Provider:     provider,
-			Size:         cfg.Embedding.WorkerSizeOrDefault(),
-			RPM:          cfg.Embedding.RPMOrDefault(),
-			TPM:          cfg.Embedding.TPMOrDefault(),
-		})
-		if err != nil {
-			log.Fatalf("初始化 Embedding worker pool 失败: %v", err)
-		}
-		if err := embeddingPool.Start(context.Background()); err != nil {
-			log.Fatalf("启动 Embedding worker pool 失败: %v", err)
-		}
+	pingCancel()
+	if redisClient != nil {
 		defer func() {
-			if err := embeddingPool.Shutdown(context.Background()); err != nil {
-				log.Printf("Embedding worker pool 关闭失败: %v", err)
+			if err := redisClient.Close(); err != nil {
+				log.Printf("Redis 关闭失败: %v", err)
 			}
 		}()
-		log.Printf(
-			"Embedding worker pool 已启动，worker 数量: %d, RPM: %d, TPM: %d",
-			cfg.Embedding.WorkerSizeOrDefault(),
-			cfg.Embedding.RPMOrDefault(),
-			cfg.Embedding.TPMOrDefault(),
-		)
-	}
-	if cfg.AIGC.TransportOrDefault() == "rabbitmq" {
-		provider, err := openaicompat.NewAIGCClient(openaicompat.AIGCOptions{
-			APIKey:  cfg.AIGC.APIKey,
-			BaseURL: cfg.AIGC.BaseURLOrDefault(),
-			Model:   cfg.AIGC.ModelOrDefault(),
-		})
-		if err != nil {
-			log.Fatalf("初始化 AIGC provider 失败: %v", err)
-		}
-		thumb := filesvc.ThumbnailOptions{
-			MaxDimension:   cfg.File.Thumbnail.MaxDimensionOrDefault(),
-			JPEGQuality:    cfg.File.Thumbnail.JPEGQualityOrDefault(),
-			RetryCount:     cfg.File.Thumbnail.RetryCountOrDefault(),
-			RetryDelay:     cfg.File.Thumbnail.RetryDelayDuration(),
-			MaxSourceBytes: cfg.File.Thumbnail.MaxSourceBytesOrDefault(),
-		}
-		aigcFileService := filesvc.NewService(db, objStorage, bucket, cfg.File.MaxSizeBytes, cfg.File.RetentionDuration(), thumb)
-		aigcPool, err := aigcmq.NewPool(aigcmq.PoolOptions{
-			URL:             cfg.AIGC.RabbitMQURL,
-			RequestQueue:    cfg.AIGC.RequestQueueOrDefault(),
-			Provider:        provider,
-			AttachmentSaver: aigcFileService,
-			Size:            cfg.AIGC.WorkerSizeOrDefault(),
-			IPM:             cfg.AIGC.IPMOrDefault(),
-			IPD:             cfg.AIGC.IPDOrDefault(),
-		})
-		if err != nil {
-			log.Fatalf("初始化 AIGC worker pool 失败: %v", err)
-		}
-		if err := aigcPool.Start(context.Background()); err != nil {
-			log.Fatalf("启动 AIGC worker pool 失败: %v", err)
-		}
-		defer func() {
-			if err := aigcPool.Shutdown(context.Background()); err != nil {
-				log.Printf("AIGC worker pool 关闭失败: %v", err)
-			}
-		}()
-		log.Printf(
-			"AIGC worker pool 已启动，worker 数量: %d, IPM: %d, IPD: %d",
-			cfg.AIGC.WorkerSizeOrDefault(),
-			cfg.AIGC.IPMOrDefault(),
-			cfg.AIGC.IPDOrDefault(),
-		)
 	}
 
-	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket, taskService)
+	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket, redisClient, taskService)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"ququchat/internal/taskservice/task/aigcmq"
@@ -22,7 +23,14 @@ type RuntimeOptions struct {
 	QueueRabbitMQURL                 string
 	QueueRabbitMQName                string
 	QueueRabbitMQExchange            string
+	QueueRabbitMQHighName            string
+	QueueRabbitMQNormalName          string
+	QueueRabbitMQLowName             string
+	QueueRabbitMQHighExchange        string
+	QueueRabbitMQNormalExchange      string
+	QueueRabbitMQLowExchange         string
 	QueueRabbitMQMaxPriority         int
+	QueueRabbitMQMaxLength           int
 	DoneEventRabbitMQURL             string
 	DoneEventQueueName               string
 	DoneEventPublishRetryMaxAttempts int
@@ -57,9 +65,9 @@ type RuntimeOptions struct {
 }
 
 type Runtime struct {
-	store Store
-	queue ConsumerQueue
-	pool  *Pool
+	store  Store
+	queues []ConsumerQueue
+	pools  []*Pool
 }
 
 func NewRuntime(opts RuntimeOptions) *Runtime {
@@ -67,21 +75,35 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 	if queueTransport == "" {
 		queueTransport = "rabbitmq"
 	}
-	consumerQueue := ConsumerQueue(unavailableQueue{reason: fmt.Errorf("unsupported queue transport: %s", queueTransport)})
+	consumerQueues := make([]ConsumerQueue, 0, 3)
 	if queueTransport == "rabbitmq" {
-		rmqConsumer, consumerErr := NewRabbitMQConsumer(RabbitMQQueueOptions{
-			URL:          opts.QueueRabbitMQURL,
-			QueueName:    opts.QueueRabbitMQName,
-			ExchangeName: opts.QueueRabbitMQExchange,
-			MaxPriority:  opts.QueueRabbitMQMaxPriority,
-			Prefetch:     opts.WorkerSize,
-		})
-		if consumerErr == nil {
-			consumerQueue = rmqConsumer
-		} else {
-			log.Printf("init rabbitmq task consumer failed: %v", consumerErr)
-			consumerQueue = unavailableQueue{reason: fmt.Errorf("init rabbitmq task consumer failed: %w", consumerErr)}
+		topology := resolveRabbitMQPriorityTopology(opts)
+		queueSpecs := []struct {
+			queueName    string
+			exchangeName string
+		}{
+			{queueName: topology.HighQueueName, exchangeName: topology.HighExchangeName},
+			{queueName: topology.NormalQueueName, exchangeName: topology.NormalExchangeName},
+			{queueName: topology.LowQueueName, exchangeName: topology.LowExchangeName},
 		}
+		for _, spec := range queueSpecs {
+			rmqConsumer, consumerErr := NewRabbitMQConsumer(RabbitMQQueueOptions{
+				URL:          opts.QueueRabbitMQURL,
+				QueueName:    spec.queueName,
+				ExchangeName: spec.exchangeName,
+				MaxPriority:  opts.QueueRabbitMQMaxPriority,
+				MaxLength:    opts.QueueRabbitMQMaxLength,
+				Prefetch:     1,
+			})
+			if consumerErr == nil {
+				consumerQueues = append(consumerQueues, rmqConsumer)
+				continue
+			}
+			log.Printf("init rabbitmq task consumer failed queue=%s: %v", spec.queueName, consumerErr)
+			consumerQueues = append(consumerQueues, unavailableQueue{reason: fmt.Errorf("init rabbitmq task consumer failed queue=%s: %w", spec.queueName, consumerErr)})
+		}
+	} else {
+		consumerQueues = append(consumerQueues, unavailableQueue{reason: fmt.Errorf("unsupported queue transport: %s", queueTransport)})
 	}
 	store := opts.Store
 	if store == nil {
@@ -140,18 +162,42 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 		AIGCClient:     aigcClient,
 		MCPMultiClient: mcpMultiClient,
 	})
-	pool := NewPool(consumerQueue, store, exec, opts.WorkerSize, opts.OnFinish, opts.InputRetryMaxAttempts, opts.InputRetryDelay)
+	workerSize := opts.WorkerSize
+	if workerSize <= 0 {
+		workerSize = 1
+	}
+	pools := make([]*Pool, 0, len(consumerQueues))
+	for _, queue := range consumerQueues {
+		pools = append(pools, NewPool(queue, store, exec, workerSize, opts.OnFinish, opts.InputRetryMaxAttempts, opts.InputRetryDelay))
+	}
 	return &Runtime{
-		store: store,
-		queue: consumerQueue,
-		pool:  pool,
+		store:  store,
+		queues: consumerQueues,
+		pools:  pools,
 	}
 }
 
 func (r *Runtime) Start(ctx context.Context) {
-	r.pool.Start(ctx)
-	if closer, ok := any(r.queue).(interface{ Close() error }); ok {
-		_ = closer.Close()
+	if r == nil {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, pool := range r.pools {
+		if pool == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(p *Pool) {
+			defer wg.Done()
+			p.Start(ctx)
+		}(pool)
+	}
+	<-ctx.Done()
+	wg.Wait()
+	for _, queue := range r.queues {
+		if closer, ok := any(queue).(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
 	}
 }
 
@@ -161,6 +207,44 @@ func (r *Runtime) Get(taskID string) (*Task, bool) {
 
 func (r *Runtime) MarkFailed(taskID string, message string) (*Task, error) {
 	return r.store.MarkFailed(strings.TrimSpace(taskID), strings.TrimSpace(message))
+}
+
+type rabbitMQPriorityTopology struct {
+	HighQueueName      string
+	NormalQueueName    string
+	LowQueueName       string
+	HighExchangeName   string
+	NormalExchangeName string
+	LowExchangeName    string
+}
+
+func resolveRabbitMQPriorityTopology(opts RuntimeOptions) rabbitMQPriorityTopology {
+	baseQueueName := strings.TrimSpace(opts.QueueRabbitMQName)
+	if baseQueueName == "" {
+		baseQueueName = "ququchat.task.queue"
+	}
+	baseExchangeName := strings.TrimSpace(opts.QueueRabbitMQExchange)
+	if baseExchangeName == "" {
+		baseExchangeName = baseQueueName + ".exchange"
+	}
+	return rabbitMQPriorityTopology{
+		HighQueueName:      firstNonEmpty(opts.QueueRabbitMQHighName, baseQueueName+".high"),
+		NormalQueueName:    firstNonEmpty(opts.QueueRabbitMQNormalName, baseQueueName+".normal"),
+		LowQueueName:       firstNonEmpty(opts.QueueRabbitMQLowName, baseQueueName+".low"),
+		HighExchangeName:   firstNonEmpty(opts.QueueRabbitMQHighExchange, baseExchangeName+".high"),
+		NormalExchangeName: firstNonEmpty(opts.QueueRabbitMQNormalExchange, baseExchangeName+".normal"),
+		LowExchangeName:    firstNonEmpty(opts.QueueRabbitMQLowExchange, baseExchangeName+".low"),
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 type SubmitFakeLLMRequest struct {

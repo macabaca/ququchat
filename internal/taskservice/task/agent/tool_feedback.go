@@ -5,28 +5,10 @@ import (
 	"strings"
 )
 
-func buildToolFeedback(toolName string, input string, toolOutput string, specs []ToolSpec) string {
+func buildToolFeedback(toolName string, _ string, toolOutput string, specs []ToolSpec) string {
 	normalizedTool := normalizeToolFromSpecs(specs, toolName)
 	trimmedOutput := strings.TrimSpace(toolOutput)
 	switch normalizedTool {
-	case "read_recent_messages":
-		count := countNumberedLines(trimmedOutput)
-		builder := strings.Builder{}
-		builder.WriteString("上一轮工具调用 read_recent_messages。")
-		if count > 0 {
-			builder.WriteString("读取了最近")
-			builder.WriteString(strconv.Itoa(count))
-			builder.WriteString("条消息。")
-		} else if strings.TrimSpace(input) != "" {
-			builder.WriteString("按请求读取最近消息。")
-		}
-		if trimmedOutput == "" {
-			builder.WriteString("原始文本为空。")
-		} else {
-			builder.WriteString("原始文本如下：\n")
-			builder.WriteString(trimmedOutput)
-		}
-		return strings.TrimSpace(builder.String())
 	case "search_rag":
 		segments := parseSearchRAGSegments(trimmedOutput)
 		builder := strings.Builder{}
@@ -67,28 +49,6 @@ func buildToolFeedback(toolName string, input string, toolOutput string, specs [
 		}
 		return "上一轮工具输出：" + trimmedOutput
 	}
-}
-
-func countNumberedLines(text string) int {
-	if strings.TrimSpace(text) == "" {
-		return 0
-	}
-	lines := strings.Split(text, "\n")
-	count := 0
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		dot := strings.Index(trimmed, ".")
-		if dot <= 0 {
-			continue
-		}
-		if _, err := strconv.Atoi(strings.TrimSpace(trimmed[:dot])); err == nil {
-			count++
-		}
-	}
-	return count
 }
 
 func parseSearchRAGSegments(output string) []string {

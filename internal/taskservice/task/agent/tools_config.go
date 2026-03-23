@@ -20,16 +20,14 @@ type SchemaField struct {
 }
 
 type CoordinatorSchemaConfig struct {
-	ThoughtField             string
-	ActionField              string
-	ToolField                string
-	InputField               string
-	FinalField               string
-	TopLevelFields           []SchemaField
-	ActionFields             []SchemaField
-	DisallowToolCombination  bool
-	ToolEnumFromConfig       bool
-	RequireFinalWhenToolName string
+	ThoughtField            string
+	ActionField             string
+	ToolField               string
+	InputField              string
+	TopLevelFields          []SchemaField
+	ActionFields            []SchemaField
+	DisallowToolCombination bool
+	ToolEnumFromConfig      bool
 }
 
 type AgentIdentityConfig struct {
@@ -41,13 +39,6 @@ type AgentIdentityConfig struct {
 }
 
 var toolSpecs = []ToolSpec{
-	{
-		Name:           "read_recent_messages",
-		Purpose:        "读取最近消息作为上下文（最近消息）",
-		Usage:          "action.tool=read_recent_messages",
-		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：limit（integer，可选，默认10，含义=读取最近N条，最小值1）",
-		Aliases:        []string{"read_recent_message", "readrecentmessages"},
-	},
 	{
 		Name:           "search_rag",
 		Purpose:        "检索历史消息记忆（历史消息）",
@@ -80,7 +71,7 @@ var toolSpecs = []ToolSpec{
 		Name:           "finish",
 		Purpose:        "结束任务并输出最终答案",
 		Usage:          "action.tool=finish",
-		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：final（string，必填，最终答案）；action.final 建议留空",
+		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：final（string，必填，最终答案）",
 		Aliases:        []string{"done", "final", "finalize"},
 	},
 }
@@ -90,14 +81,13 @@ var agentIdentityConfig = AgentIdentityConfig{
 	Role:    "群聊机器人",
 	Mission: "围绕群聊上下文为群友答疑、总结讨论内容，并在工具能力范围内执行群友提出的任务",
 	Capabilities: []string{
-		"可读取最近群聊消息来理解上下文",
+		"可检索群聊历史消息来理解上下文",
 		"可基于上下文生成清晰、可执行的回复",
 		"可在任务已完成时给出最终答案",
 	},
 	Principles: []string{
 		"优先基于群聊事实回答，不凭空编造",
-		"当上下文不足时先获取消息再回答",
-		"除非明确要求近期消息，否则优先用 search_rag，不先用 read_recent_messages",
+		"当上下文不足时优先使用 search_rag 获取相关历史消息",
 		"输出需遵守系统定义的JSON格式与工具约束",
 	},
 }
@@ -107,7 +97,6 @@ var coordinatorSchemaConfig = CoordinatorSchemaConfig{
 	ActionField:  "action",
 	ToolField:    "tool",
 	InputField:   "input",
-	FinalField:   "final",
 	TopLevelFields: []SchemaField{
 		{Name: "thought", Type: "string", Required: true},
 		{Name: "action", Type: "object", Required: true},
@@ -115,11 +104,9 @@ var coordinatorSchemaConfig = CoordinatorSchemaConfig{
 	ActionFields: []SchemaField{
 		{Name: "tool", Type: "string", Required: true},
 		{Name: "input", Type: "string", Required: true},
-		{Name: "final", Type: "string", Required: true},
 	},
-	DisallowToolCombination:  true,
-	ToolEnumFromConfig:       true,
-	RequireFinalWhenToolName: "",
+	DisallowToolCombination: true,
+	ToolEnumFromConfig:      true,
 }
 
 func getAgentIdentityConfig() AgentIdentityConfig {
@@ -274,11 +261,8 @@ func coordinatorPromptRuleLinesFromSpecs(specs []ToolSpec) []string {
 	if len(actionFieldRules) > 0 {
 		lines = append(lines, cfg.ActionField+" 必须包含 "+strings.Join(actionFieldRules, "/")+" 且类型必须是 string。")
 	}
-	if strings.TrimSpace(cfg.RequireFinalWhenToolName) != "" {
-		lines = append(lines, cfg.ActionField+"."+cfg.ToolField+"="+cfg.RequireFinalWhenToolName+" 时，"+cfg.ActionField+"."+cfg.FinalField+" 必须非空。")
-	}
 	lines = append(lines, "不符合格式会触发硬校验失败并要求重试。")
-	lines = append(lines, "工具选择优先级：除非明确需要近期消息，否则优先使用 search_rag，再考虑 read_recent_messages。")
+	lines = append(lines, "当需要获取曾经聊天消息时使用 search_rag。")
 	lines = append(lines, "仅输出一个JSON对象，不要输出额外说明。")
 	return lines
 }
@@ -336,8 +320,6 @@ func coordinatorSchemaTemplateTextFromSpecs(specs []ToolSpec) string {
 	builder.WriteString(allowedToolNamesCSVFromSpecs(specs))
 	builder.WriteString("\",\"")
 	builder.WriteString(cfg.InputField)
-	builder.WriteString("\":\"string\",\"")
-	builder.WriteString(cfg.FinalField)
 	builder.WriteString("\":\"string\"}}")
 	return builder.String()
 }

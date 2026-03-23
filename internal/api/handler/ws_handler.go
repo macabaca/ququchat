@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"ququchat/internal/models"
+	cachepkg "ququchat/internal/server/cache"
 	taskservice "ququchat/internal/service"
 	tasksvc "ququchat/internal/service/task"
 )
@@ -33,6 +34,7 @@ const (
 type WsHandler struct {
 	db              *gorm.DB
 	hub             *Hub
+	cacheClient     *cachepkg.RedisClient
 	taskService     *taskservice.MainService
 	robotInit       sync.Once
 	robotErr        error
@@ -41,16 +43,20 @@ type WsHandler struct {
 	doneConsumerErr error
 }
 
-func NewWsHandler(db *gorm.DB, hub *Hub, taskService *taskservice.MainService) *WsHandler {
+func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, taskService *taskservice.MainService) *WsHandler {
 	if hub == nil {
 		hub = NewHub()
 	}
 	if hub.db == nil {
 		hub.db = db
 	}
+	if hub.cacheClient == nil {
+		hub.cacheClient = cacheClient
+	}
 	return &WsHandler{
 		db:          db,
 		hub:         hub,
+		cacheClient: cacheClient,
 		taskService: taskService,
 	}
 }
@@ -63,6 +69,7 @@ type Hub struct {
 	direct        chan DirectMessage
 	broadcast     chan GroupMessage
 	db            *gorm.DB
+	cacheClient   *cachepkg.RedisClient
 }
 
 type DirectMessage struct {
@@ -219,6 +226,16 @@ func (h *Hub) updateUserStatus(userID, status string) {
 }
 
 func (h *Hub) listFriendIDs(userID string) ([]string, error) {
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.FriendIDsKey(userID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		var cached []string
+		ok, err := h.cacheClient.GetJSON(cacheCtx, cacheKey, &cached)
+		cancel()
+		if err == nil && ok {
+			return cached, nil
+		}
+	}
 	var relations []models.Friendship
 	if err := h.db.Where("user_id_a = ? OR user_id_b = ?", userID, userID).Find(&relations).Error; err != nil {
 		return nil, err
@@ -230,6 +247,12 @@ func (h *Hub) listFriendIDs(userID string) ([]string, error) {
 		} else {
 			friendIDs = append(friendIDs, r.UserIDA)
 		}
+	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.FriendIDsKey(userID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetJSON(cacheCtx, cacheKey, friendIDs, cachepkg.FriendIDsTTL)
+		cancel()
 	}
 	return friendIDs, nil
 }
@@ -594,13 +617,34 @@ func (h *WsHandler) areFriends(a, b string) bool {
 	if a == "" || b == "" || a == b {
 		return false
 	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.FriendshipKey(a, b)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		val, ok, err := h.cacheClient.GetString(cacheCtx, cacheKey)
+		cancel()
+		if err == nil && ok {
+			return val == "1"
+		}
+	}
 	x, y := a, b
 	if x > y {
 		x, y = y, x
 	}
 	var f models.Friendship
 	if err := h.db.Where("user_id_a = ? AND user_id_b = ?", x, y).First(&f).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) && h.cacheClient != nil {
+			cacheKey := h.cacheClient.BuildKey(cachepkg.FriendshipKey(a, b)...)
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+			_ = h.cacheClient.SetString(cacheCtx, cacheKey, "0", cachepkg.FriendshipTTL)
+			cancel()
+		}
 		return false
+	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.FriendshipKey(a, b)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetString(cacheCtx, cacheKey, "1", cachepkg.FriendshipTTL)
+		cancel()
 	}
 	return true
 }
@@ -611,8 +655,35 @@ func (h *WsHandler) ensureDirectRoom(a, b string) (string, error) {
 		x, y = y, x
 	}
 	name := x + ":" + y
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.DirectRoomKey(a, b)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		roomID, ok, err := h.cacheClient.GetString(cacheCtx, cacheKey)
+		cancel()
+		if err == nil && ok && strings.TrimSpace(roomID) != "" {
+			var cachedRoom models.Room
+			roomErr := h.db.Select("id").Where("id = ? AND room_type = ? AND name = ?", roomID, models.RoomTypeDirect, name).First(&cachedRoom).Error
+			if roomErr == nil {
+				h.ensureDirectRoomMembers(roomID, a, b)
+				return roomID, nil
+			}
+			if errors.Is(roomErr, gorm.ErrRecordNotFound) {
+				cacheCtx, delCancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+				_ = h.cacheClient.Del(cacheCtx, cacheKey)
+				delCancel()
+			} else {
+				return "", roomErr
+			}
+		}
+	}
 	var room models.Room
 	if err := h.db.Where("room_type = ? AND name = ?", models.RoomTypeDirect, name).First(&room).Error; err == nil {
+		if h.cacheClient != nil {
+			cacheKey := h.cacheClient.BuildKey(cachepkg.DirectRoomKey(a, b)...)
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+			_ = h.cacheClient.SetString(cacheCtx, cacheKey, room.ID, cachepkg.DirectRoomTTL)
+			cancel()
+		}
 		h.ensureDirectRoomMembers(room.ID, a, b)
 		return room.ID, nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -630,30 +701,90 @@ func (h *WsHandler) ensureDirectRoom(a, b string) (string, error) {
 	if err := h.db.Create(&room).Error; err != nil {
 		return "", err
 	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.DirectRoomKey(a, b)...)
+		cacheCtx, delCancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.Del(cacheCtx, cacheKey)
+		delCancel()
+		cacheCtx, setCancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetString(cacheCtx, cacheKey, room.ID, cachepkg.DirectRoomTTL)
+		setCancel()
+	}
 	h.ensureDirectRoomMembers(room.ID, a, b)
 	return room.ID, nil
 }
 
+type groupPostingPermissionCache struct {
+	LeftAtUnix    int64 `json:"left_at_unix"`
+	MuteUntilUnix int64 `json:"mute_until_unix"`
+}
+
 func (h *WsHandler) checkGroupPostingPermission(roomID, userID string) error {
+	now := time.Now()
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.GroupPostingPermissionKey(roomID, userID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		var cached groupPostingPermissionCache
+		ok, err := h.cacheClient.GetJSON(cacheCtx, cacheKey, &cached)
+		cancel()
+		if err == nil && ok {
+			if cached.LeftAtUnix > 0 {
+				return errors.New("user has left the group")
+			}
+			if cached.MuteUntilUnix > now.Unix() {
+				return errors.New("user is muted")
+			}
+			return nil
+		}
+	}
 	var member models.RoomMember
 	err := h.db.Where("room_id = ? AND user_id = ?", roomID, userID).First(&member).Error
 	if err != nil {
 		return err
 	}
+	cached := groupPostingPermissionCache{}
+	if member.LeftAt != nil {
+		cached.LeftAtUnix = member.LeftAt.Unix()
+	}
+	if member.MuteUntil != nil {
+		cached.MuteUntilUnix = member.MuteUntil.Unix()
+	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.GroupPostingPermissionKey(roomID, userID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetJSON(cacheCtx, cacheKey, cached, cachepkg.GroupPostingPermissionTTL)
+		cancel()
+	}
 	if member.LeftAt != nil {
 		return errors.New("user has left the group")
 	}
-	if member.MuteUntil != nil && member.MuteUntil.After(time.Now()) {
+	if member.MuteUntil != nil && member.MuteUntil.After(now) {
 		return errors.New("user is muted")
 	}
 	return nil
 }
 
 func (h *WsHandler) getGroupMemberIDs(roomID string) ([]string, error) {
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.GroupMemberIDsKey(roomID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		var cached []string
+		ok, err := h.cacheClient.GetJSON(cacheCtx, cacheKey, &cached)
+		cancel()
+		if err == nil && ok {
+			return cached, nil
+		}
+	}
 	var userIDs []string
 	err := h.db.Model(&models.RoomMember{}).
 		Where("room_id = ? AND left_at IS NULL", roomID).
 		Pluck("user_id", &userIDs).Error
+	if err == nil && h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.GroupMemberIDsKey(roomID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetJSON(cacheCtx, cacheKey, userIDs, cachepkg.GroupMemberIDsTTL)
+		cancel()
+	}
 	return userIDs, err
 }
 

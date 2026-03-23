@@ -18,6 +18,7 @@ type Task struct {
 	QueueRabbitMQName           string `yaml:"queue_rabbitmq_name" json:"queue_rabbitmq_name"`
 	QueueRabbitMQExchange       string `yaml:"queue_rabbitmq_exchange" json:"queue_rabbitmq_exchange"`
 	QueueRabbitMQMaxPriority    int    `yaml:"queue_rabbitmq_max_priority" json:"queue_rabbitmq_max_priority"`
+	QueueRabbitMQMaxLength      int    `yaml:"queue_rabbitmq_max_length" json:"queue_rabbitmq_max_length"`
 	DoneEventMQURL              string `yaml:"done_event_rabbitmq_url" json:"done_event_rabbitmq_url"`
 	DoneEventQueue              string `yaml:"done_event_queue_name" json:"done_event_queue_name"`
 	InputRetryMaxAttempts       int    `yaml:"input_retry_max_attempts" json:"input_retry_max_attempts"`
@@ -350,6 +351,13 @@ func (t Task) QueueRabbitMQMaxPriorityOrDefault() int {
 		return t.QueueRabbitMQMaxPriority
 	}
 	return 10
+}
+
+func (t Task) QueueRabbitMQMaxLengthOrDefault() int {
+	if t.QueueRabbitMQMaxLength > 0 {
+		return t.QueueRabbitMQMaxLength
+	}
+	return 50000
 }
 
 func (t Task) DoneEventQueueOrDefault() string {

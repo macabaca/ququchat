@@ -201,7 +201,7 @@ type Attachment struct {
 
 type TaskJob struct {
 	ID           string         `gorm:"type:char(36);primaryKey" json:"id"`
-	RequestID    string         `gorm:"size:128;index" json:"request_id"`
+	RequestID    string         `gorm:"size:128;not null;uniqueIndex" json:"request_id"`
 	TaskType     string         `gorm:"type:varchar(32);not null;index" json:"task_type"`
 	Priority     int            `gorm:"not null;index" json:"priority"`
 	Status       string         `gorm:"type:varchar(32);not null;index" json:"status"`
@@ -211,6 +211,26 @@ type TaskJob struct {
 	CreatedAt    time.Time      `gorm:"not null;index" json:"created_at"`
 	UpdatedAt    time.Time      `gorm:"not null;index" json:"updated_at"`
 }
+
+type TaskDeadLetter struct {
+	ID            string    `gorm:"type:char(36);primaryKey" json:"id"`
+	SourceQueue   string    `gorm:"size:255;not null;index" json:"source_queue"`
+	Reason        string    `gorm:"size:128;not null;index" json:"reason"`
+	Status        string    `gorm:"size:32;not null;default:pending;index" json:"status"`
+	RawBody       string    `gorm:"type:text;not null" json:"raw_body"`
+	ContentType   string    `gorm:"size:64" json:"content_type,omitempty"`
+	MessageID     string    `gorm:"size:128;index" json:"message_id,omitempty"`
+	CorrelationID string    `gorm:"size:128;index" json:"correlation_id,omitempty"`
+	CreatedAt     time.Time `gorm:"not null;index" json:"created_at"`
+	UpdatedAt     time.Time `gorm:"not null;index" json:"updated_at"`
+}
+
+const (
+	TaskDeadLetterStatusPending   = "pending"
+	TaskDeadLetterStatusRetrying  = "retrying"
+	TaskDeadLetterStatusSucceeded = "succeeded"
+	TaskDeadLetterStatusGiveup    = "giveup"
+)
 
 type ChatSegment struct {
 	ID            string    `gorm:"size:128;primaryKey" json:"id"`

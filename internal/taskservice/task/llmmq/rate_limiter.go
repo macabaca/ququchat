@@ -2,6 +2,7 @@ package llmmq
 
 import (
 	"context"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -13,19 +14,20 @@ type RateLimiterOptions struct {
 	TPM int
 }
 
-type tokenEvent struct {
-	at     time.Time
-	tokens int
-}
-
 type RateLimiter struct {
 	rpm int
 	tpm int
 
 	mu          sync.Mutex
-	reqEvents   []time.Time
-	tokenEvents []tokenEvent
-	tokenSum    int
+	reqBucket   *tokenBucket
+	tokenBucket *tokenBucket
+}
+
+type tokenBucket struct {
+	capacity     float64
+	tokens       float64
+	refillPerSec float64
+	lastRefill   time.Time
 }
 
 func NewRateLimiter(opts RateLimiterOptions) *RateLimiter {
@@ -38,8 +40,10 @@ func NewRateLimiter(opts RateLimiterOptions) *RateLimiter {
 		tpm = 0
 	}
 	return &RateLimiter{
-		rpm: rpm,
-		tpm: tpm,
+		rpm:         rpm,
+		tpm:         tpm,
+		reqBucket:   newTokenBucket(float64(rpm), float64(rpm)/60.0),
+		tokenBucket: newTokenBucket(float64(tpm), float64(tpm)/60.0),
 	}
 }
 
@@ -83,91 +87,46 @@ func (l *RateLimiter) EstimateTokens(prompt string) int {
 func (l *RateLimiter) tryReserve(now time.Time, tokens int) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	cutoff := now.Add(-time.Minute)
-	l.prune(cutoff)
 	waitReq := l.waitDurationByRPM(now)
 	waitTok := l.waitDurationByTPM(now, tokens)
 	wait := maxDuration(waitReq, waitTok)
 	if wait > 0 {
 		return wait
 	}
-	l.reqEvents = append(l.reqEvents, now)
-	if l.tpm > 0 {
-		l.tokenEvents = append(l.tokenEvents, tokenEvent{
-			at:     now,
-			tokens: tokens,
-		})
-		l.tokenSum += tokens
+	if l.reqBucket != nil {
+		l.reqBucket.consume(now, 1)
+	}
+	if l.tokenBucket != nil {
+		reserve := float64(tokens)
+		if l.tokenBucket.capacity > 0 && reserve > l.tokenBucket.capacity {
+			reserve = l.tokenBucket.capacity
+		}
+		if reserve > 0 {
+			l.tokenBucket.consume(now, reserve)
+		}
 	}
 	return 0
-}
-
-func (l *RateLimiter) prune(cutoff time.Time) {
-	keptReq := l.reqEvents[:0]
-	for _, t := range l.reqEvents {
-		if t.After(cutoff) {
-			keptReq = append(keptReq, t)
-		}
-	}
-	l.reqEvents = keptReq
-
-	if l.tpm <= 0 {
-		l.tokenEvents = l.tokenEvents[:0]
-		l.tokenSum = 0
-		return
-	}
-	keptTok := l.tokenEvents[:0]
-	sum := 0
-	for _, e := range l.tokenEvents {
-		if e.at.After(cutoff) {
-			keptTok = append(keptTok, e)
-			sum += e.tokens
-		}
-	}
-	l.tokenEvents = keptTok
-	l.tokenSum = sum
 }
 
 func (l *RateLimiter) waitDurationByRPM(now time.Time) time.Duration {
-	if l.rpm <= 0 || len(l.reqEvents) < l.rpm {
+	if l.rpm <= 0 || l.reqBucket == nil {
 		return 0
 	}
-	oldest := l.reqEvents[0]
-	waitUntil := oldest.Add(time.Minute)
-	if waitUntil.After(now) {
-		return waitUntil.Sub(now)
-	}
-	return 0
+	return l.reqBucket.waitDuration(now, 1)
 }
 
 func (l *RateLimiter) waitDurationByTPM(now time.Time, tokens int) time.Duration {
-	if l.tpm <= 0 {
+	if l.tpm <= 0 || l.tokenBucket == nil {
 		return 0
 	}
-	if tokens > l.tpm {
-		tokens = l.tpm
+	reserve := float64(tokens)
+	if l.tokenBucket.capacity > 0 && reserve > l.tokenBucket.capacity {
+		reserve = l.tokenBucket.capacity
 	}
-	if l.tokenSum+tokens <= l.tpm {
+	if reserve <= 0 {
 		return 0
 	}
-	sum := l.tokenSum
-	for _, e := range l.tokenEvents {
-		sum -= e.tokens
-		waitUntil := e.at.Add(time.Minute)
-		if sum+tokens <= l.tpm {
-			if waitUntil.After(now) {
-				return waitUntil.Sub(now)
-			}
-			return 0
-		}
-	}
-	if len(l.tokenEvents) > 0 {
-		waitUntil := l.tokenEvents[0].at.Add(time.Minute)
-		if waitUntil.After(now) {
-			return waitUntil.Sub(now)
-		}
-	}
-	return 50 * time.Millisecond
+	return l.tokenBucket.waitDuration(now, reserve)
 }
 
 func maxDuration(a, b time.Duration) time.Duration {
@@ -175,4 +134,68 @@ func maxDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func newTokenBucket(capacity float64, refillPerSec float64) *tokenBucket {
+	if capacity <= 0 || refillPerSec <= 0 {
+		return nil
+	}
+	now := time.Now()
+	return &tokenBucket{
+		capacity:     capacity,
+		tokens:       capacity,
+		refillPerSec: refillPerSec,
+		lastRefill:   now,
+	}
+}
+
+func (b *tokenBucket) refill(now time.Time) {
+	if b == nil {
+		return
+	}
+	if b.lastRefill.IsZero() {
+		b.lastRefill = now
+		return
+	}
+	if now.Before(b.lastRefill) {
+		return
+	}
+	elapsed := now.Sub(b.lastRefill).Seconds()
+	if elapsed <= 0 {
+		return
+	}
+	b.tokens = math.Min(b.capacity, b.tokens+elapsed*b.refillPerSec)
+	b.lastRefill = now
+}
+
+func (b *tokenBucket) waitDuration(now time.Time, needed float64) time.Duration {
+	if b == nil || needed <= 0 {
+		return 0
+	}
+	b.refill(now)
+	if b.tokens >= needed {
+		return 0
+	}
+	deficit := needed - b.tokens
+	if b.refillPerSec <= 0 {
+		return time.Second
+	}
+	seconds := deficit / b.refillPerSec
+	wait := time.Duration(math.Ceil(seconds * float64(time.Second)))
+	if wait <= 0 {
+		return time.Millisecond
+	}
+	return wait
+}
+
+func (b *tokenBucket) consume(now time.Time, amount float64) {
+	if b == nil || amount <= 0 {
+		return
+	}
+	b.refill(now)
+	if amount >= b.tokens {
+		b.tokens = 0
+		return
+	}
+	b.tokens -= amount
 }
