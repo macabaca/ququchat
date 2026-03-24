@@ -35,6 +35,7 @@ func NewPool(opts PoolOptions) (*Pool, error) {
 		worker, err := NewWorker(WorkerOptions{
 			URL:          opts.URL,
 			RequestQueue: opts.RequestQueue,
+			Prefetch:     size,
 			Provider:     opts.Provider,
 			RateLimiter:  limiter,
 		})

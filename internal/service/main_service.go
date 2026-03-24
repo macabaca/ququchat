@@ -53,6 +53,7 @@ type MainService struct {
 	doneEventQueue              string
 	doneConsumeRetryMaxAttempts int
 	doneConsumeRetryDelay       time.Duration
+	doneConsumePrefetch         int
 	doneConsumerMu              sync.Mutex
 	doneConsumerUp              bool
 	doneConsumerErr             error
@@ -95,6 +96,7 @@ func NewMainServiceWithOptions(db *gorm.DB, opts tasksvc.RuntimeOptions, svcOpts
 		doneEventQueue:              doneEventQueue,
 		doneConsumeRetryMaxAttempts: normalizeRetryMaxAttempts(opts.DoneEventConsumeRetryMaxAttempts),
 		doneConsumeRetryDelay:       normalizeRetryDelay(opts.DoneEventConsumeRetryDelay),
+		doneConsumePrefetch:         normalizePrefetch(opts.WorkerSize),
 	}
 }
 
@@ -264,6 +266,7 @@ func (s *MainService) StartDoneEventConsumer(ctx context.Context, handler DoneEv
 	consumer, err := NewRabbitMQDoneEventConsumer(RabbitMQDoneEventConsumerOptions{
 		URL:              s.doneEventURL,
 		QueueName:        s.doneEventQueue,
+		Prefetch:         s.doneConsumePrefetch,
 		RetryMaxAttempts: s.doneConsumeRetryMaxAttempts,
 		RetryDelay:       s.doneConsumeRetryDelay,
 		OnMaxRetry:       s.handleDoneEventConsumeExhausted,

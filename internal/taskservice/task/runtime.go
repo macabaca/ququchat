@@ -75,6 +75,10 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 	if queueTransport == "" {
 		queueTransport = "rabbitmq"
 	}
+	workerSize := opts.WorkerSize
+	if workerSize <= 0 {
+		workerSize = 1
+	}
 	consumerQueues := make([]ConsumerQueue, 0, 3)
 	if queueTransport == "rabbitmq" {
 		topology := resolveRabbitMQPriorityTopology(opts)
@@ -93,7 +97,7 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 				ExchangeName: spec.exchangeName,
 				MaxPriority:  opts.QueueRabbitMQMaxPriority,
 				MaxLength:    opts.QueueRabbitMQMaxLength,
-				Prefetch:     1,
+				Prefetch:     workerSize,
 			})
 			if consumerErr == nil {
 				consumerQueues = append(consumerQueues, rmqConsumer)
@@ -162,10 +166,6 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 		AIGCClient:     aigcClient,
 		MCPMultiClient: mcpMultiClient,
 	})
-	workerSize := opts.WorkerSize
-	if workerSize <= 0 {
-		workerSize = 1
-	}
 	pools := make([]*Pool, 0, len(consumerQueues))
 	for _, queue := range consumerQueues {
 		pools = append(pools, NewPool(queue, store, exec, workerSize, opts.OnFinish, opts.InputRetryMaxAttempts, opts.InputRetryDelay))

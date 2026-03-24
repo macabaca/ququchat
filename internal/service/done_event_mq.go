@@ -124,7 +124,7 @@ func NewRabbitMQDoneEventConsumer(opts RabbitMQDoneEventConsumerOptions) (*Rabbi
 		_ = conn.Close()
 		return nil, err
 	}
-	if err := ch.Qos(1, 0, false); err != nil {
+	if err := ch.Qos(normalizePrefetch(opts.Prefetch), 0, false); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
 		return nil, err
@@ -454,6 +454,13 @@ func normalizeRetryDelay(delay time.Duration) time.Duration {
 		return 500 * time.Millisecond
 	}
 	return delay
+}
+
+func normalizePrefetch(prefetch int) int {
+	if prefetch <= 0 {
+		return 1
+	}
+	return prefetch
 }
 
 func sleepWithContext(ctx context.Context, delay time.Duration) bool {

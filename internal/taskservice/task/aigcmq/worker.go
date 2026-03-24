@@ -27,6 +27,7 @@ type AttachmentSaver interface {
 type WorkerOptions struct {
 	URL             string
 	RequestQueue    string
+	Prefetch        int
 	Provider        Provider
 	RateLimiter     *RateLimiter
 	AttachmentSaver AttachmentSaver
@@ -86,6 +87,10 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		_ = conn.Close()
 		return nil, err
 	}
+	prefetch := opts.Prefetch
+	if prefetch <= 0 {
+		prefetch = 1
+	}
 	if _, err := ch.QueueDeclare(
 		requestQueue,
 		true,
@@ -98,7 +103,7 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	if err := ch.Qos(1, 0, false); err != nil {
+	if err := ch.Qos(prefetch, 0, false); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
 		return nil, err

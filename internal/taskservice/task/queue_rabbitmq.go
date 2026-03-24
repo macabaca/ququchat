@@ -187,6 +187,10 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	if maxPriority <= 0 {
 		maxPriority = 10
 	}
+	prefetch := opts.Prefetch
+	if prefetch <= 0 {
+		prefetch = 1
+	}
 	if err := ch.ExchangeDeclare(
 		exchangeName,
 		"direct",
@@ -247,7 +251,7 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	if err := ch.Qos(1, 0, false); err != nil {
+	if err := ch.Qos(prefetch, 0, false); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
 		return nil, err
