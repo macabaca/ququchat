@@ -7,18 +7,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	agentmemory "ququchat/internal/taskservice/task/agent/memory"
+	agentservices "ququchat/internal/taskservice/task/agent/services"
 )
-
-type plannerTask struct {
-	Task string `json:"task"`
-	Tool string `json:"tool"`
-}
-
-type plannerOutline struct {
-	Steps []plannerTask `json:"steps"`
-}
 
 func generatePlannerOutline(ctx context.Context, client ChatClient, goal string, recentMessages []string, maxSteps int, reason string, currentTask string, specs []ToolSpec) ([]plannerTask, error) {
 	feedback := ""
@@ -39,7 +32,7 @@ func generatePlannerOutline(ctx context.Context, client ChatClient, goal string,
 		}
 		feedback = buildPlannerValidationRetryFeedback(feedback, issues, specs)
 		if attempt == roleRetryLimit {
-			return nil, fmt.Errorf("planner输出格式连续校验失败: %s", joinValidationIssueTexts(issues, "；"))
+			return nil, fmt.Errorf("planner输出格式连续校验失败: %s", agentservices.JoinValidationIssueTexts(issues, "；"))
 		}
 	}
 	return nil, errors.New("planner输出未通过规则校验")
@@ -48,7 +41,7 @@ func generatePlannerOutline(ctx context.Context, client ChatClient, goal string,
 func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reason string, currentTask string, feedback string, specs []ToolSpec) string {
 	builder := strings.Builder{}
 	builder.WriteString("你是初始规划器（Planner）。请先规划一组可执行的小任务步骤，只输出JSON。\n")
-	builder.WriteString(buildRealtimePlanningGuidance(specs))
+	builder.WriteString(agentservices.BuildRealtimePlanningGuidance(specs, time.Now()))
 	builder.WriteString("目标：")
 	builder.WriteString(strings.TrimSpace(goal))
 	builder.WriteString("\n")
@@ -109,40 +102,16 @@ func plannerOutlineSchemaTemplateText(specs []ToolSpec) string {
 }
 
 func buildPlannerValidationRetryFeedback(baseFeedback string, issues []validationIssue, specs []ToolSpec) string {
-	builder := strings.Builder{}
-	if strings.TrimSpace(baseFeedback) != "" {
-		builder.WriteString(strings.TrimSpace(baseFeedback))
-		builder.WriteString("\n")
-	}
-	builder.WriteString("上一轮Planner规则校验未通过，错误如下：")
-	if len(issues) == 0 {
-		builder.WriteString("未知格式错误")
-	} else {
-		builder.WriteString("\n")
-		for i, issue := range issues {
-			builder.WriteString(strconv.Itoa(i + 1))
-			builder.WriteString(") ")
-			builder.WriteString(validationIssueText(issue))
-			builder.WriteString("\n")
-		}
-		explainLines := buildValidationIssueExplanations(issues)
-		if len(explainLines) > 0 {
-			builder.WriteString("错误码解释：\n")
-			for i, line := range explainLines {
-				builder.WriteString(strconv.Itoa(i + 1))
-				builder.WriteString(") ")
-				builder.WriteString(line)
-				builder.WriteString("\n")
-			}
-		}
-	}
-	builder.WriteString("请严格按JSON schema重新输出。schema: ")
-	builder.WriteString(plannerOutlineSchemaTemplateText(specs))
-	return builder.String()
+	return agentservices.BuildValidationRetryFeedback(
+		baseFeedback,
+		issues,
+		plannerOutlineSchemaTemplateText(specs),
+		"上一轮Planner规则校验未通过，错误如下：",
+	)
 }
 
 func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([]plannerTask, string, []validationIssue) {
-	objectText, objectIssue := extractJSONObjectText(raw)
+	objectText, objectIssue := agentservices.ExtractJSONObjectText(raw)
 	if objectIssue != nil {
 		return nil, "", []validationIssue{*objectIssue}
 	}
@@ -150,7 +119,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 	if err := json.Unmarshal([]byte(objectText), &root); err != nil {
 		return nil, "", []validationIssue{
 			{
-				Code:    errCodeJSONInvalid,
+				Code:    agentservices.ErrCodeJSONInvalid,
 				Field:   "$",
 				Message: "JSON解析失败",
 				Detail:  err.Error(),
@@ -161,7 +130,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 	if !ok {
 		return nil, "", []validationIssue{
 			{
-				Code:    errCodeFieldMissing,
+				Code:    agentservices.ErrCodeFieldMissing,
 				Field:   "steps",
 				Message: "缺少必填字段",
 				Detail:  "steps",
@@ -172,7 +141,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 	if !ok {
 		return nil, "", []validationIssue{
 			{
-				Code:    errCodeFieldType,
+				Code:    agentservices.ErrCodeFieldType,
 				Field:   "steps",
 				Message: "字段类型错误",
 				Detail:  "期望array",
@@ -182,7 +151,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 	if len(stepArr) == 0 {
 		return nil, "", []validationIssue{
 			{
-				Code:    errCodeFieldMissing,
+				Code:    agentservices.ErrCodeFieldMissing,
 				Field:   "steps",
 				Message: "有效步骤为空",
 				Detail:  "请至少提供一条有效步骤",
@@ -195,7 +164,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 		stepObj, ok := item.(map[string]interface{})
 		if !ok {
 			issues = append(issues, validationIssue{
-				Code:    errCodeFieldType,
+				Code:    agentservices.ErrCodeFieldType,
 				Field:   "steps[" + strconv.Itoa(i) + "]",
 				Message: "字段类型错误",
 				Detail:  "期望object",
@@ -205,7 +174,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 		task, taskOK := stepObj["task"].(string)
 		if !taskOK || strings.TrimSpace(task) == "" {
 			issues = append(issues, validationIssue{
-				Code:    errCodeFieldMissing,
+				Code:    agentservices.ErrCodeFieldMissing,
 				Field:   "steps[" + strconv.Itoa(i) + "].task",
 				Message: "缺少必填字段",
 				Detail:  "task",
@@ -214,7 +183,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 		toolRaw, toolOK := stepObj["tool"].(string)
 		if !toolOK || strings.TrimSpace(toolRaw) == "" {
 			issues = append(issues, validationIssue{
-				Code:    errCodeFieldMissing,
+				Code:    agentservices.ErrCodeFieldMissing,
 				Field:   "steps[" + strconv.Itoa(i) + "].tool",
 				Message: "缺少必填字段",
 				Detail:  "tool",
@@ -224,7 +193,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 		tool := normalizeToolFromSpecs(specs, toolRaw)
 		if strings.TrimSpace(tool) == "" || !isKnownToolNameFromSpecs(specs, tool) {
 			issues = append(issues, validationIssue{
-				Code:    errCodeToolNotAllowed,
+				Code:    agentservices.ErrCodeToolNotAllowed,
 				Field:   "steps[" + strconv.Itoa(i) + "].tool",
 				Message: "工具不在允许列表",
 				Detail:  "允许值: " + allowedToolNamesCSVFromSpecs(specs),
@@ -241,7 +210,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 	normalized := normalizePlannerOutline(steps, maxSteps, specs)
 	if len(normalized) == 0 {
 		issues = append(issues, validationIssue{
-			Code:    errCodeFieldMissing,
+			Code:    agentservices.ErrCodeFieldMissing,
 			Field:   "steps",
 			Message: "有效步骤为空",
 			Detail:  "请至少提供一条有效步骤",
@@ -255,7 +224,7 @@ func validatePlannerOutlineOutput(raw string, maxSteps int, specs []ToolSpec) ([
 	if marshalErr != nil {
 		return nil, "", []validationIssue{
 			{
-				Code:    errCodeNormalizeFailed,
+				Code:    agentservices.ErrCodeNormalizeFailed,
 				Field:   "$",
 				Message: "输出规范化失败",
 				Detail:  marshalErr.Error(),

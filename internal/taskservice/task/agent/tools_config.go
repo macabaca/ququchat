@@ -5,39 +5,6 @@ import (
 	"strings"
 )
 
-type ToolSpec struct {
-	Name           string
-	Purpose        string
-	Usage          string
-	InputGuideline string
-	Aliases        []string
-}
-
-type SchemaField struct {
-	Name     string
-	Type     string
-	Required bool
-}
-
-type CoordinatorSchemaConfig struct {
-	ThoughtField            string
-	ActionField             string
-	ToolField               string
-	InputField              string
-	TopLevelFields          []SchemaField
-	ActionFields            []SchemaField
-	DisallowToolCombination bool
-	ToolEnumFromConfig      bool
-}
-
-type AgentIdentityConfig struct {
-	Name         string
-	Role         string
-	Mission      string
-	Capabilities []string
-	Principles   []string
-}
-
 var toolSpecs = []ToolSpec{
 	{
 		Name:           "search_rag",
