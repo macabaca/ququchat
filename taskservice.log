@@ -1,4 +1,0 @@
-nohup: ignoring input
-2026/03/25 21:46:45 任务队列迁移完成，queue=ququchat.task.queue exchange=ququchat.task.exchange
-2026/03/25 21:46:45 init rabbitmq task consumer ok queue=ququchat.task.queue exchange=ququchat.task.exchange prefetch=8
-2026/03/25 21:46:48 独立 Task Service 已启动，queue=ququchat.task.queue exchange=ququchat.task.exchange worker=8
