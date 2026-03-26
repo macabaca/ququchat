@@ -32,11 +32,12 @@ documents/
 data/
 
 # Local config (contains secrets)
-internal/config/config.yaml
 internal/config/config.secrets.env
-
-# Local config (contains secrets)
 internal/config/config.yaml
+internal/config/environment.bash
+internal/config/mcp_servers.json
+internal/config/rag_stop_phrases.yaml
+internal/config/task_priority.json
 ququchat.log
 frontend/node_modules/
 frontend/.vite/
