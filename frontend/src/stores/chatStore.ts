@@ -433,13 +433,15 @@ export const useChatStore = create<ChatState>()(
 
             handleIncomingMessage: async (message: Message) => {
                 const { friends } = get();
+                const myUser = useAuthStore.getState().user;
+                const normalizedIncoming = message;
 
-                const myId = useAuthStore.getState().user?.id;
-                let conversationId = message.room_id || '';
+                const myId = myUser?.id;
+                let conversationId = normalizedIncoming.room_id || '';
 
-                if (!conversationId && message.type === 'friend_message' && myId) {
+                if (!conversationId && normalizedIncoming.type === 'friend_message' && myId) {
                     const otherUserId =
-                        message.from_user_id === myId ? (message.to_user_id || '') : (message.from_user_id || '');
+                        normalizedIncoming.from_user_id === myId ? (normalizedIncoming.to_user_id || '') : (normalizedIncoming.from_user_id || '');
                     const friend = friends.find((f) => f.id === otherUserId);
                     conversationId = friend?.room_id || '';
                 }
@@ -447,18 +449,18 @@ export const useChatStore = create<ChatState>()(
                 if (!conversationId) return;
 
                 const chatMessages = get().messages[conversationId] || [];
-                const incomingTs = message.timestamp || Date.now() / 1000;
+                const incomingTs = normalizedIncoming.timestamp || Date.now() / 1000;
                 let matchedTempIndex = -1;
 
-                if (myId && message.from_user_id === myId) {
+                if (myId && normalizedIncoming.from_user_id === myId) {
                     const idx = [...chatMessages]
                         .reverse()
                         .findIndex((m) => {
                             const isTemp = typeof m.id === 'string' && m.id.startsWith('temp-');
                             if (!isTemp) return false;
                             if (m.status !== 'sending') return false;
-                            if (m.type !== message.type) return false;
-                            if (m.content !== message.content) return false;
+                            if (m.type !== normalizedIncoming.type) return false;
+                            if (m.content !== normalizedIncoming.content) return false;
                             const dt = Math.abs((m.timestamp || 0) - incomingTs);
                             return dt <= 10;
                         });
@@ -466,14 +468,14 @@ export const useChatStore = create<ChatState>()(
                     if (idx !== -1) {
                         matchedTempIndex = chatMessages.length - 1 - idx;
                         const matchedTemp = chatMessages[matchedTempIndex];
-                        if (!message.cache_path && matchedTemp?.cache_path) {
-                            message.cache_path = matchedTemp.cache_path;
+                        if (!normalizedIncoming.cache_path && matchedTemp?.cache_path) {
+                            normalizedIncoming.cache_path = matchedTemp.cache_path;
                         }
-                        if (!message.attachment_id && matchedTemp?.attachment_id) {
-                            message.attachment_id = matchedTemp.attachment_id;
+                        if (!normalizedIncoming.attachment_id && matchedTemp?.attachment_id) {
+                            normalizedIncoming.attachment_id = matchedTemp.attachment_id;
                         }
-                        if (!message.thumb_attachment_id && matchedTemp?.thumb_attachment_id) {
-                            message.thumb_attachment_id = matchedTemp.thumb_attachment_id;
+                        if (!normalizedIncoming.thumb_attachment_id && matchedTemp?.thumb_attachment_id) {
+                            normalizedIncoming.thumb_attachment_id = matchedTemp.thumb_attachment_id;
                         }
                         if (matchedTemp?.id && typeof matchedTemp.id === 'string' && matchedTemp.id.startsWith('temp-')) {
                             try {
@@ -487,15 +489,15 @@ export const useChatStore = create<ChatState>()(
 
                 // Persist to SQLite using MessageService
                 try {
-                    const savedRow = await messageService.saveMessage(message);
+                    const savedRow = await messageService.saveMessage(normalizedIncoming);
                     if (savedRow.cache_path) {
-                        message.cache_path = savedRow.cache_path;
+                        normalizedIncoming.cache_path = savedRow.cache_path;
                     }
                     
-                    if (message.sequence_id) {
+                    if (normalizedIncoming.sequence_id) {
                          await roomStateDao.upsert({
                             room_id: conversationId,
-                            last_sequence_id: message.sequence_id,
+                            last_sequence_id: normalizedIncoming.sequence_id,
                             last_synced_at: Date.now()
                         });
                     }
@@ -510,12 +512,12 @@ export const useChatStore = create<ChatState>()(
                 // Let's stick to appending to state for real-time feel, as we already updated SQLite.
                 
                 const latestMessages = get().messages[conversationId] || [];
-                if (message.id && latestMessages.some((m) => m.id === message.id)) {
+                if (normalizedIncoming.id && latestMessages.some((m) => m.id === normalizedIncoming.id)) {
                     return;
                 }
 
                 const normalizedMessage: Message = {
-                    ...message,
+                    ...normalizedIncoming,
                     room_id: conversationId,
                     status: 'sent'
                 };
@@ -621,7 +623,6 @@ export const useChatStore = create<ChatState>()(
                                 status: row.status as any
                             };
                         }
-
                         // Ensure cache_path is populated from the row, which is the source of truth for local files
                         if (row.cache_path) {
                             msg.cache_path = row.cache_path;

@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"ququchat/internal/api"
 	"ququchat/internal/config"
+	cachepkg "ququchat/internal/server/cache"
 	database "ququchat/internal/server/db"
 	"ququchat/internal/server/storage"
+	taskservice "ququchat/internal/service"
+	tasksvc "ququchat/internal/service/task"
 )
 
 func main() {
@@ -65,8 +70,48 @@ func main() {
 	}
 
 	authCfg := cfg.Auth.ToSettings()
+	commandPriorityRules := make([]taskservice.CommandPriorityRule, 0)
+	for _, item := range cfg.TaskPriority.NormalizedRules() {
+		commandPriorityRules = append(commandPriorityRules, taskservice.CommandPriorityRule{
+			Prefix:   item.Task,
+			Priority: tasksvc.Priority(item.Priority),
+		})
+	}
+	taskService := taskservice.NewMainServiceWithOptions(db, tasksvc.RuntimeOptions{
+		QueueTransport:                   cfg.Task.QueueTransportOrDefault(),
+		QueueRabbitMQURL:                 cfg.Task.QueueRabbitMQURL,
+		QueueRabbitMQName:                cfg.Task.QueueRabbitMQNameOrDefault(),
+		QueueRabbitMQExchange:            cfg.Task.QueueRabbitMQExchangeOrDefault(),
+		QueueRabbitMQMaxPriority:         cfg.Task.QueueRabbitMQMaxPriorityOrDefault(),
+		QueueRabbitMQMaxLength:           cfg.Task.QueueRabbitMQMaxLengthOrDefault(),
+		DoneEventRabbitMQURL:             cfg.Task.DoneEventMQURLOrDefault(),
+		DoneEventQueueName:               cfg.Task.DoneEventQueueOrDefault(),
+		DoneEventConsumeRetryMaxAttempts: cfg.Task.DoneConsumeRetryMaxAttemptsOrDefault(),
+		DoneEventConsumeRetryDelay:       cfg.Task.DoneConsumeRetryDelayOrDefault(),
+		InputRetryMaxAttempts:            cfg.Task.InputRetryMaxAttemptsOrDefault(),
+		InputRetryDelay:                  cfg.Task.InputRetryDelayOrDefault(),
+	}, taskservice.ServiceOptions{
+		CommandPriorityRules: commandPriorityRules,
+	})
+	log.Printf("主进程不启动 Task Runtime，仅提供任务提交与状态能力")
 
-	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket)
+	redisClient := cachepkg.NewRedisClient(cachepkg.RedisOptions{})
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := redisClient.Ping(pingCtx); err != nil {
+		log.Printf("Redis 不可用，缓存已降级为 DB 直连: %v", err)
+		_ = redisClient.Close()
+		redisClient = nil
+	}
+	pingCancel()
+	if redisClient != nil {
+		defer func() {
+			if err := redisClient.Close(); err != nil {
+				log.Printf("Redis 关闭失败: %v", err)
+			}
+		}()
+	}
+
+	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket, redisClient, taskService)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

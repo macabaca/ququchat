@@ -1,0 +1,94 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ququchat
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  qdrant:
+    image: qdrant/qdrant:v1.11.3
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${VECTOR_API_KEY:-}
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  ququchat-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./internal/config/config.secrets.env
+    volumes:
+      - ./internal/config/config.yaml:/app/internal/config/config.yaml:ro
+      - ./data:/app/data
+    depends_on:
+      - postgres
+      - rabbitmq
+      - qdrant
+      - minio
+    ports:
+      - "8080:8080"
+    command: ["/app/bin/ququchat-api"]
+
+  ququchat-taskservice:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./internal/config/config.secrets.env
+    volumes:
+      - ./internal/config/config.yaml:/app/internal/config/config.yaml:ro
+      - ./data:/app/data
+    depends_on:
+      - postgres
+      - rabbitmq
+      - qdrant
+      - minio
+    command: ["/app/bin/ququchat-taskservice"]
+
+volumes:
+  postgres_data:
+    name: postgres_data
+  rabbitmq_data:
+    name: rabbitmq_data
+  qdrant_data:
+    name: qdrant_data
+  minio_data:
+    name: minio_data

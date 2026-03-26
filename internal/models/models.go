@@ -198,3 +198,59 @@ type Attachment struct {
 	ExpiresAt         *time.Time `gorm:"index" json:"expires_at,omitempty"`
 	CreatedAt         time.Time  `gorm:"not null" json:"created_at"`
 }
+
+type TaskJob struct {
+	ID           string         `gorm:"type:char(36);primaryKey" json:"id"`
+	RequestID    string         `gorm:"size:128;not null;uniqueIndex" json:"request_id"`
+	TaskType     string         `gorm:"type:varchar(32);not null;index" json:"task_type"`
+	Priority     int            `gorm:"not null;index" json:"priority"`
+	Status       string         `gorm:"type:varchar(32);not null;index" json:"status"`
+	PayloadJSON  datatypes.JSON `gorm:"type:json" json:"payload_json"`
+	ResultJSON   datatypes.JSON `gorm:"type:json" json:"result_json"`
+	ErrorMessage string         `gorm:"type:text" json:"error_message"`
+	CreatedAt    time.Time      `gorm:"not null;index" json:"created_at"`
+	UpdatedAt    time.Time      `gorm:"not null;index" json:"updated_at"`
+}
+
+type TaskDeadLetter struct {
+	ID            string    `gorm:"type:char(36);primaryKey" json:"id"`
+	SourceQueue   string    `gorm:"size:255;not null;index" json:"source_queue"`
+	Reason        string    `gorm:"size:128;not null;index" json:"reason"`
+	Status        string    `gorm:"size:32;not null;default:pending;index" json:"status"`
+	RawBody       string    `gorm:"type:text;not null" json:"raw_body"`
+	ContentType   string    `gorm:"size:64" json:"content_type,omitempty"`
+	MessageID     string    `gorm:"size:128;index" json:"message_id,omitempty"`
+	CorrelationID string    `gorm:"size:128;index" json:"correlation_id,omitempty"`
+	CreatedAt     time.Time `gorm:"not null;index" json:"created_at"`
+	UpdatedAt     time.Time `gorm:"not null;index" json:"updated_at"`
+}
+
+const (
+	TaskDeadLetterStatusPending   = "pending"
+	TaskDeadLetterStatusRetrying  = "retrying"
+	TaskDeadLetterStatusSucceeded = "succeeded"
+	TaskDeadLetterStatusGiveup    = "giveup"
+)
+
+type ChatSegment struct {
+	ID            string    `gorm:"size:128;primaryKey" json:"id"`
+	RoomID        string    `gorm:"type:char(36);not null;index:idx_seg_room_seq,priority:1;index:idx_seg_room_time,priority:1" json:"room_id"`
+	SegmentID     string    `gorm:"size:128;not null;uniqueIndex" json:"segment_id"`
+	StartSeq      int64     `gorm:"not null;index:idx_seg_room_seq,priority:2" json:"start_seq"`
+	EndSeq        int64     `gorm:"not null;index:idx_seg_room_seq,priority:3" json:"end_seq"`
+	StartAt       time.Time `gorm:"not null;index:idx_seg_room_time,priority:2" json:"start_at"`
+	EndAt         time.Time `gorm:"not null;index:idx_seg_room_time,priority:3" json:"end_at"`
+	MessageCount  int       `gorm:"not null" json:"message_count"`
+	RawText       string    `gorm:"type:text;not null" json:"raw_text"`
+	RawTextHash   string    `gorm:"size:64;not null;index" json:"raw_text_hash"`
+	QdrantPointID string    `gorm:"size:128;not null;uniqueIndex" json:"qdrant_point_id"`
+	SummaryReady  bool      `gorm:"not null;default:false;index" json:"summary_ready"`
+	CreatedAt     time.Time `gorm:"not null;index" json:"created_at"`
+	UpdatedAt     time.Time `gorm:"not null;index" json:"updated_at"`
+}
+
+type ChatSegmentCursor struct {
+	RoomID         string    `gorm:"type:char(36);primaryKey" json:"room_id"`
+	LastIndexedSeq int64     `gorm:"not null" json:"last_indexed_seq"`
+	UpdatedAt      time.Time `gorm:"not null;index" json:"updated_at"`
+}

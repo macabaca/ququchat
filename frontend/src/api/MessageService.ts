@@ -5,26 +5,49 @@ import { messageDao, MessageRow } from "./db_sqlite";
 import { useAuthStore } from "../stores/authStore";
 import { localFileService } from "./LocalFileService";
 
+const normalizeAIGCAttachmentIDs = (input: any): string[] => {
+    if (!Array.isArray(input)) {
+        return [];
+    }
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const item of input) {
+        const id = String(item ?? '').trim();
+        if (!id || seen.has(id)) {
+            continue;
+        }
+        seen.add(id);
+        ids.push(id);
+    }
+    return ids;
+};
+
 export const messageService = {
     // Save message to local DB and handle file downloads
     saveMessage: async (msg: Message) => {
         const rawMsg = msg as Message & Record<string, any>;
+        const payloadSource = rawMsg.payload_json;
         const payload = (() => {
-            if (!rawMsg.payload_json) return {};
-            if (typeof rawMsg.payload_json === 'string') {
+            if (!payloadSource) return {};
+            if (typeof payloadSource === 'string') {
                 try {
-                    return JSON.parse(rawMsg.payload_json);
+                    return JSON.parse(payloadSource);
                 } catch {
                     return {};
                 }
             }
-            if (typeof rawMsg.payload_json === 'object') return rawMsg.payload_json;
+            if (typeof payloadSource === 'object') return payloadSource;
             return {};
         })();
 
         // 兼容 WS 与 history 接口不同字段
         const normalizedAttachmentId = rawMsg.attachment_id || payload.attachment_id || null;
         const normalizedThumbAttachmentId = rawMsg.thumb_attachment_id || payload.thumb_attachment_id || null;
+        const normalizedAIGCAttachmentIDs = normalizeAIGCAttachmentIDs(
+            rawMsg.aigc_attachment_ids
+            ?? payload.aigc_attachment_ids
+            ?? payload?.payload?.aigc_attachment_ids
+        );
         const normalizedContentType = rawMsg.content_type || payload.content_type || (rawMsg.is_image ? 'image' : (normalizedAttachmentId ? 'file' : 'text'));
         const isImageMessage = !!rawMsg.is_image || normalizedContentType === 'image' || !!normalizedThumbAttachmentId;
         let normalizedCachePath = typeof rawMsg.cache_path === 'string' && rawMsg.cache_path.trim() ? rawMsg.cache_path : null;
@@ -61,7 +84,6 @@ export const messageService = {
         if (!rawMsg.is_image && isImageMessage) {
             rawMsg.is_image = true;
         }
-
         // 1. Prepare message row
         const messageRow: MessageRow = {
             id: rawMsg.id || `msg-${Date.now()}`,
@@ -98,6 +120,26 @@ export const messageService = {
 
         if (messageRow.cache_path) {
             rawMsg.cache_path = messageRow.cache_path;
+        }
+        if (normalizedAIGCAttachmentIDs.length > 0) {
+            if (currentUserCode && window.electronAPI) {
+                for (const attachmentID of normalizedAIGCAttachmentIDs) {
+                    try {
+                        await localFileService.downloadAndSave(
+                            attachmentID,
+                            attachmentID,
+                            String(currentUserCode)
+                        );
+                    } catch (error) {
+                        console.warn('[MessageService] failed to cache aigc attachment locally', {
+                            id: rawMsg.id,
+                            attachment_id: attachmentID,
+                            error
+                        });
+                    }
+                }
+            }
+            rawMsg.aigc_attachment_ids = normalizedAIGCAttachmentIDs;
         }
         messageRow.payload_json = JSON.stringify(rawMsg);
 

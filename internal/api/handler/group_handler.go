@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -9,15 +11,69 @@ import (
 	"gorm.io/gorm"
 
 	"ququchat/internal/models"
+	cachepkg "ququchat/internal/server/cache"
 )
 
 type GroupHandler struct {
-	db  *gorm.DB
-	hub *Hub
+	db    *gorm.DB
+	hub   *Hub
+	cache *cachepkg.RedisClient
 }
 
-func NewGroupHandler(db *gorm.DB, hub *Hub) *GroupHandler {
-	return &GroupHandler{db: db, hub: hub}
+func NewGroupHandler(db *gorm.DB, hub *Hub, cache *cachepkg.RedisClient) *GroupHandler {
+	return &GroupHandler{db: db, hub: hub, cache: cache}
+}
+
+func (h *GroupHandler) invalidateGroupPostingPermission(roomID string, userIDs ...string) {
+	if h == nil || h.cache == nil || strings.TrimSpace(roomID) == "" || len(userIDs) == 0 {
+		return
+	}
+	keySet := make(map[string]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if strings.TrimSpace(userID) == "" {
+			continue
+		}
+		key := h.cache.BuildKey(cachepkg.GroupPostingPermissionKey(roomID, userID)...)
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		keySet[key] = struct{}{}
+	}
+	if len(keySet) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	cacheCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	_ = h.cache.Del(cacheCtx, keys...)
+	cancel()
+}
+
+func (h *GroupHandler) invalidateGroupPostingPermissionByRoom(roomID string) {
+	if h == nil || h.cache == nil || strings.TrimSpace(roomID) == "" {
+		return
+	}
+	var members []models.RoomMember
+	if err := h.db.Select("DISTINCT user_id").Where("room_id = ?", roomID).Find(&members).Error; err != nil {
+		return
+	}
+	userIDs := make([]string, 0, len(members))
+	for _, m := range members {
+		userIDs = append(userIDs, m.UserID)
+	}
+	h.invalidateGroupPostingPermission(roomID, userIDs...)
+}
+
+func (h *GroupHandler) invalidateGroupMemberIDs(roomID string) {
+	if h == nil || h.cache == nil || strings.TrimSpace(roomID) == "" {
+		return
+	}
+	cacheKey := h.cache.BuildKey(cachepkg.GroupMemberIDsKey(roomID)...)
+	cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	_ = h.cache.Del(cacheCtx, cacheKey)
+	cancel()
 }
 
 type CreateGroupRequest struct {
@@ -246,6 +302,8 @@ func (h *GroupHandler) DismissGroup(c *gin.Context) {
 	}
 	if err := h.db.Model(&models.RoomMember{}).Where("room_id = ?", room.ID).Update("left_at", now).Error; err != nil {
 	}
+	h.invalidateGroupPostingPermissionByRoom(room.ID)
+	h.invalidateGroupMemberIDs(room.ID)
 
 	if h.hub != nil && len(memberIDs) > 0 {
 		h.hub.SendSystemEventToUsers(memberIDs, "group_list_updated")
@@ -337,6 +395,10 @@ func (h *GroupHandler) AddMembers(c *gin.Context) {
 			addedUserIDs = append(addedUserIDs, uid)
 		}
 	}
+	h.invalidateGroupPostingPermission(groupID, addedUserIDs...)
+	if len(addedUserIDs) > 0 {
+		h.invalidateGroupMemberIDs(groupID)
+	}
 
 	if h.hub != nil && len(addedUserIDs) > 0 {
 		memberIDs, err := h.activeMemberIDs(groupID)
@@ -406,6 +468,8 @@ func (h *GroupHandler) RemoveMember(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "移除成员失败"})
 		return
 	}
+	h.invalidateGroupPostingPermission(groupID, req.UserID)
+	h.invalidateGroupMemberIDs(groupID)
 
 	if h.hub != nil {
 		memberIDs, err := h.activeMemberIDs(groupID)
@@ -465,6 +529,8 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "退出群失败"})
 		return
 	}
+	h.invalidateGroupPostingPermission(groupID, currentUserID)
+	h.invalidateGroupMemberIDs(groupID)
 
 	if h.hub != nil {
 		memberIDs, err := h.activeMemberIDs(groupID)

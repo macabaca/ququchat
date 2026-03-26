@@ -1,3 +1,6 @@
+export const ROBOT_USER_ID = '00000000-0000-0000-0000-00000000a1b2';
+export const ROBOT_DISPLAY_NAME = '机器人';
+
 // 对应 users 表
 export interface User {
     id: string; // Changed to string (uuid) based on auth docs
@@ -81,6 +84,7 @@ export interface Message {
     thumb_attachment_id?: string;
     is_image?: boolean;
     cache_path?: string | null;
+    payload_json?: Record<string, any> | string | null;
 }
 
 export interface Conversation {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"ququchat/internal/config"
 	"ququchat/internal/models"
+	cachepkg "ququchat/internal/server/cache"
 	serverstorage "ququchat/internal/server/storage"
 	filesvc "ququchat/internal/service/file"
 )
@@ -22,9 +24,10 @@ type UserHandler struct {
 	fileSvc   *filesvc.Service
 	avatarCfg config.Avatar
 	hub       *Hub
+	cache     *cachepkg.RedisClient
 }
 
-func NewUserHandler(db *gorm.DB, cfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string, hub *Hub) *UserHandler {
+func NewUserHandler(db *gorm.DB, cfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string, hub *Hub, cache *cachepkg.RedisClient) *UserHandler {
 	thumb := filesvc.ThumbnailOptions{
 		MaxDimension:   cfg.Thumbnail.MaxDimensionOrDefault(),
 		JPEGQuality:    cfg.Thumbnail.JPEGQualityOrDefault(),
@@ -37,7 +40,35 @@ func NewUserHandler(db *gorm.DB, cfg config.File, avatarCfg config.Avatar, objSt
 		fileSvc:   filesvc.NewService(db, objStorage, bucket, cfg.MaxSizeBytes, cfg.RetentionDuration(), thumb),
 		avatarCfg: avatarCfg,
 		hub:       hub,
+		cache:     cache,
 	}
+}
+
+func (h *UserHandler) invalidateFriendIDsCaches(userA string, userB string) {
+	if h == nil || h.cache == nil || strings.TrimSpace(userA) == "" || strings.TrimSpace(userB) == "" {
+		return
+	}
+	keys := []string{
+		h.cache.BuildKey(cachepkg.FriendIDsKey(userA)...),
+		h.cache.BuildKey(cachepkg.FriendIDsKey(userB)...),
+	}
+	cacheCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	_ = h.cache.Del(cacheCtx, keys...)
+	cancel()
+}
+
+func (h *UserHandler) invalidateFriendshipCaches(userA string, userB string) {
+	if h == nil || h.cache == nil || strings.TrimSpace(userA) == "" || strings.TrimSpace(userB) == "" {
+		return
+	}
+	h.invalidateFriendIDsCaches(userA, userB)
+	keys := []string{
+		h.cache.BuildKey(cachepkg.FriendshipKey(userA, userB)...),
+		h.cache.BuildKey(cachepkg.DirectRoomKey(userA, userB)...),
+	}
+	cacheCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	_ = h.cache.Del(cacheCtx, keys...)
+	cancel()
 }
 
 type AddFriendRequest struct {
@@ -319,6 +350,7 @@ func (h *UserHandler) AddFriend(c *gin.Context) {
 
 	var existingFriend models.Friendship
 	if err := h.db.Where("user_id_a = ? AND user_id_b = ?", a, b).First(&existingFriend).Error; err == nil {
+		h.invalidateFriendIDsCaches(currentUserID, target.ID)
 		c.JSON(http.StatusOK, gin.H{
 			"message": "已是好友",
 			"friend": gin.H{
@@ -448,6 +480,7 @@ func (h *UserHandler) RemoveFriend(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除好友关系失败"})
 		return
 	}
+	h.invalidateFriendshipCaches(currentUserID, target.ID)
 
 	if h.hub != nil {
 		h.hub.SendSystemEventToUsers([]string{currentUserID, target.ID}, "friend_list_updated")
@@ -740,6 +773,7 @@ func (h *UserHandler) RespondFriendRequest(c *gin.Context) {
 
 	fr.Status = models.FriendRequestAccepted
 	fr.RespondedAt = &now
+	h.invalidateFriendshipCaches(fr.FromUserID, fr.ToUserID)
 
 	if h.hub != nil {
 		h.hub.SendSystemEventToUsers([]string{fr.FromUserID, fr.ToUserID}, "friend_request_accepted")

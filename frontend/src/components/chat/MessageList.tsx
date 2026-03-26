@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { List, Avatar, Button, Modal, message } from 'antd';
+import { List, Avatar, Button, Dropdown, Modal, message } from 'antd';
+import type { MenuProps } from 'antd';
 import { UserOutlined, FileOutlined, DownloadOutlined, EyeOutlined, FileImageOutlined, DownOutlined } from '@ant-design/icons';
-import { Message } from '../../types/models';
+import { Message, ROBOT_DISPLAY_NAME, ROBOT_USER_ID } from '../../types/models';
 import { useAuthStore } from '../../stores/authStore';
 import { fileService } from '../../api/FileService';
 import { useChatStore } from '../../stores/chatStore';
@@ -16,12 +17,176 @@ interface MessageListProps {
     onLoadPrevious?: () => Promise<void> | void;
 }
 
+interface MemoryEntry {
+    index: number;
+    step: string;
+    role: string;
+    tool: string;
+    status: string;
+    input: string;
+    output: string;
+    error: string;
+    raw: string;
+}
+
+interface RAGPayloadEntry {
+    pointID: string;
+    scoreText: string;
+    summary: string;
+    segmentID: string;
+    startSeq: string;
+    endSeq: string;
+    messageCount: string;
+}
+
+interface AIGCImageEntry {
+    attachmentID: string;
+}
+
+const parseMemoryEntries = (memoryText: string): MemoryEntry[] => {
+    const normalized = memoryText.replace(/\r\n/g, '\n').trim();
+    if (!normalized) {
+        return [];
+    }
+    const chunks = normalized
+        .split(/\n(?=\s*\d+\.\s*step=)/g)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    const entries: MemoryEntry[] = [];
+    for (const chunk of chunks) {
+        const head = chunk.match(/^\s*(\d+)\.\s*step=([^,]+),\s*role=([^,]+),\s*tool=([^,]+),\s*status=([^,]+)([\s\S]*)$/);
+        if (!head) {
+            continue;
+        }
+        const tail = head[6] || '';
+        const inputToken = ', input=';
+        const outputToken = ', output=';
+        const errorToken = ', error=';
+        const readPart = (token: string, nextTokens: string[]) => {
+            const start = tail.indexOf(token);
+            if (start < 0) {
+                return '';
+            }
+            const from = start + token.length;
+            let to = tail.length;
+            for (const nextToken of nextTokens) {
+                const idx = tail.indexOf(nextToken, from);
+                if (idx >= 0 && idx < to) {
+                    to = idx;
+                }
+            }
+            return tail.slice(from, to).trim();
+        };
+        entries.push({
+            index: Number(head[1]),
+            step: head[2].trim(),
+            role: head[3].trim(),
+            tool: head[4].trim(),
+            status: head[5].trim(),
+            input: readPart(inputToken, [outputToken, errorToken]),
+            output: readPart(outputToken, [errorToken]),
+            error: readPart(errorToken, []),
+            raw: chunk
+        });
+    }
+    return entries;
+};
+
+const asRecord = (value: any): Record<string, any> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null;
+    }
+    return value as Record<string, any>;
+};
+
+const parseRAGPayloadEntries = (payloadObject: Record<string, any> | null): RAGPayloadEntry[] => {
+    if (!payloadObject) {
+        return [];
+    }
+    let rawResults: any[] = [];
+    if (Array.isArray(payloadObject.results)) {
+        rawResults = payloadObject.results;
+    } else if (typeof payloadObject.results_json === 'string') {
+        const trimmed = payloadObject.results_json.trim();
+        if (trimmed) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (Array.isArray(parsed)) {
+                    rawResults = parsed;
+                }
+            } catch {
+                rawResults = [];
+            }
+        }
+    }
+    if (!Array.isArray(rawResults) || rawResults.length === 0) {
+        return [];
+    }
+    const entries: RAGPayloadEntry[] = [];
+    for (const item of rawResults) {
+        const row = asRecord(item);
+        if (!row) {
+            continue;
+        }
+        const pointID = String(row.point_id ?? '').trim();
+        const scoreValue = row.score;
+        const scoreText = typeof scoreValue === 'number'
+            ? scoreValue.toFixed(6)
+            : String(scoreValue ?? '').trim();
+        const summary = String(row.summary ?? '').trim();
+        const segmentID = String(row.segment_id ?? '').trim();
+        const startSeq = String(row.start_seq ?? '').trim();
+        const endSeq = String(row.end_seq ?? '').trim();
+        const messageCount = String(row.message_count ?? '').trim();
+        if (!pointID && !summary && !segmentID) {
+            continue;
+        }
+        entries.push({
+            pointID,
+            scoreText,
+            summary,
+            segmentID,
+            startSeq,
+            endSeq,
+            messageCount
+        });
+    }
+    return entries;
+};
+
+const parseAIGCImageEntries = (payloadObject: Record<string, any> | null): AIGCImageEntry[] => {
+    if (!payloadObject) {
+        return [];
+    }
+    const rawIDs = payloadObject.aigc_attachment_ids;
+    if (!Array.isArray(rawIDs) || rawIDs.length === 0) {
+        return [];
+    }
+    const entries: AIGCImageEntry[] = [];
+    const seen = new Set<string>();
+    for (const rawID of rawIDs) {
+        const attachmentID = String(rawID ?? '').trim();
+        if (!attachmentID || seen.has(attachmentID)) {
+            continue;
+        }
+        seen.add(attachmentID);
+        entries.push({
+            attachmentID
+        });
+    }
+    return entries;
+};
+
 const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; senderName: string; isHighlighted?: boolean }> = ({ msg, isMe, avatarUrl, senderName, isHighlighted }) => {
     const [thumbUrl, setThumbUrl] = useState<string>('');
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [originalUrl, setOriginalUrl] = useState<string>('');
     const [loadingOriginal, setLoadingOriginal] = useState(false);
     const [isDownloading, setIsDownloading] = useState(false);
+    const [aigcImageUrls, setAigcImageUrls] = useState<Array<{ attachmentID: string; url: string }>>([]);
+    const [isAIGCModalVisible, setIsAIGCModalVisible] = useState(false);
+    const [activeAIGCImage, setActiveAIGCImage] = useState<{ attachmentID: string; url: string } | null>(null);
+    const [isAIGCDownloading, setIsAIGCDownloading] = useState(false);
 
     const isImage = msg.is_image || (typeof msg.content === 'string' && (msg.content.startsWith('http') || msg.content.startsWith('blob:')) && (msg.content.match(/\.(jpeg|jpg|gif|png|webp)(\?.*)?$/i) != null));
     // For temp messages, we might just have the content as the URL (blob or uploaded URL) even if is_image is not set correctly yet?
@@ -36,6 +201,39 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
     const filePlaceholder = !isFile
         ? ''
         : (typeof msg.content === 'string' && msg.content.trim() && !contentIsUrl ? msg.content : `File (${msg.attachment_id || 'attachment'})`);
+    const isRobotMessage = msg.from_user_id === ROBOT_USER_ID;
+    const sequenceID = typeof msg.sequence_id === 'number' ? msg.sequence_id : null;
+    const currentUserCode = useAuthStore((state) => state.user?.user_code ? String(state.user.user_code) : '');
+    const payloadObject = useMemo(() => {
+        const rawPayload = msg.payload_json;
+        if (!rawPayload) {
+            return null;
+        }
+        if (typeof rawPayload === 'string') {
+            const trimmed = rawPayload.trim();
+            if (!trimmed) {
+                return null;
+            }
+            try {
+                return JSON.parse(trimmed) as Record<string, any>;
+            } catch {
+                return null;
+            }
+        }
+        if (typeof rawPayload === 'object') {
+            return rawPayload as Record<string, any>;
+        }
+        return null;
+    }, [msg.payload_json]);
+    const memoryText = useMemo(() => {
+        if (!payloadObject || typeof payloadObject.memory !== 'string') {
+            return '';
+        }
+        return payloadObject.memory.trim();
+    }, [payloadObject]);
+    const memoryEntries = useMemo(() => parseMemoryEntries(memoryText), [memoryText]);
+    const ragPayloadEntries = useMemo(() => parseRAGPayloadEntries(payloadObject), [payloadObject]);
+    const aigcImageEntries = useMemo(() => parseAIGCImageEntries(payloadObject), [payloadObject]);
 
     useEffect(() => {
         const isBlob = typeof msg.content === 'string' && msg.content.startsWith('blob:');
@@ -65,6 +263,63 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
         }
 
     }, [msg.id, msg.thumb_attachment_id, isImage, isFile, msg.content, contentIsUrl, msg.cache_path]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const objectUrls: string[] = [];
+        const loadAIGCImages = async () => {
+            setAigcImageUrls([]);
+            if (aigcImageEntries.length === 0) {
+                return;
+            }
+            const items: Array<{ attachmentID: string; url: string }> = [];
+            for (const entry of aigcImageEntries) {
+                if (cancelled) {
+                    return;
+                }
+                let url = '';
+                if (currentUserCode) {
+                    try {
+                        const deterministicPath = await localFileService.buildUserImageCachePath(entry.attachmentID, currentUserCode, false);
+                        url = deterministicPath ? ((await localFileService.getLocalFileUrl(deterministicPath)) || '') : '';
+                        if (!url) {
+                            const localPath = await localFileService.downloadAndSave(entry.attachmentID, entry.attachmentID, currentUserCode);
+                            url = localPath ? ((await localFileService.getLocalFileUrl(localPath)) || '') : '';
+                        }
+                        if (url && url.startsWith('blob:')) {
+                            objectUrls.push(url);
+                        }
+                    } catch {
+                        url = '';
+                    }
+                }
+                if (!url) {
+                    try {
+                        const res = await fileService.getFileUrl(entry.attachmentID);
+                        url = String(res?.url || '').trim();
+                    } catch {
+                        url = '';
+                    }
+                }
+                if (url) {
+                    items.push({
+                        attachmentID: entry.attachmentID,
+                        url
+                    });
+                }
+            }
+            if (!cancelled) {
+                setAigcImageUrls(items);
+            }
+        };
+        void loadAIGCImages();
+        return () => {
+            cancelled = true;
+            for (const url of objectUrls) {
+                URL.revokeObjectURL(url);
+            }
+        };
+    }, [aigcImageEntries, currentUserCode]);
 
     const handleImageClick = () => {
         setIsModalVisible(true);
@@ -142,6 +397,38 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
             message.error('下载失败');
         } finally {
             setIsDownloading(false);
+        }
+    };
+
+    const handleOpenAIGCPreview = (item: { attachmentID: string; url: string }) => {
+        setActiveAIGCImage(item);
+        setIsAIGCModalVisible(true);
+    };
+
+    const inferAIGCDownloadFileName = () => {
+        const attachmentID = (activeAIGCImage?.attachmentID || 'aigc-image').trim();
+        const normalized = attachmentID.replace(/[\\/:*?"<>|]/g, '_') || 'aigc-image';
+        return /\.[a-zA-Z0-9]{1,8}$/.test(normalized) ? normalized : `${normalized}.png`;
+    };
+
+    const handleDownloadAIGC = async () => {
+        const attachmentID = activeAIGCImage?.attachmentID;
+        if (!attachmentID) {
+            message.warning('缺少附件ID，无法下载');
+            return;
+        }
+        setIsAIGCDownloading(true);
+        try {
+            const savedPath = await localFileService.downloadAndSaveAs(attachmentID, inferAIGCDownloadFileName());
+            if (!savedPath) {
+                message.info('已取消下载');
+                return;
+            }
+            message.success(`已保存到：${savedPath}`);
+        } catch {
+            message.error('下载失败');
+        } finally {
+            setIsAIGCDownloading(false);
         }
     };
 
@@ -253,6 +540,24 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
         return msg.content;
     };
 
+    const messageContextMenu: MenuProps = {
+        items: [
+            {
+                key: 'show-sequence-id',
+                label: sequenceID === null ? '暂无 SequenceID' : `查看 SequenceID (${sequenceID})`,
+                disabled: sequenceID === null
+            }
+        ],
+        onClick: ({ key }) => {
+            if (key !== 'show-sequence-id' || sequenceID === null) return;
+            Modal.info({
+                title: '消息 SequenceID',
+                content: <span>{sequenceID}</span>,
+                okText: '知道了'
+            });
+        }
+    };
+
     return (
         <List.Item id={`chat-msg-${msg.id}`} data-msg-id={msg.id} style={{ 
             display: 'flex', 
@@ -275,15 +580,102 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                         {senderName}
                     </span>
                 </div>
-                <div style={{
-                    background: isMe ? '#1890ff' : '#fff',
-                    color: isMe ? '#fff' : '#000',
-                    padding: '8px 12px',
-                    borderRadius: '8px',
-                    boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
-                    wordBreak: 'break-word'
-                }}>
-                    {renderContent()}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start' }}>
+                    <Dropdown trigger={['contextMenu']} menu={messageContextMenu}>
+                        <div style={{
+                            background: isMe ? '#1890ff' : '#fff',
+                            color: isMe ? '#fff' : '#000',
+                            padding: '8px 12px',
+                            borderRadius: '8px',
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+                            wordBreak: 'break-word'
+                        }}>
+                            {renderContent()}
+                            {aigcImageUrls.length > 0 && (
+                                <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                    {aigcImageUrls.map((item) => (
+                                        <div key={`${msg.id || 'aigc'}-${item.attachmentID}`} style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid #f0f0f0', background: '#fff' }}>
+                                            <img
+                                                src={item.url}
+                                                alt={item.attachmentID}
+                                                onClick={() => handleOpenAIGCPreview(item)}
+                                                style={{ maxWidth: 180, maxHeight: 180, display: 'block', objectFit: 'cover', cursor: 'zoom-in' }}
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            <Modal
+                                open={isAIGCModalVisible}
+                                onCancel={() => setIsAIGCModalVisible(false)}
+                                footer={[
+                                    <Button
+                                        key="download-aigc"
+                                        type="primary"
+                                        icon={<DownloadOutlined />}
+                                        onClick={handleDownloadAIGC}
+                                        disabled={!activeAIGCImage?.attachmentID}
+                                        loading={isAIGCDownloading}
+                                    >
+                                        下载
+                                    </Button>
+                                ]}
+                                width={900}
+                                centered
+                            >
+                                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '220px' }}>
+                                    {activeAIGCImage?.url ? (
+                                        <img src={activeAIGCImage.url} alt={activeAIGCImage.attachmentID} style={{ maxWidth: '100%', maxHeight: '72vh' }} />
+                                    ) : (
+                                        <span>暂无可预览图片</span>
+                                    )}
+                                </div>
+                            </Modal>
+                            {isRobotMessage && memoryEntries.length > 0 && (
+                                <details style={{ marginTop: 8, border: '1px solid #d9d9d9', borderRadius: 6, background: '#fafafa' }}>
+                                    <summary style={{ cursor: 'pointer', padding: '6px 8px', color: '#595959', fontSize: 12 }}>payload / memory</summary>
+                                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        {memoryEntries.map((entry) => (
+                                            <div key={`${msg.id || 'memory'}-${entry.index}-${entry.role}-${entry.tool}`} style={{ border: '1px solid #e8e8e8', borderRadius: 6, background: '#fff' }}>
+                                                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 8px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                                                    <span style={{ color: '#8c8c8c' }}>#{entry.index}</span>
+                                                    <span style={{ fontWeight: 600, color: '#262626' }}>{entry.role}</span>
+                                                    <span style={{ color: '#595959' }}>{entry.tool}</span>
+                                                    <span style={{ color: entry.status === 'failed' ? '#cf1322' : '#389e0d' }}>{entry.status}</span>
+                                                </div>
+                                                {entry.input && <div style={{ padding: '6px 8px', fontSize: 12, color: '#595959', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>input:</strong> {entry.input}</div>}
+                                                {entry.output && <div style={{ padding: '0 8px 6px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>output:</strong> {entry.output}</div>}
+                                                {entry.error && <div style={{ padding: '0 8px 8px 8px', fontSize: 12, color: '#cf1322', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>error:</strong> {entry.error}</div>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </details>
+                            )}
+                            {isRobotMessage && ragPayloadEntries.length > 0 && (
+                                <details style={{ marginTop: 8, border: '1px solid #d9d9d9', borderRadius: 6, background: '#fafafa' }}>
+                                    <summary style={{ cursor: 'pointer', padding: '6px 8px', color: '#595959', fontSize: 12 }}>payload / rag ({ragPayloadEntries.length})</summary>
+                                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        {ragPayloadEntries.map((entry, index) => (
+                                            <div key={`${msg.id || 'rag'}-${entry.pointID || entry.segmentID || index}`} style={{ border: '1px solid #e8e8e8', borderRadius: 6, background: '#fff' }}>
+                                                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 8px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                                                    <span style={{ color: '#8c8c8c' }}>#{index + 1}</span>
+                                                    {entry.scoreText && <span style={{ color: '#262626' }}>score: {entry.scoreText}</span>}
+                                                    {entry.segmentID && <span style={{ color: '#595959' }}>segment: {entry.segmentID}</span>}
+                                                </div>
+                                                {entry.pointID && <div style={{ padding: '6px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>point_id:</strong> {entry.pointID}</div>}
+                                                {(entry.startSeq || entry.endSeq || entry.messageCount) && (
+                                                    <div style={{ padding: '0 8px 6px 8px', fontSize: 12, color: '#595959', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                                        <strong>range:</strong> {entry.startSeq || '-'} ~ {entry.endSeq || '-'}，消息数 {entry.messageCount || '-'}
+                                                    </div>
+                                                )}
+                                                {entry.summary && <div style={{ padding: '0 8px 8px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>summary:</strong> {entry.summary}</div>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </details>
+                            )}
+                        </div>
+                    </Dropdown>
                 </div>
             </div>
         </List.Item>
@@ -404,6 +796,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onF
 
     const senderNameByUserId = useMemo(() => {
         const map: Record<string, string> = {};
+        map[ROBOT_USER_ID] = ROBOT_DISPLAY_NAME;
         if (user?.id) {
             map[user.id] = user.nickname || user.displayName || user.username || '我';
         }
@@ -435,7 +828,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onF
                         msg={msg}
                         isMe={msg.from_user_id === user?.id}
                         avatarUrl={msg.from_user_id ? avatarUrlByUserId[msg.from_user_id] : undefined}
-                        senderName={msg.from_user_id ? (senderNameByUserId[msg.from_user_id] || `${msg.from_user_id.slice(0, 6)}`) : '未知用户'}
+                        senderName={msg.from_user_id ? (senderNameByUserId[msg.from_user_id] || (msg.from_user_id === ROBOT_USER_ID ? ROBOT_DISPLAY_NAME : `${msg.from_user_id.slice(0, 6)}`)) : '未知用户'}
                         isHighlighted={highlightedMessageId === msg.id}
                     />
                 )}

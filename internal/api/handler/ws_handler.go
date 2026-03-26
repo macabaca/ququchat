@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,6 +18,9 @@ import (
 	"gorm.io/gorm/clause"
 
 	"ququchat/internal/models"
+	cachepkg "ququchat/internal/server/cache"
+	taskservice "ququchat/internal/service"
+	tasksvc "ququchat/internal/service/task"
 )
 
 const (
@@ -23,23 +28,36 @@ const (
 	wsPongWait    = 60 * time.Second
 	wsPingPeriod  = 50 * time.Second
 	wsMaxMsgBytes = 64 * 1024
+	wsRobotUserID = "00000000-0000-0000-0000-00000000a1b2"
 )
 
 type WsHandler struct {
-	db  *gorm.DB
-	hub *Hub
+	db              *gorm.DB
+	hub             *Hub
+	cacheClient     *cachepkg.RedisClient
+	taskService     *taskservice.MainService
+	robotInit       sync.Once
+	robotErr        error
+	doneConsumerMu  sync.Mutex
+	doneConsumerUp  bool
+	doneConsumerErr error
 }
 
-func NewWsHandler(db *gorm.DB, hub *Hub) *WsHandler {
+func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, taskService *taskservice.MainService) *WsHandler {
 	if hub == nil {
 		hub = NewHub()
 	}
 	if hub.db == nil {
 		hub.db = db
 	}
+	if hub.cacheClient == nil {
+		hub.cacheClient = cacheClient
+	}
 	return &WsHandler{
-		db:  db,
-		hub: hub,
+		db:          db,
+		hub:         hub,
+		cacheClient: cacheClient,
+		taskService: taskService,
 	}
 }
 
@@ -51,6 +69,7 @@ type Hub struct {
 	direct        chan DirectMessage
 	broadcast     chan GroupMessage
 	db            *gorm.DB
+	cacheClient   *cachepkg.RedisClient
 }
 
 type DirectMessage struct {
@@ -97,6 +116,20 @@ func (h *Hub) SendSystemEventToUsers(userIDs []string, event string) {
 	data, err := json.Marshal(SystemEvent{Type: "system_event", Event: event})
 	if err != nil {
 		log.Printf("failed to marshal system_event: %v", err)
+		return
+	}
+	h.broadcast <- GroupMessage{UserIDs: userIDs, Data: data}
+}
+
+func (h *Hub) SendDataToUser(userID string, data []byte) {
+	if userID == "" {
+		return
+	}
+	h.SendDataToUsers([]string{userID}, data)
+}
+
+func (h *Hub) SendDataToUsers(userIDs []string, data []byte) {
+	if h == nil || len(userIDs) == 0 || len(data) == 0 {
 		return
 	}
 	h.broadcast <- GroupMessage{UserIDs: userIDs, Data: data}
@@ -193,6 +226,16 @@ func (h *Hub) updateUserStatus(userID, status string) {
 }
 
 func (h *Hub) listFriendIDs(userID string) ([]string, error) {
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.FriendIDsKey(userID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		var cached []string
+		ok, err := h.cacheClient.GetJSON(cacheCtx, cacheKey, &cached)
+		cancel()
+		if err == nil && ok {
+			return cached, nil
+		}
+	}
 	var relations []models.Friendship
 	if err := h.db.Where("user_id_a = ? OR user_id_b = ?", userID, userID).Find(&relations).Error; err != nil {
 		return nil, err
@@ -204,6 +247,12 @@ func (h *Hub) listFriendIDs(userID string) ([]string, error) {
 		} else {
 			friendIDs = append(friendIDs, r.UserIDA)
 		}
+	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.FriendIDsKey(userID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetJSON(cacheCtx, cacheKey, friendIDs, cachepkg.FriendIDsTTL)
+		cancel()
 	}
 	return friendIDs, nil
 }
@@ -232,6 +281,7 @@ type OutgoingMessage struct {
 	Content      string             `json:"content,omitempty"`
 	AttachmentID string             `json:"attachment_id,omitempty"`
 	Attachment   *AttachmentPayload `json:"attachment,omitempty"`
+	PayloadJSON  datatypes.JSON     `json:"payload_json,omitempty"`
 	Timestamp    int64              `json:"timestamp"`
 	SequenceID   int64              `json:"sequence_id"`
 }
@@ -260,6 +310,7 @@ var upgrader = websocket.Upgrader{
 }
 
 func (h *WsHandler) Handle(c *gin.Context) {
+	_ = h.StartTaskDoneConsumer(context.Background())
 	userID := c.GetString("user_id")
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
@@ -359,6 +410,54 @@ func (c *Client) readLoop(h *WsHandler) {
 			}
 		} else if msg.Type == "group_message" {
 			if msg.RoomID == "" || msg.Content == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.TrimSpace(msg.Content), "\\") {
+				if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
+					continue
+				}
+				savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content)
+				if err != nil {
+					continue
+				}
+				memberIDs, err := h.getGroupMemberIDs(msg.RoomID)
+				if err != nil {
+					continue
+				}
+				commandOut := OutgoingMessage{
+					ID:         savedMsg.ID,
+					Type:       "group_message",
+					FromUser:   c.userID,
+					RoomID:     msg.RoomID,
+					Content:    msg.Content,
+					Timestamp:  savedMsg.CreatedAt.Unix(),
+					SequenceID: savedMsg.SequenceID,
+				}
+				commandBroadcast, err := json.Marshal(commandOut)
+				if err == nil {
+					c.hub.broadcast <- GroupMessage{
+						RoomID:  msg.RoomID,
+						UserIDs: memberIDs,
+						Data:    commandBroadcast,
+					}
+				}
+				if h.taskService == nil {
+					continue
+				}
+				userID := c.userID
+				roomID := msg.RoomID
+				_, err = h.taskService.SubmitCommand(taskservice.SubmitCommandRequest{
+					UserID:  userID,
+					RoomID:  roomID,
+					Content: msg.Content,
+				})
+				if err != nil {
+					log.Printf("submit command failed user=%s room=%s err=%v", userID, roomID, err)
+					if sendErr := h.sendRobotGroupMessage(roomID, err.Error(), nil); sendErr != nil {
+						log.Printf("send robot submit-failed message failed room=%s err=%v", roomID, sendErr)
+					}
+					continue
+				}
 				continue
 			}
 			// Check if user is a member of the group and not muted
@@ -518,13 +617,34 @@ func (h *WsHandler) areFriends(a, b string) bool {
 	if a == "" || b == "" || a == b {
 		return false
 	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.FriendshipKey(a, b)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		val, ok, err := h.cacheClient.GetString(cacheCtx, cacheKey)
+		cancel()
+		if err == nil && ok {
+			return val == "1"
+		}
+	}
 	x, y := a, b
 	if x > y {
 		x, y = y, x
 	}
 	var f models.Friendship
 	if err := h.db.Where("user_id_a = ? AND user_id_b = ?", x, y).First(&f).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) && h.cacheClient != nil {
+			cacheKey := h.cacheClient.BuildKey(cachepkg.FriendshipKey(a, b)...)
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+			_ = h.cacheClient.SetString(cacheCtx, cacheKey, "0", cachepkg.FriendshipTTL)
+			cancel()
+		}
 		return false
+	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.FriendshipKey(a, b)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetString(cacheCtx, cacheKey, "1", cachepkg.FriendshipTTL)
+		cancel()
 	}
 	return true
 }
@@ -535,8 +655,35 @@ func (h *WsHandler) ensureDirectRoom(a, b string) (string, error) {
 		x, y = y, x
 	}
 	name := x + ":" + y
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.DirectRoomKey(a, b)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		roomID, ok, err := h.cacheClient.GetString(cacheCtx, cacheKey)
+		cancel()
+		if err == nil && ok && strings.TrimSpace(roomID) != "" {
+			var cachedRoom models.Room
+			roomErr := h.db.Select("id").Where("id = ? AND room_type = ? AND name = ?", roomID, models.RoomTypeDirect, name).First(&cachedRoom).Error
+			if roomErr == nil {
+				h.ensureDirectRoomMembers(roomID, a, b)
+				return roomID, nil
+			}
+			if errors.Is(roomErr, gorm.ErrRecordNotFound) {
+				cacheCtx, delCancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+				_ = h.cacheClient.Del(cacheCtx, cacheKey)
+				delCancel()
+			} else {
+				return "", roomErr
+			}
+		}
+	}
 	var room models.Room
 	if err := h.db.Where("room_type = ? AND name = ?", models.RoomTypeDirect, name).First(&room).Error; err == nil {
+		if h.cacheClient != nil {
+			cacheKey := h.cacheClient.BuildKey(cachepkg.DirectRoomKey(a, b)...)
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+			_ = h.cacheClient.SetString(cacheCtx, cacheKey, room.ID, cachepkg.DirectRoomTTL)
+			cancel()
+		}
 		h.ensureDirectRoomMembers(room.ID, a, b)
 		return room.ID, nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -554,31 +701,197 @@ func (h *WsHandler) ensureDirectRoom(a, b string) (string, error) {
 	if err := h.db.Create(&room).Error; err != nil {
 		return "", err
 	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.DirectRoomKey(a, b)...)
+		cacheCtx, delCancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.Del(cacheCtx, cacheKey)
+		delCancel()
+		cacheCtx, setCancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetString(cacheCtx, cacheKey, room.ID, cachepkg.DirectRoomTTL)
+		setCancel()
+	}
 	h.ensureDirectRoomMembers(room.ID, a, b)
 	return room.ID, nil
 }
 
+type groupPostingPermissionCache struct {
+	LeftAtUnix    int64 `json:"left_at_unix"`
+	MuteUntilUnix int64 `json:"mute_until_unix"`
+}
+
 func (h *WsHandler) checkGroupPostingPermission(roomID, userID string) error {
+	now := time.Now()
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.GroupPostingPermissionKey(roomID, userID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		var cached groupPostingPermissionCache
+		ok, err := h.cacheClient.GetJSON(cacheCtx, cacheKey, &cached)
+		cancel()
+		if err == nil && ok {
+			if cached.LeftAtUnix > 0 {
+				return errors.New("user has left the group")
+			}
+			if cached.MuteUntilUnix > now.Unix() {
+				return errors.New("user is muted")
+			}
+			return nil
+		}
+	}
 	var member models.RoomMember
 	err := h.db.Where("room_id = ? AND user_id = ?", roomID, userID).First(&member).Error
 	if err != nil {
 		return err
 	}
+	cached := groupPostingPermissionCache{}
+	if member.LeftAt != nil {
+		cached.LeftAtUnix = member.LeftAt.Unix()
+	}
+	if member.MuteUntil != nil {
+		cached.MuteUntilUnix = member.MuteUntil.Unix()
+	}
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.GroupPostingPermissionKey(roomID, userID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetJSON(cacheCtx, cacheKey, cached, cachepkg.GroupPostingPermissionTTL)
+		cancel()
+	}
 	if member.LeftAt != nil {
 		return errors.New("user has left the group")
 	}
-	if member.MuteUntil != nil && member.MuteUntil.After(time.Now()) {
+	if member.MuteUntil != nil && member.MuteUntil.After(now) {
 		return errors.New("user is muted")
 	}
 	return nil
 }
 
 func (h *WsHandler) getGroupMemberIDs(roomID string) ([]string, error) {
+	if h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.GroupMemberIDsKey(roomID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		var cached []string
+		ok, err := h.cacheClient.GetJSON(cacheCtx, cacheKey, &cached)
+		cancel()
+		if err == nil && ok {
+			return cached, nil
+		}
+	}
 	var userIDs []string
 	err := h.db.Model(&models.RoomMember{}).
 		Where("room_id = ? AND left_at IS NULL", roomID).
 		Pluck("user_id", &userIDs).Error
+	if err == nil && h.cacheClient != nil {
+		cacheKey := h.cacheClient.BuildKey(cachepkg.GroupMemberIDsKey(roomID)...)
+		cacheCtx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+		_ = h.cacheClient.SetJSON(cacheCtx, cacheKey, userIDs, cachepkg.GroupMemberIDsTTL)
+		cancel()
+	}
 	return userIDs, err
+}
+
+func (h *WsHandler) ensureRobotUser() error {
+	h.robotInit.Do(func() {
+		var existing models.User
+		if err := h.db.Where("id = ?", wsRobotUserID).First(&existing).Error; err == nil {
+			return
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			h.robotErr = err
+			return
+		}
+		now := time.Now()
+		displayName := "Robot"
+		robot := models.User{
+			ID:           wsRobotUserID,
+			Username:     "__ququchat_robot__",
+			PasswordHash: "__robot__",
+			Status:       "active",
+			DisplayName:  &displayName,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		h.robotErr = h.db.Create(&robot).Error
+	})
+	return h.robotErr
+}
+
+func (h *WsHandler) StartTaskDoneConsumer(ctx context.Context) error {
+	if h == nil || h.taskService == nil {
+		return nil
+	}
+	h.doneConsumerMu.Lock()
+	defer h.doneConsumerMu.Unlock()
+	if h.doneConsumerUp {
+		return h.doneConsumerErr
+	}
+	h.doneConsumerErr = h.taskService.StartDoneEventConsumer(ctx, func(handlerCtx context.Context, event taskservice.DoneEvent) error {
+		replyText := strings.TrimSpace(event.Final)
+		if replyText == "" {
+			replyText = strings.TrimSpace(event.ErrorMessage)
+		}
+		if replyText == "" && event.Status == tasksvc.StatusFailed {
+			replyText = "对话失败"
+		}
+		if strings.TrimSpace(replyText) == "" || strings.TrimSpace(event.RoomID) == "" {
+			return nil
+		}
+		return h.sendRobotGroupMessage(event.RoomID, replyText, event.Payload)
+	})
+	if h.doneConsumerErr == nil {
+		h.doneConsumerUp = true
+	}
+	return h.doneConsumerErr
+}
+
+func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[string]interface{}) error {
+	text := strings.TrimSpace(content)
+	if roomID == "" || text == "" {
+		return nil
+	}
+	if err := h.ensureRobotUser(); err != nil {
+		return err
+	}
+	payloadJSON, err := toJSONPayload(payload)
+	if err != nil {
+		return err
+	}
+	savedMsg, err := h.saveMessage(roomID, wsRobotUserID, models.ContentTypeText, &text, nil, payloadJSON)
+	if err != nil {
+		return err
+	}
+	memberIDs, err := h.getGroupMemberIDs(roomID)
+	if err != nil {
+		return err
+	}
+	out := OutgoingMessage{
+		ID:          savedMsg.ID,
+		Type:        "group_message",
+		FromUser:    wsRobotUserID,
+		RoomID:      roomID,
+		Content:     text,
+		PayloadJSON: payloadJSON,
+		Timestamp:   savedMsg.CreatedAt.Unix(),
+		SequenceID:  savedMsg.SequenceID,
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	h.hub.broadcast <- GroupMessage{
+		RoomID:  roomID,
+		UserIDs: memberIDs,
+		Data:    b,
+	}
+	return nil
+}
+
+func toJSONPayload(payload map[string]interface{}) (datatypes.JSON, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return datatypes.JSON(b), nil
 }
 
 func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) (*models.Message, error) {

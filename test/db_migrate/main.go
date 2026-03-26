@@ -37,6 +37,9 @@ func main() {
 		&models.MessageReceipt{},
 		&models.MessageReaction{},
 		&models.Attachment{},
+		&models.TaskJob{},
+		&models.ChatSegment{},
+		&models.ChatSegmentCursor{},
 	); err != nil {
 		log.Fatalf("AutoMigrate 失败: %v", err)
 	}

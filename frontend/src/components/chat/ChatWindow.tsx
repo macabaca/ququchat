@@ -5,7 +5,7 @@ import MessageList from './MessageList';
 import InputArea from './InputArea';
 import { useChatStore } from '../../stores/chatStore';
 import { useAuthStore } from '../../stores/authStore';
-import { GroupMember } from '../../types/models';
+import { GroupMember, ROBOT_DISPLAY_NAME, ROBOT_USER_ID } from '../../types/models';
 import { messageDao, MessageRow } from '../../api/db_sqlite';
 import { fileService } from '../../api/FileService';
 import { localFileService } from '../../api/LocalFileService';
@@ -163,6 +163,7 @@ const ChatWindow: React.FC = () => {
     const resolveSenderName = (senderId: string) => {
         if (!senderId) return '未知用户';
         if (senderId === user?.id) return '我';
+        if (senderId === ROBOT_USER_ID) return ROBOT_DISPLAY_NAME;
         const friend = friends.find((f) => f.id === senderId);
         if (friend) return friend.nickname || friend.username || senderId;
         const member = members.find((m) => m.user_id === senderId);
