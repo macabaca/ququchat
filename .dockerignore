@@ -1,0 +1,12 @@
+.git
+.idea
+.vscode
+bin
+data
+documents
+frontend/node_modules
+frontend/dist
+frontend/.vite
+*.log
+*.pid
+*_test.go
