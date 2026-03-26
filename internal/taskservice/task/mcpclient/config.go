@@ -12,16 +12,16 @@ import (
 )
 
 type MultiClientFileConfig struct {
-	MCPServers map[string]ServerConfig `json:"mcpServers"`
+	MCPServers map[string]ServerConfig `yaml:"mcp_servers" json:"mcpServers"`
 }
 
 type ServerConfig struct {
-	Endpoint  string            `json:"endpoint"`
-	APIKey    string            `json:"apiKey"`
-	Headers   map[string]string `json:"headers"`
-	Name      string            `json:"name"`
-	Version   string            `json:"version"`
-	TimeoutMs int               `json:"timeoutMs"`
+	Endpoint  string            `yaml:"endpoint" json:"endpoint"`
+	APIKey    string            `yaml:"api_key" json:"apiKey"`
+	Headers   map[string]string `yaml:"headers" json:"headers"`
+	Name      string            `yaml:"name" json:"name"`
+	Version   string            `yaml:"version" json:"version"`
+	TimeoutMs int               `yaml:"timeout_ms" json:"timeoutMs"`
 }
 
 func LoadMultiClientOptionsFromFile(path string) (MultiClientOptions, error) {
@@ -86,6 +86,16 @@ func BuildMultiClientOptions(cfg MultiClientFileConfig) (MultiClientOptions, err
 
 func NewMultiClientFromConfigFile(ctx context.Context, path string) (*MultiClient, error) {
 	opts, err := LoadMultiClientOptionsFromFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return NewMultiClient(ctx, opts)
+}
+
+func NewMultiClientFromServers(ctx context.Context, servers map[string]ServerConfig) (*MultiClient, error) {
+	opts, err := BuildMultiClientOptions(MultiClientFileConfig{
+		MCPServers: servers,
+	})
 	if err != nil {
 		return nil, err
 	}

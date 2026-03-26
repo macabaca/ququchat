@@ -12,6 +12,7 @@ import (
 	taskservice "ququchat/internal/taskservice"
 	tasksvc "ququchat/internal/taskservice/task"
 	"ququchat/internal/taskservice/task/llmmq"
+	"ququchat/internal/taskservice/task/mcpclient"
 	"ququchat/internal/taskservice/task/openaicompat"
 )
 
@@ -92,6 +93,39 @@ func main() {
 		}
 		ragLLMClient = directLLMClient
 	}
+	if strings.EqualFold(cfg.Task.QueueTransportOrDefault(), "rabbitmq") {
+		if err := tasksvc.MigrateRabbitMQQueue(tasksvc.RabbitMQQueueOptions{
+			URL:          cfg.Task.QueueRabbitMQURL,
+			QueueName:    cfg.Task.QueueRabbitMQNameOrDefault(),
+			ExchangeName: cfg.Task.QueueRabbitMQExchangeOrDefault(),
+			MaxPriority:  cfg.Task.QueueRabbitMQMaxPriorityOrDefault(),
+			MaxLength:    cfg.Task.QueueRabbitMQMaxLengthOrDefault(),
+		}); err != nil {
+			log.Fatalf("迁移任务队列失败: %v", err)
+		}
+		log.Printf("任务队列迁移完成，queue=%s exchange=%s", cfg.Task.QueueRabbitMQNameOrDefault(), cfg.Task.QueueRabbitMQExchangeOrDefault())
+	}
+	var mcpMultiClient *mcpclient.MultiClient
+	if len(cfg.MCPServers) > 0 {
+		serverCfg := make(map[string]mcpclient.ServerConfig, len(cfg.MCPServers))
+		for name, item := range cfg.MCPServers {
+			serverCfg[name] = mcpclient.ServerConfig{
+				Endpoint:  item.Endpoint,
+				APIKey:    item.APIKey,
+				Headers:   item.Headers,
+				Name:      item.Name,
+				Version:   item.Version,
+				TimeoutMs: item.TimeoutMs,
+			}
+		}
+		client, clientErr := mcpclient.NewMultiClientFromServers(context.Background(), serverCfg)
+		if clientErr != nil {
+			log.Printf("初始化 MCP MultiClient 失败，将跳过 MCP: %v", clientErr)
+		} else {
+			mcpMultiClient = client
+			defer mcpMultiClient.Close()
+		}
+	}
 
 	taskService := taskservice.NewService(db, tasksvc.RuntimeOptions{
 		QueueHighCap:                     cfg.Task.QueueHighCapOrDefault(),
@@ -129,6 +163,8 @@ func main() {
 		EmbeddingModelRaw:                cfg.Embedding.ModelOrDefault(),
 		EmbeddingModelSummary:            cfg.Embedding.ModelOrDefault(),
 		SummaryVectorDim:                 cfg.Vector.SummaryVectorDimOrDefault(),
+		RAGStopPhrases:                   cfg.RAGStopPhrases.StopPhrases,
+		MCPMultiClient:                   mcpMultiClient,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

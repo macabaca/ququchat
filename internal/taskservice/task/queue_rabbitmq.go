@@ -34,7 +34,12 @@ type RabbitMQProducer struct {
 type RabbitMQConsumer struct {
 	conn        *amqp.Connection
 	channel     *amqp.Channel
+	url         string
 	queueName   string
+	exchange    string
+	maxPriority int
+	maxLength   int
+	prefetch    int
 	dlqExchange string
 	dlqQueue    string
 	dlqRouting  string
@@ -174,15 +179,6 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	if exchangeName == "" {
 		exchangeName = queueName + ".exchange"
 	}
-	conn, err := amqp.Dial(url)
-	if err != nil {
-		return nil, err
-	}
-	ch, err := conn.Channel()
-	if err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
 	maxPriority := opts.MaxPriority
 	if maxPriority <= 0 {
 		maxPriority = 10
@@ -190,6 +186,41 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	prefetch := opts.Prefetch
 	if prefetch <= 0 {
 		prefetch = 1
+	}
+	consumerTag := strings.TrimSpace(opts.ConsumerName)
+	if consumerTag == "" {
+		consumerTag = "task-queue-consumer"
+	}
+	conn, ch, deliveries, err := initRabbitMQConsumerConnection(url, queueName, exchangeName, maxPriority, opts.MaxLength, prefetch, consumerTag)
+	if err != nil {
+		return nil, err
+	}
+	return &RabbitMQConsumer{
+		conn:        conn,
+		channel:     ch,
+		url:         url,
+		queueName:   queueName,
+		exchange:    exchangeName,
+		maxPriority: maxPriority,
+		maxLength:   opts.MaxLength,
+		prefetch:    prefetch,
+		dlqExchange: DefaultTaskDLQExchange,
+		dlqQueue:    DefaultTaskDLQQueue,
+		dlqRouting:  DefaultTaskDLQRoutingKey,
+		consumerTag: consumerTag,
+		deliveries:  deliveries,
+	}, nil
+}
+
+func initRabbitMQConsumerConnection(url string, queueName string, exchangeName string, maxPriority int, maxLength int, prefetch int, consumerTag string) (*amqp.Connection, *amqp.Channel, <-chan amqp.Delivery, error) {
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	ch, err := conn.Channel()
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, nil, err
 	}
 	if err := ch.ExchangeDeclare(
 		exchangeName,
@@ -202,7 +233,7 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return nil, err
+		return nil, nil, nil, err
 	}
 	if err := ch.ExchangeDeclare(
 		DefaultTaskDLQExchange,
@@ -215,7 +246,7 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return nil, err
+		return nil, nil, nil, err
 	}
 	if _, err := ch.QueueDeclare(
 		DefaultTaskDLQQueue,
@@ -227,12 +258,12 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return nil, err
+		return nil, nil, nil, err
 	}
 	if err := ch.QueueBind(DefaultTaskDLQQueue, DefaultTaskDLQRoutingKey, DefaultTaskDLQExchange, false, nil); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return nil, err
+		return nil, nil, nil, err
 	}
 	if _, err := ch.QueueDeclare(
 		queueName,
@@ -240,25 +271,21 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 		false,
 		false,
 		false,
-		resolveTaskQueueDeclareArgs(maxPriority, opts.MaxLength),
+		resolveTaskQueueDeclareArgs(maxPriority, maxLength),
 	); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return nil, err
+		return nil, nil, nil, err
 	}
 	if err := ch.QueueBind(queueName, queueName, exchangeName, false, nil); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return nil, err
+		return nil, nil, nil, err
 	}
 	if err := ch.Qos(prefetch, 0, false); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return nil, err
-	}
-	consumerTag := strings.TrimSpace(opts.ConsumerName)
-	if consumerTag == "" {
-		consumerTag = "task-queue-consumer"
+		return nil, nil, nil, err
 	}
 	deliveries, err := ch.Consume(
 		queueName,
@@ -272,18 +299,90 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	if err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
-		return nil, err
+		return nil, nil, nil, err
 	}
-	return &RabbitMQConsumer{
-		conn:        conn,
-		channel:     ch,
-		queueName:   queueName,
-		dlqExchange: DefaultTaskDLQExchange,
-		dlqQueue:    DefaultTaskDLQQueue,
-		dlqRouting:  DefaultTaskDLQRoutingKey,
-		consumerTag: consumerTag,
-		deliveries:  deliveries,
-	}, nil
+	return conn, ch, deliveries, nil
+}
+
+func MigrateRabbitMQQueue(opts RabbitMQQueueOptions) error {
+	url := strings.TrimSpace(opts.URL)
+	queueName := strings.TrimSpace(opts.QueueName)
+	exchangeName := strings.TrimSpace(opts.ExchangeName)
+	if url == "" {
+		return errors.New("rabbitmq url is empty")
+	}
+	if queueName == "" {
+		return errors.New("rabbitmq queue name is empty")
+	}
+	if exchangeName == "" {
+		exchangeName = queueName + ".exchange"
+	}
+	maxPriority := opts.MaxPriority
+	if maxPriority <= 0 {
+		maxPriority = 10
+	}
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	declareCh, err := conn.Channel()
+	if err != nil {
+		return err
+	}
+	if err := ensureTaskQueueTopology(declareCh, exchangeName, queueName, maxPriority, opts.MaxLength); err == nil {
+		_ = declareCh.Close()
+		return nil
+	} else if !isQueueDeclareIncompatibleError(err) {
+		_ = declareCh.Close()
+		return err
+	}
+	_ = declareCh.Close()
+
+	deleteCh, err := conn.Channel()
+	if err != nil {
+		return err
+	}
+	_, deleteErr := deleteCh.QueueDelete(queueName, false, false, false)
+	_ = deleteCh.Close()
+	if deleteErr != nil && !isQueueNotFoundError(deleteErr) {
+		return deleteErr
+	}
+
+	rebuildCh, err := conn.Channel()
+	if err != nil {
+		return err
+	}
+	defer rebuildCh.Close()
+	if err := ensureTaskQueueTopology(rebuildCh, exchangeName, queueName, maxPriority, opts.MaxLength); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureTaskQueueTopology(ch *amqp.Channel, exchangeName string, queueName string, maxPriority int, maxLength int) error {
+	if ch == nil {
+		return errors.New("rabbitmq channel is nil")
+	}
+	if err := ch.ExchangeDeclare(exchangeName, "direct", true, false, false, false, nil); err != nil {
+		return err
+	}
+	if err := ch.ExchangeDeclare(DefaultTaskDLQExchange, "direct", true, false, false, false, nil); err != nil {
+		return err
+	}
+	if _, err := ch.QueueDeclare(DefaultTaskDLQQueue, true, false, false, false, nil); err != nil {
+		return err
+	}
+	if err := ch.QueueBind(DefaultTaskDLQQueue, DefaultTaskDLQRoutingKey, DefaultTaskDLQExchange, false, nil); err != nil {
+		return err
+	}
+	if _, err := ch.QueueDeclare(queueName, true, false, false, false, resolveTaskQueueDeclareArgs(maxPriority, maxLength)); err != nil {
+		return err
+	}
+	if err := ch.QueueBind(queueName, queueName, exchangeName, false, nil); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (q *RabbitMQProducer) Push(t *Task) error {
@@ -319,37 +418,83 @@ func (q *RabbitMQProducer) Push(t *Task) error {
 }
 
 func (q *RabbitMQConsumer) Pop(ctx context.Context) (QueueMessage, error) {
-	if q == nil || q.deliveries == nil {
+	if q == nil {
 		return nil, errors.New("rabbitmq queue is not initialized")
 	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case d, ok := <-q.deliveries:
-		if !ok {
-			return nil, errors.New("rabbitmq delivery channel is closed")
+	for {
+		q.mu.Lock()
+		deliveries := q.deliveries
+		q.mu.Unlock()
+		if deliveries == nil {
+			if err := q.reconnectConsumer(); err != nil {
+				return nil, err
+			}
+			continue
 		}
-		var payload rabbitMQTaskMessage
-		if err := json.Unmarshal(d.Body, &payload); err != nil {
-			_ = q.publishDeadLetter(d, "invalid_task_queue_message")
-			_ = d.Ack(false)
-			return nil, errors.New("invalid task queue message")
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case d, ok := <-deliveries:
+			if !ok {
+				if err := q.reconnectConsumer(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			var payload rabbitMQTaskMessage
+			if err := json.Unmarshal(d.Body, &payload); err != nil {
+				_ = q.publishDeadLetter(d, "invalid_task_queue_message")
+				_ = d.Ack(false)
+				return nil, errors.New("invalid task queue message")
+			}
+			taskID := strings.TrimSpace(payload.TaskID)
+			if taskID == "" {
+				_ = q.publishDeadLetter(d, "task_id_required")
+				_ = d.Ack(false)
+				return nil, errors.New("task_id is required")
+			}
+			return &rabbitQueueMessage{
+				task: &Task{
+					ID:       taskID,
+					Priority: payload.Priority,
+				},
+				delivery: d,
+				queue:    q,
+			}, nil
 		}
-		taskID := strings.TrimSpace(payload.TaskID)
-		if taskID == "" {
-			_ = q.publishDeadLetter(d, "task_id_required")
-			_ = d.Ack(false)
-			return nil, errors.New("task_id is required")
-		}
-		return &rabbitQueueMessage{
-			task: &Task{
-				ID:       taskID,
-				Priority: payload.Priority,
-			},
-			delivery: d,
-			queue:    q,
-		}, nil
 	}
+}
+
+func (q *RabbitMQConsumer) reconnectConsumer() error {
+	if q == nil {
+		return errors.New("rabbitmq queue is not initialized")
+	}
+	conn, ch, deliveries, err := initRabbitMQConsumerConnection(
+		q.url,
+		q.queueName,
+		q.exchange,
+		q.maxPriority,
+		q.maxLength,
+		q.prefetch,
+		q.consumerTag,
+	)
+	if err != nil {
+		return err
+	}
+	q.mu.Lock()
+	oldChannel := q.channel
+	oldConn := q.conn
+	q.conn = conn
+	q.channel = ch
+	q.deliveries = deliveries
+	q.mu.Unlock()
+	if oldChannel != nil {
+		_ = oldChannel.Close()
+	}
+	if oldConn != nil {
+		_ = oldConn.Close()
+	}
+	return nil
 }
 
 func (q *RabbitMQConsumer) publishDeadLetter(d amqp.Delivery, reason string) error {
@@ -493,4 +638,20 @@ func resolveTaskQueueDeclareArgs(maxPriority int, maxLength int) amqp.Table {
 		args["x-max-length"] = int32(maxLength)
 	}
 	return args
+}
+
+func isQueueNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "not_found")
+}
+
+func isQueueDeclareIncompatibleError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "precondition_failed") && strings.Contains(message, "inequivalent arg")
 }

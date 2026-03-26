@@ -138,6 +138,87 @@ func NewRabbitMQProducer(opts RabbitMQQueueOptions) (*RabbitMQProducer, error) {
 	}, nil
 }
 
+func MigrateRabbitMQQueue(opts RabbitMQQueueOptions) error {
+	url := strings.TrimSpace(opts.URL)
+	queueName := strings.TrimSpace(opts.QueueName)
+	exchangeName := strings.TrimSpace(opts.ExchangeName)
+	if url == "" {
+		return errors.New("rabbitmq url is empty")
+	}
+	if queueName == "" {
+		return errors.New("rabbitmq queue name is empty")
+	}
+	if exchangeName == "" {
+		exchangeName = queueName + ".exchange"
+	}
+	maxPriority := opts.MaxPriority
+	if maxPriority <= 0 {
+		maxPriority = 10
+	}
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	declareCh, err := conn.Channel()
+	if err != nil {
+		return err
+	}
+	if err := ensureTaskQueueTopology(declareCh, exchangeName, queueName, maxPriority, opts.MaxLength); err == nil {
+		_ = declareCh.Close()
+		return nil
+	} else if !isQueueDeclareIncompatibleError(err) {
+		_ = declareCh.Close()
+		return err
+	}
+	_ = declareCh.Close()
+
+	deleteCh, err := conn.Channel()
+	if err != nil {
+		return err
+	}
+	_, deleteErr := deleteCh.QueueDelete(queueName, false, false, false)
+	_ = deleteCh.Close()
+	if deleteErr != nil && !isQueueNotFoundError(deleteErr) {
+		return deleteErr
+	}
+
+	rebuildCh, err := conn.Channel()
+	if err != nil {
+		return err
+	}
+	defer rebuildCh.Close()
+	if err := ensureTaskQueueTopology(rebuildCh, exchangeName, queueName, maxPriority, opts.MaxLength); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureTaskQueueTopology(ch *amqp.Channel, exchangeName string, queueName string, maxPriority int, maxLength int) error {
+	if ch == nil {
+		return errors.New("rabbitmq channel is nil")
+	}
+	if err := ch.ExchangeDeclare(exchangeName, "direct", true, false, false, false, nil); err != nil {
+		return err
+	}
+	if err := ch.ExchangeDeclare(DefaultTaskDLQExchange, "direct", true, false, false, false, nil); err != nil {
+		return err
+	}
+	if _, err := ch.QueueDeclare(DefaultTaskDLQQueue, true, false, false, false, nil); err != nil {
+		return err
+	}
+	if err := ch.QueueBind(DefaultTaskDLQQueue, DefaultTaskDLQRoutingKey, DefaultTaskDLQExchange, false, nil); err != nil {
+		return err
+	}
+	if _, err := ch.QueueDeclare(queueName, true, false, false, false, resolveTaskQueueDeclareArgs(maxPriority, maxLength)); err != nil {
+		return err
+	}
+	if err := ch.QueueBind(queueName, queueName, exchangeName, false, nil); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (q *RabbitMQProducer) Push(t *Task) error {
 	if q == nil || q.channel == nil {
 		return errors.New("rabbitmq queue is not initialized")
@@ -221,4 +302,20 @@ func resolveTaskQueueDeclareArgs(maxPriority int, maxLength int) amqp.Table {
 		args["x-max-length"] = int32(maxLength)
 	}
 	return args
+}
+
+func isQueueNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "not_found")
+}
+
+func isQueueDeclareIncompatibleError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "precondition_failed") && strings.Contains(message, "inequivalent arg")
 }

@@ -7,15 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -41,6 +38,7 @@ type Handler struct {
 	embeddingModelRaw     string
 	embeddingModelSummary string
 	summaryVectorDim      int
+	stopPhrases           map[string]struct{}
 }
 
 type Options struct {
@@ -51,6 +49,7 @@ type Options struct {
 	EmbeddingModelRaw     string
 	EmbeddingModelSummary string
 	SummaryVectorDim      int
+	StopPhrases           []string
 }
 
 type ragSegmentLine struct {
@@ -59,13 +58,8 @@ type ragSegmentLine struct {
 	formatted string
 }
 
-type ragStopPhraseConfig struct {
-	StopPhrases []string `yaml:"stop_phrases"`
-}
-
 var ragSpaceRe = regexp.MustCompile(`\s+`)
 var ragNoiseOnlyRe = regexp.MustCompile(`^[\p{P}\p{S}\s]+$`)
-var ragStopPhraseFilePath = filepath.Join("internal", "config", "rag_stop_phrases.yaml")
 
 func New(opts Options) *Handler {
 	return &Handler{
@@ -76,6 +70,7 @@ func New(opts Options) *Handler {
 		embeddingModelRaw:     strings.TrimSpace(opts.EmbeddingModelRaw),
 		embeddingModelSummary: strings.TrimSpace(opts.EmbeddingModelSummary),
 		summaryVectorDim:      opts.SummaryVectorDim,
+		stopPhrases:           normalizeStopPhrases(opts.StopPhrases),
 	}
 }
 
@@ -106,7 +101,7 @@ func (h *Handler) ExecuteRAG(ctx context.Context, payload *tasksvc.RAGPayload) (
 	if overlapMessages > 3 {
 		overlapMessages = 3
 	}
-	stopPhrases := loadRAGStopPhrases()
+	stopPhrases := h.stopPhrasesSet()
 	var latest models.Message
 	if err := h.db.Where("room_id = ?", roomID).Order("sequence_id desc").Take(&latest).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -481,7 +476,7 @@ func (h *Handler) ExecuteRAGAddMemory(ctx context.Context, payload *tasksvc.RAGA
 	if overlapMessages > 3 {
 		overlapMessages = 3
 	}
-	stopPhrases := loadRAGStopPhrases()
+	stopPhrases := h.stopPhrasesSet()
 	var messages []models.Message
 	if err := h.db.Where("room_id = ? AND sequence_id >= ? AND sequence_id <= ?", roomID, payload.StartSequenceID, payload.EndSequenceID).
 		Where("content_type IN ?", []models.ContentType{
@@ -913,27 +908,23 @@ func isSingleRuneRepeat(text string, minRepeat int) bool {
 	return true
 }
 
-func loadRAGStopPhrases() map[string]struct{} {
-	b, err := os.ReadFile(ragStopPhraseFilePath)
-	if err != nil {
-		return map[string]struct{}{}
-	}
-	var cfg ragStopPhraseConfig
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return map[string]struct{}{}
-	}
-	set := make(map[string]struct{}, len(cfg.StopPhrases))
-	for _, item := range cfg.StopPhrases {
+func normalizeStopPhrases(items []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(items))
+	for _, item := range items {
 		phrase := strings.ToLower(strings.TrimSpace(item))
 		if phrase == "" {
 			continue
 		}
 		set[phrase] = struct{}{}
 	}
-	if len(set) == 0 {
+	return set
+}
+
+func (h *Handler) stopPhrasesSet() map[string]struct{} {
+	if h == nil || len(h.stopPhrases) == 0 {
 		return map[string]struct{}{}
 	}
-	return set
+	return h.stopPhrases
 }
 
 func previewText(text string, maxLen int) string {

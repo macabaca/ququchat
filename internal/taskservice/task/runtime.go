@@ -59,6 +59,7 @@ type RuntimeOptions struct {
 	EmbeddingModelRaw                string
 	EmbeddingModelSummary            string
 	SummaryVectorDim                 int
+	RAGStopPhrases                   []string
 	RAGHandler                       RAGHandler
 	MCPMultiClient                   *mcpclient.MultiClient
 	OnFinish                         func(ctx context.Context, doneTask *Task)
@@ -81,30 +82,55 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 	}
 	consumerQueues := make([]ConsumerQueue, 0, 3)
 	if queueTransport == "rabbitmq" {
-		topology := resolveRabbitMQPriorityTopology(opts)
+		baseQueueName := strings.TrimSpace(opts.QueueRabbitMQName)
+		if baseQueueName == "" {
+			baseQueueName = "ququchat.task.queue"
+		}
+		baseExchangeName := strings.TrimSpace(opts.QueueRabbitMQExchange)
+		if baseExchangeName == "" {
+			baseExchangeName = baseQueueName + ".exchange"
+		}
 		queueSpecs := []struct {
 			queueName    string
 			exchangeName string
 		}{
-			{queueName: topology.HighQueueName, exchangeName: topology.HighExchangeName},
-			{queueName: topology.NormalQueueName, exchangeName: topology.NormalExchangeName},
-			{queueName: topology.LowQueueName, exchangeName: topology.LowExchangeName},
+			{queueName: baseQueueName, exchangeName: baseExchangeName},
 		}
+		seen := make(map[string]struct{}, len(queueSpecs))
 		for _, spec := range queueSpecs {
-			rmqConsumer, consumerErr := NewRabbitMQConsumer(RabbitMQQueueOptions{
+			queueName := strings.TrimSpace(spec.queueName)
+			exchangeName := strings.TrimSpace(spec.exchangeName)
+			if queueName == "" {
+				continue
+			}
+			if exchangeName == "" {
+				exchangeName = queueName + ".exchange"
+			}
+			key := queueName + "|" + exchangeName
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			queueOpts := RabbitMQQueueOptions{
 				URL:          opts.QueueRabbitMQURL,
-				QueueName:    spec.queueName,
-				ExchangeName: spec.exchangeName,
+				QueueName:    queueName,
+				ExchangeName: exchangeName,
 				MaxPriority:  opts.QueueRabbitMQMaxPriority,
 				MaxLength:    opts.QueueRabbitMQMaxLength,
 				Prefetch:     workerSize,
-			})
+			}
+			var (
+				rmqConsumer *RabbitMQConsumer
+				consumerErr error
+			)
+			rmqConsumer, consumerErr = NewRabbitMQConsumer(queueOpts)
 			if consumerErr == nil {
 				consumerQueues = append(consumerQueues, rmqConsumer)
+				log.Printf("init rabbitmq task consumer ok queue=%s exchange=%s prefetch=%d", queueName, exchangeName, workerSize)
 				continue
 			}
-			log.Printf("init rabbitmq task consumer failed queue=%s: %v", spec.queueName, consumerErr)
-			consumerQueues = append(consumerQueues, unavailableQueue{reason: fmt.Errorf("init rabbitmq task consumer failed queue=%s: %w", spec.queueName, consumerErr)})
+			log.Printf("init rabbitmq task consumer failed queue=%s exchange=%s: %v", queueName, exchangeName, consumerErr)
+			consumerQueues = append(consumerQueues, unavailableQueue{reason: fmt.Errorf("init rabbitmq task consumer failed queue=%s exchange=%s: %w", queueName, exchangeName, consumerErr)})
 		}
 	} else {
 		consumerQueues = append(consumerQueues, unavailableQueue{reason: fmt.Errorf("unsupported queue transport: %s", queueTransport)})
@@ -154,12 +180,6 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 		}
 	}
 	mcpMultiClient := opts.MCPMultiClient
-	if mcpMultiClient == nil {
-		client, err := mcpclient.NewMultiClientFromDefaultConfig(context.Background())
-		if err == nil {
-			mcpMultiClient = client
-		}
-	}
 	exec := NewDefaultExecutor(ExecutorOptions{
 		LLMClient:      llmClient,
 		RAGHandler:     opts.RAGHandler,
@@ -207,44 +227,6 @@ func (r *Runtime) Get(taskID string) (*Task, bool) {
 
 func (r *Runtime) MarkFailed(taskID string, message string) (*Task, error) {
 	return r.store.MarkFailed(strings.TrimSpace(taskID), strings.TrimSpace(message))
-}
-
-type rabbitMQPriorityTopology struct {
-	HighQueueName      string
-	NormalQueueName    string
-	LowQueueName       string
-	HighExchangeName   string
-	NormalExchangeName string
-	LowExchangeName    string
-}
-
-func resolveRabbitMQPriorityTopology(opts RuntimeOptions) rabbitMQPriorityTopology {
-	baseQueueName := strings.TrimSpace(opts.QueueRabbitMQName)
-	if baseQueueName == "" {
-		baseQueueName = "ququchat.task.queue"
-	}
-	baseExchangeName := strings.TrimSpace(opts.QueueRabbitMQExchange)
-	if baseExchangeName == "" {
-		baseExchangeName = baseQueueName + ".exchange"
-	}
-	return rabbitMQPriorityTopology{
-		HighQueueName:      firstNonEmpty(opts.QueueRabbitMQHighName, baseQueueName+".high"),
-		NormalQueueName:    firstNonEmpty(opts.QueueRabbitMQNormalName, baseQueueName+".normal"),
-		LowQueueName:       firstNonEmpty(opts.QueueRabbitMQLowName, baseQueueName+".low"),
-		HighExchangeName:   firstNonEmpty(opts.QueueRabbitMQHighExchange, baseExchangeName+".high"),
-		NormalExchangeName: firstNonEmpty(opts.QueueRabbitMQNormalExchange, baseExchangeName+".normal"),
-		LowExchangeName:    firstNonEmpty(opts.QueueRabbitMQLowExchange, baseExchangeName+".low"),
-	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
 
 type SubmitFakeLLMRequest struct {

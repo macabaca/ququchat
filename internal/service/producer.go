@@ -38,7 +38,14 @@ func NewProducer(db *gorm.DB, opts tasksvc.RuntimeOptions) *Producer {
 	normalQueue := tasksvc.ProducerQueue(localUnavailableQueue{reason: fmt.Errorf("unsupported queue transport: %s", queueTransport)})
 	lowQueue := tasksvc.ProducerQueue(localUnavailableQueue{reason: fmt.Errorf("unsupported queue transport: %s", queueTransport)})
 	if queueTransport == "rabbitmq" {
-		topology := resolveRabbitMQPriorityTopology(opts)
+		baseQueueName := strings.TrimSpace(opts.QueueRabbitMQName)
+		if baseQueueName == "" {
+			baseQueueName = "ququchat.task.queue"
+		}
+		baseExchangeName := strings.TrimSpace(opts.QueueRabbitMQExchange)
+		if baseExchangeName == "" {
+			baseExchangeName = baseQueueName + ".exchange"
+		}
 		newQueue := func(queueName string, exchangeName string) tasksvc.ProducerQueue {
 			rmqQueue, err := tasksvc.NewRabbitMQProducer(tasksvc.RabbitMQQueueOptions{
 				URL:          opts.QueueRabbitMQURL,
@@ -53,9 +60,10 @@ func NewProducer(db *gorm.DB, opts tasksvc.RuntimeOptions) *Producer {
 			log.Printf("init producer rabbitmq queue failed queue=%s: %v", queueName, err)
 			return localUnavailableQueue{reason: fmt.Errorf("init producer rabbitmq queue failed queue=%s: %w", queueName, err)}
 		}
-		highQueue = newQueue(topology.HighQueueName, topology.HighExchangeName)
-		normalQueue = newQueue(topology.NormalQueueName, topology.NormalExchangeName)
-		lowQueue = newQueue(topology.LowQueueName, topology.LowExchangeName)
+		singleQueue := newQueue(baseQueueName, baseExchangeName)
+		highQueue = singleQueue
+		normalQueue = singleQueue
+		lowQueue = singleQueue
 	}
 	inputRetryMaxAttempts := opts.InputRetryMaxAttempts
 	if inputRetryMaxAttempts <= 0 {
@@ -383,44 +391,6 @@ func (p *Producer) queueForPriority(priority tasksvc.Priority) tasksvc.ProducerQ
 		return p.lowQueue
 	}
 	return localUnavailableQueue{reason: errors.New("producer queue is unavailable")}
-}
-
-type rabbitMQPriorityTopology struct {
-	HighQueueName      string
-	NormalQueueName    string
-	LowQueueName       string
-	HighExchangeName   string
-	NormalExchangeName string
-	LowExchangeName    string
-}
-
-func resolveRabbitMQPriorityTopology(opts tasksvc.RuntimeOptions) rabbitMQPriorityTopology {
-	baseQueueName := strings.TrimSpace(opts.QueueRabbitMQName)
-	if baseQueueName == "" {
-		baseQueueName = "ququchat.task.queue"
-	}
-	baseExchangeName := strings.TrimSpace(opts.QueueRabbitMQExchange)
-	if baseExchangeName == "" {
-		baseExchangeName = baseQueueName + ".exchange"
-	}
-	return rabbitMQPriorityTopology{
-		HighQueueName:      firstNonEmpty(opts.QueueRabbitMQHighName, baseQueueName+".high"),
-		NormalQueueName:    firstNonEmpty(opts.QueueRabbitMQNormalName, baseQueueName+".normal"),
-		LowQueueName:       firstNonEmpty(opts.QueueRabbitMQLowName, baseQueueName+".low"),
-		HighExchangeName:   firstNonEmpty(opts.QueueRabbitMQHighExchange, baseExchangeName+".high"),
-		NormalExchangeName: firstNonEmpty(opts.QueueRabbitMQNormalExchange, baseExchangeName+".normal"),
-		LowExchangeName:    firstNonEmpty(opts.QueueRabbitMQLowExchange, baseExchangeName+".low"),
-	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
 
 func normalizeRequestID(requestID string, fallbackTaskID string) string {

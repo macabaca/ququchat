@@ -244,22 +244,25 @@ func buildMCPInputGuideline(routed mcpclient.RoutedTool) string {
 			requiredSet[name] = struct{}{}
 		}
 	}
-	keys := make([]string, 0, len(properties))
-	for key := range properties {
+	requiredKeys := make([]string, 0, len(requiredSet))
+	for key := range requiredSet {
 		name := strings.TrimSpace(key)
 		if name == "" {
 			continue
 		}
-		keys = append(keys, name)
+		if _, ok := properties[name]; !ok {
+			continue
+		}
+		requiredKeys = append(requiredKeys, name)
 	}
-	sort.Strings(keys)
-	if len(keys) == 0 {
-		return base
+	sort.Strings(requiredKeys)
+	if len(requiredKeys) == 0 {
+		return base + " 无必填参数，action.input 传 {} 即可。"
 	}
-	parts := make([]string, 0, len(keys)+1)
-	parts = append(parts, base, "参数说明：")
-	for _, key := range keys {
-		line := buildMCPParamLine(key, properties[key], requiredSet)
+	parts := make([]string, 0, len(requiredKeys)+1)
+	parts = append(parts, base, "必填参数：")
+	for _, key := range requiredKeys {
+		line := buildMCPParamLine(key, properties[key])
 		if line == "" {
 			continue
 		}
@@ -289,7 +292,7 @@ func schemaAsMap(raw any) map[string]any {
 	return out
 }
 
-func buildMCPParamLine(name string, raw any, requiredSet map[string]struct{}) string {
+func buildMCPParamLine(name string, raw any) string {
 	prop := schemaAsMap(raw)
 	if len(prop) == 0 {
 		return ""
@@ -298,20 +301,13 @@ func buildMCPParamLine(name string, raw any, requiredSet map[string]struct{}) st
 	if typeText == "" {
 		typeText = "any"
 	}
-	requiredText := "可选"
-	if _, ok := requiredSet[name]; ok {
-		requiredText = "必填"
-	}
-	segments := []string{name + "（" + typeText + "，" + requiredText + "）"}
+	segments := []string{name + "（" + typeText + "，必填）"}
 	desc := strings.TrimSpace(fmt.Sprint(prop["description"]))
 	if desc != "" && desc != "<nil>" {
 		segments = append(segments, shortText(desc, 110))
 	}
 	if enums := readSchemaEnumValues(prop["enum"]); len(enums) > 0 {
 		segments = append(segments, "可选值="+strings.Join(enums, "/"))
-	}
-	if v, ok := prop["default"]; ok {
-		segments = append(segments, "默认="+formatSchemaValue(v))
 	}
 	if v, ok := prop["minimum"]; ok {
 		segments = append(segments, "最小值="+strings.TrimSpace(fmt.Sprint(v)))

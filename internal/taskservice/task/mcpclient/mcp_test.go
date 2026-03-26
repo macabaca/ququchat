@@ -3,43 +3,40 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"ququchat/internal/config"
 )
 
-type MCPConfig struct {
-	MCPServers map[string]struct {
-		Endpoint  string            `json:"endpoint"`
-		APIKey    string            `json:"apiKey"`
-		Headers   map[string]string `json:"headers"`
-		Name      string            `json:"name"`
-		Version   string            `json:"version"`
-		TimeoutMs int               `json:"timeoutMs"`
-	} `json:"mcpServers"`
-}
-
-func loadConfig(path string) (*MCPConfig, error) {
-	data, err := os.ReadFile(path)
+func loadConfig(path string) (map[string]ServerConfig, error) {
+	cfg, err := config.LoadFromFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var config MCPConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
+	servers := make(map[string]ServerConfig, len(cfg.MCPServers))
+	for name, server := range cfg.MCPServers {
+		servers[name] = ServerConfig{
+			Endpoint:  server.Endpoint,
+			APIKey:    server.APIKey,
+			Headers:   server.Headers,
+			Name:      server.Name,
+			Version:   server.Version,
+			TimeoutMs: server.TimeoutMs,
+		}
 	}
-	return &config, nil
+	return servers, nil
 }
 
 func TestTavilyListTools(t *testing.T) {
 	ctx := context.Background()
-	config, err := loadConfig("../../../config/mcp_servers.json")
+	mcpServers, err := loadConfig("../../../config/config.yaml")
 	assert.NoError(t, err)
 
 	clientOpts := make(map[string]ClientOptions)
-	for name, server := range config.MCPServers {
+	for name, server := range mcpServers {
 		clientOpts[name] = ClientOptions{
 			Endpoint: server.Endpoint,
 			APIKey:   server.APIKey,

@@ -8,6 +8,8 @@
 # Test binary, built with `go test -c`
 *.test
 *_test.go
+*.log
+*.pid
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
@@ -21,7 +23,7 @@
 .vscode/
 
 # Documentation
-document/
+# document/
 
 # Project local folders
 bash/

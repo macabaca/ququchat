@@ -8,19 +8,35 @@ import (
 )
 
 type Config struct {
-	Database  Database  `yaml:"database" json:"database"`
-	Auth      Auth      `yaml:"auth" json:"auth"`
-	Chat      Chat      `yaml:"chat" json:"chat"`
-	Task      Task      `yaml:"task" json:"task"`
-	LLM       LLM       `yaml:"llm" json:"llm"`
-	AIGC      AIGC      `yaml:"aigc" json:"aigc"`
-	Embedding Embedding `yaml:"embedding" json:"embedding"`
-	Vector    Vector    `yaml:"vector" json:"vector"`
-	File      File      `yaml:"file" json:"file"`
-	Avatar    Avatar    `yaml:"avatar" json:"avatar"`
-	Storage   Storage   `yaml:"storage" json:"storage"`
-	Minio     Minio     `yaml:"minio" json:"minio"`
-	OSS       OSS       `yaml:"oss" json:"oss"`
+	Database       Database             `yaml:"database" json:"database"`
+	Auth           Auth                 `yaml:"auth" json:"auth"`
+	Chat           Chat                 `yaml:"chat" json:"chat"`
+	Task           Task                 `yaml:"task" json:"task"`
+	TaskPriority   TaskPriority         `yaml:"task_priority" json:"task_priority"`
+	LLM            LLM                  `yaml:"llm" json:"llm"`
+	AIGC           AIGC                 `yaml:"aigc" json:"aigc"`
+	Embedding      Embedding            `yaml:"embedding" json:"embedding"`
+	Vector         Vector               `yaml:"vector" json:"vector"`
+	RAGStopPhrases RAGStopPhrasesConfig `yaml:"rag_stop_phrases" json:"rag_stop_phrases"`
+	MCPServers     map[string]MCPServer `yaml:"mcp_servers" json:"mcp_servers"`
+	File           File                 `yaml:"file" json:"file"`
+	Avatar         Avatar               `yaml:"avatar" json:"avatar"`
+	Storage        Storage              `yaml:"storage" json:"storage"`
+	Minio          Minio                `yaml:"minio" json:"minio"`
+	OSS            OSS                  `yaml:"oss" json:"oss"`
+}
+
+type MCPServer struct {
+	Endpoint  string            `yaml:"endpoint" json:"endpoint"`
+	APIKey    string            `yaml:"api_key" json:"api_key"`
+	Headers   map[string]string `yaml:"headers" json:"headers"`
+	Name      string            `yaml:"name" json:"name"`
+	Version   string            `yaml:"version" json:"version"`
+	TimeoutMs int               `yaml:"timeout_ms" json:"timeout_ms"`
+}
+
+type RAGStopPhrasesConfig struct {
+	StopPhrases []string `yaml:"stop_phrases" json:"stop_phrases"`
 }
 
 // Database 结构体已拆分至 config_db.go
@@ -31,8 +47,9 @@ func LoadFromFile(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	expanded := os.ExpandEnv(string(b))
 	var cfg Config
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
+	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil

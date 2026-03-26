@@ -108,6 +108,7 @@ func NewServiceWithOptions(db *gorm.DB, opts tasksvc.RuntimeOptions, svcOpts Ser
 			EmbeddingModelRaw:     opts.EmbeddingModelRaw,
 			EmbeddingModelSummary: opts.EmbeddingModelSummary,
 			SummaryVectorDim:      opts.SummaryVectorDim,
+			StopPhrases:           opts.RAGStopPhrases,
 		})
 	}
 	s.db = db

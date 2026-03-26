@@ -23,10 +23,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
-	taskPriorityCfg, taskPriorityErr := config.LoadTaskPriorityDefault()
-	if taskPriorityErr != nil {
-		log.Printf("加载任务优先级配置失败，将使用默认优先级: %v", taskPriorityErr)
-	}
 
 	// 初始化数据库连接（使用 server/db 包）
 	db, err := database.OpenGorm(cfg.Database)
@@ -75,13 +71,11 @@ func main() {
 
 	authCfg := cfg.Auth.ToSettings()
 	commandPriorityRules := make([]taskservice.CommandPriorityRule, 0)
-	if taskPriorityCfg != nil {
-		for _, item := range taskPriorityCfg.NormalizedRules() {
-			commandPriorityRules = append(commandPriorityRules, taskservice.CommandPriorityRule{
-				Prefix:   item.Task,
-				Priority: tasksvc.Priority(item.Priority),
-			})
-		}
+	for _, item := range cfg.TaskPriority.NormalizedRules() {
+		commandPriorityRules = append(commandPriorityRules, taskservice.CommandPriorityRule{
+			Prefix:   item.Task,
+			Priority: tasksvc.Priority(item.Priority),
+		})
 	}
 	taskService := taskservice.NewMainServiceWithOptions(db, tasksvc.RuntimeOptions{
 		QueueTransport:                   cfg.Task.QueueTransportOrDefault(),
