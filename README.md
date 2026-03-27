@@ -1,6 +1,6 @@
-# QuquChat
+# QuQuChat
 
-QuquChat 是一个聊天系统项目，包含：
+QuQuChat 是一个聊天系统项目，包含：
 - Go 后端 API 服务（`cmd/main.go`）
 - Go 异步任务服务（`cmd/taskservice/main.go`）
 - Electron + React 前端（`frontend`）
