@@ -40,7 +40,7 @@ type RabbitMQDoneEventPublisher struct {
 	closeOnce sync.Once
 }
 
-func NewRabbitMQDoneEventPublisher(url, queueName string) (*RabbitMQDoneEventPublisher, error) {
+func NewRabbitMQDoneEventPublisher(url, queueName string, maxLength int, messageTTL time.Duration) (*RabbitMQDoneEventPublisher, error) {
 	trimmedURL := strings.TrimSpace(url)
 	trimmedQueue := strings.TrimSpace(queueName)
 	if trimmedURL == "" || trimmedQueue == "" {
@@ -55,7 +55,7 @@ func NewRabbitMQDoneEventPublisher(url, queueName string) (*RabbitMQDoneEventPub
 		_ = conn.Close()
 		return nil, err
 	}
-	if _, err := ch.QueueDeclare(trimmedQueue, true, false, false, false, nil); err != nil {
+	if _, err := ch.QueueDeclare(trimmedQueue, true, false, false, false, resolveDoneEventQueueDeclareArgs(maxLength, messageTTL)); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
 		return nil, err
@@ -65,6 +65,22 @@ func NewRabbitMQDoneEventPublisher(url, queueName string) (*RabbitMQDoneEventPub
 		conn:      conn,
 		channel:   ch,
 	}, nil
+}
+
+func resolveDoneEventQueueDeclareArgs(maxLength int, messageTTL time.Duration) amqp.Table {
+	args := amqp.Table{
+		"x-overflow": "reject-publish",
+	}
+	if maxLength > 0 {
+		args["x-max-length"] = int32(maxLength)
+	}
+	if messageTTL > 0 {
+		args["x-message-ttl"] = int32(messageTTL / time.Millisecond)
+	}
+	if len(args) == 1 {
+		return nil
+	}
+	return args
 }
 
 func (p *RabbitMQDoneEventPublisher) Publish(ctx context.Context, doneTask *tasksvc.Task) error {

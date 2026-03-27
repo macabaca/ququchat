@@ -92,13 +92,13 @@ func shouldAdvanceStep(from string, event string, next string) bool {
 	from = strings.TrimSpace(from)
 	event = strings.TrimSpace(event)
 	next = strings.TrimSpace(next)
-	if from == "planner" && event == "planner.done" && next == "coordinator" {
+	if from == "planner" && event == "planner.done" && next == "coordinator_think" {
 		return true
 	}
-	if from == "executor" && next == "coordinator" {
+	if from == "executor" && next == "coordinator_think" {
 		return true
 	}
-	if from == "final_judge" && event == "final_judge.retry" && next == "coordinator" {
+	if from == "final_judge" && event == "final_judge.retry" && next == "coordinator_think" {
 		return true
 	}
 	return false

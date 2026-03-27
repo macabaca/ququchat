@@ -12,6 +12,7 @@ type DomainState struct {
 	Outline            PlannerOutline
 	OutlineIndex       int
 	CurrentTask        string
+	CoordinatorThought string
 	CoordinatorRaw     string
 	FormattedRaw       string
 	Plan               Plan
@@ -22,6 +23,10 @@ type DomainState struct {
 	FinalAnswer        string
 	FinalReview        FinalReviewResult
 	Feedback           string
+	URLAliasToValue    map[string]string
+	URLValueToAlias    map[string]string
+	URLAliasOrder      []string
+	NextURLAliasIndex  int
 	AvailableToolSpecs []ToolSpec
 	MemorySession      agentmemory.Session
 	ToolRuntime        toolruntime.Runtime

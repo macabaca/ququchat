@@ -86,6 +86,8 @@ func main() {
 		QueueRabbitMQMaxLength:           cfg.Task.QueueRabbitMQMaxLengthOrDefault(),
 		DoneEventRabbitMQURL:             cfg.Task.DoneEventMQURLOrDefault(),
 		DoneEventQueueName:               cfg.Task.DoneEventQueueOrDefault(),
+		DoneEventQueueMaxLength:          cfg.Task.DoneEventQueueMaxLengthOrDefault(),
+		DoneEventQueueMessageTTL:         cfg.Task.DoneEventQueueMessageTTLOrDefault(),
 		DoneEventConsumeRetryMaxAttempts: cfg.Task.DoneConsumeRetryMaxAttemptsOrDefault(),
 		DoneEventConsumeRetryDelay:       cfg.Task.DoneConsumeRetryDelayOrDefault(),
 		InputRetryMaxAttempts:            cfg.Task.InputRetryMaxAttemptsOrDefault(),
@@ -95,7 +97,15 @@ func main() {
 	})
 	log.Printf("主进程不启动 Task Runtime，仅提供任务提交与状态能力")
 
-	redisClient := cachepkg.NewRedisClient(cachepkg.RedisOptions{})
+	redisClient := cachepkg.NewRedisClient(cachepkg.RedisOptions{
+		Addr:           cfg.Redis.Addr,
+		Password:       cfg.Redis.Password,
+		DB:             cfg.Redis.DB,
+		KeyPrefix:      cfg.Redis.KeyPrefix,
+		DialTimeoutMs:  cfg.Redis.DialTimeoutMs,
+		ReadTimeoutMs:  cfg.Redis.ReadTimeoutMs,
+		WriteTimeoutMs: cfg.Redis.WriteTimeoutMs,
+	})
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	if err := redisClient.Ping(pingCtx); err != nil {
 		log.Printf("Redis 不可用，缓存已降级为 DB 直连: %v", err)

@@ -87,6 +87,106 @@ func BuildCoordinatorPrompt(input agenttypes.CoordinatorPromptInput) string {
 	return builder.String()
 }
 
+func BuildCoordinatorThinkPrompt(input agenttypes.CoordinatorPromptInput) string {
+	builder := strings.Builder{}
+	builder.WriteString("你是执行协调器（Coordinator）的思考阶段。请先独立完成 Thought，不要输出动作。\n")
+	builder.WriteString("思考与表达要求：即使工具描述或参数为英文，你也必须始终使用中文进行思考与输出。\n")
+	builder.WriteString(input.RealtimeGuidance)
+	builder.WriteString(input.AgentIdentity)
+	builder.WriteString("目标：")
+	builder.WriteString(input.Goal)
+	builder.WriteString("\n")
+	builder.WriteString("可用工具:\n")
+	builder.WriteString(input.ToolSection)
+	builder.WriteString("规则:\n")
+	for _, line := range input.RuleLines {
+		builder.WriteString("- ")
+		builder.WriteString(strings.TrimSpace(line))
+		builder.WriteString("\n")
+	}
+	builder.WriteString("当前步数：")
+	builder.WriteString(strconv.Itoa(input.Step))
+	builder.WriteString("/")
+	builder.WriteString(strconv.Itoa(input.MaxSteps))
+	builder.WriteString("\n")
+	if strings.TrimSpace(input.OutlineText) != "" {
+		builder.WriteString("规划小任务列表：\n")
+		builder.WriteString(strings.TrimSpace(input.OutlineText))
+		builder.WriteString("\n")
+	}
+	if strings.TrimSpace(input.CurrentTask) != "" {
+		builder.WriteString("当前优先小任务：")
+		builder.WriteString(strings.TrimSpace(input.CurrentTask))
+		builder.WriteString("\n")
+	}
+	if strings.TrimSpace(input.Feedback) != "" {
+		builder.WriteString("上一轮反馈：")
+		builder.WriteString(strings.TrimSpace(input.Feedback))
+		builder.WriteString("\n")
+	}
+	builder.WriteString("最近消息条数：")
+	builder.WriteString(strconv.Itoa(input.RecentMessageCount))
+	builder.WriteString("\n")
+	builder.WriteString("输出要求:\n")
+	builder.WriteString("- 只输出 thought 正文，不要 JSON，不要动作，不要工具名。\n")
+	builder.WriteString("- 内容应可直接指导下一步选择工具。\n")
+	return builder.String()
+}
+
+func BuildCoordinatorActPrompt(input agenttypes.CoordinatorPromptInput) string {
+	builder := strings.Builder{}
+	builder.WriteString("你是执行协调器（Coordinator）的行动阶段。请基于已有 Thought 选择一个动作。\n")
+	builder.WriteString("思考与表达要求：即使工具描述或参数为英文，你也必须始终使用中文进行思考与输出。\n")
+	builder.WriteString(input.RealtimeGuidance)
+	builder.WriteString(input.AgentIdentity)
+	builder.WriteString("目标：")
+	builder.WriteString(input.Goal)
+	builder.WriteString("\n")
+	builder.WriteString("可用工具:\n")
+	builder.WriteString(input.ToolSection)
+	builder.WriteString("规则:\n")
+	for _, line := range input.RuleLines {
+		builder.WriteString("- ")
+		builder.WriteString(strings.TrimSpace(line))
+		builder.WriteString("\n")
+	}
+	builder.WriteString("当前步数：")
+	builder.WriteString(strconv.Itoa(input.Step))
+	builder.WriteString("/")
+	builder.WriteString(strconv.Itoa(input.MaxSteps))
+	builder.WriteString("\n")
+	if strings.TrimSpace(input.OutlineText) != "" {
+		builder.WriteString("规划小任务列表：\n")
+		builder.WriteString(strings.TrimSpace(input.OutlineText))
+		builder.WriteString("\n")
+	}
+	if strings.TrimSpace(input.CurrentTask) != "" {
+		builder.WriteString("当前优先小任务：")
+		builder.WriteString(strings.TrimSpace(input.CurrentTask))
+		builder.WriteString("\n")
+	}
+	if strings.TrimSpace(input.CurrentThought) != "" {
+		builder.WriteString("已完成 Thought：")
+		builder.WriteString(strings.TrimSpace(input.CurrentThought))
+		builder.WriteString("\n")
+	}
+	if strings.TrimSpace(input.Feedback) != "" {
+		builder.WriteString("上一轮反馈：")
+		builder.WriteString(strings.TrimSpace(input.Feedback))
+		builder.WriteString("\n")
+	}
+	builder.WriteString("最近消息条数：")
+	builder.WriteString(strconv.Itoa(input.RecentMessageCount))
+	builder.WriteString("\n")
+	builder.WriteString("输出格式要求:\n")
+	builder.WriteString("- 只输出一个 JSON 对象。\n")
+	builder.WriteString("- JSON 必须是 {\"tool\":\"工具名\",\"input\":\"JSON对象字符串\"}。\n")
+	builder.WriteString("- 不能输出 thought，不能输出解释文字。\n")
+	builder.WriteString("输出示例:\n")
+	builder.WriteString("{\"tool\":\"search_rag\",\"input\":\"{\\\"query\\\":\\\"用户当前问题关键词\\\"}\"}\n")
+	return builder.String()
+}
+
 func BuildJSONFormatterPrompt(rawOutput string, schema string) string {
 	builder := strings.Builder{}
 	builder.WriteString("你是JSONFormatter。你的任务是把输入内容转换成严格JSON对象，只输出JSON。\n")

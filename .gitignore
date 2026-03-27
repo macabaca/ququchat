@@ -10,11 +10,13 @@
 *_test.go
 *.log
 *.pid
+agent_node_calls.jsonl
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
 *.yaml
+!internal/config/config.template.yaml
 # Dependency directories (remove the comment below to include it)
 # vendor/
 

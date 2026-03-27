@@ -21,6 +21,8 @@ type Task struct {
 	QueueRabbitMQMaxLength      int    `yaml:"queue_rabbitmq_max_length" json:"queue_rabbitmq_max_length"`
 	DoneEventMQURL              string `yaml:"done_event_rabbitmq_url" json:"done_event_rabbitmq_url"`
 	DoneEventQueue              string `yaml:"done_event_queue_name" json:"done_event_queue_name"`
+	DoneEventQueueMaxLength     int    `yaml:"done_event_queue_max_length" json:"done_event_queue_max_length"`
+	DoneEventQueueMessageTTLms  int    `yaml:"done_event_queue_message_ttl_ms" json:"done_event_queue_message_ttl_ms"`
 	InputRetryMaxAttempts       int    `yaml:"input_retry_max_attempts" json:"input_retry_max_attempts"`
 	InputRetryDelayMs           int    `yaml:"input_retry_delay_ms" json:"input_retry_delay_ms"`
 	DonePublishRetryMaxAttempts int    `yaml:"done_publish_retry_max_attempts" json:"done_publish_retry_max_attempts"`
@@ -31,42 +33,48 @@ type Task struct {
 }
 
 type LLM struct {
-	Transport         string `yaml:"transport" json:"transport"`
-	RPM               int    `yaml:"rpm" json:"rpm"`
-	TPM               int    `yaml:"tpm" json:"tpm"`
-	RabbitMQURL       string `yaml:"rabbitmq_url" json:"rabbitmq_url"`
-	RequestQueue      string `yaml:"request_queue" json:"request_queue"`
-	WorkerSize        int    `yaml:"worker_size" json:"worker_size"`
-	ResponseTimeoutMs int    `yaml:"response_timeout_ms" json:"response_timeout_ms"`
-	APIKey            string `yaml:"api_key" json:"api_key"`
-	BaseURL           string `yaml:"base_url" json:"base_url"`
-	Model             string `yaml:"model" json:"model"`
+	Transport                string `yaml:"transport" json:"transport"`
+	RPM                      int    `yaml:"rpm" json:"rpm"`
+	TPM                      int    `yaml:"tpm" json:"tpm"`
+	RabbitMQURL              string `yaml:"rabbitmq_url" json:"rabbitmq_url"`
+	RequestQueue             string `yaml:"request_queue" json:"request_queue"`
+	RequestQueueMaxLength    int    `yaml:"request_queue_max_length" json:"request_queue_max_length"`
+	RequestQueueMessageTTLms int    `yaml:"request_queue_message_ttl_ms" json:"request_queue_message_ttl_ms"`
+	WorkerSize               int    `yaml:"worker_size" json:"worker_size"`
+	ResponseTimeoutMs        int    `yaml:"response_timeout_ms" json:"response_timeout_ms"`
+	APIKey                   string `yaml:"api_key" json:"api_key"`
+	BaseURL                  string `yaml:"base_url" json:"base_url"`
+	Model                    string `yaml:"model" json:"model"`
 }
 
 type AIGC struct {
-	Transport         string `yaml:"transport" json:"transport"`
-	IPM               int    `yaml:"ipm" json:"ipm"`
-	IPD               int    `yaml:"ipd" json:"ipd"`
-	RabbitMQURL       string `yaml:"rabbitmq_url" json:"rabbitmq_url"`
-	RequestQueue      string `yaml:"request_queue" json:"request_queue"`
-	WorkerSize        int    `yaml:"worker_size" json:"worker_size"`
-	ResponseTimeoutMs int    `yaml:"response_timeout_ms" json:"response_timeout_ms"`
-	APIKey            string `yaml:"api_key" json:"api_key"`
-	BaseURL           string `yaml:"base_url" json:"base_url"`
-	Model             string `yaml:"model" json:"model"`
+	Transport                string `yaml:"transport" json:"transport"`
+	IPM                      int    `yaml:"ipm" json:"ipm"`
+	IPD                      int    `yaml:"ipd" json:"ipd"`
+	RabbitMQURL              string `yaml:"rabbitmq_url" json:"rabbitmq_url"`
+	RequestQueue             string `yaml:"request_queue" json:"request_queue"`
+	RequestQueueMaxLength    int    `yaml:"request_queue_max_length" json:"request_queue_max_length"`
+	RequestQueueMessageTTLms int    `yaml:"request_queue_message_ttl_ms" json:"request_queue_message_ttl_ms"`
+	WorkerSize               int    `yaml:"worker_size" json:"worker_size"`
+	ResponseTimeoutMs        int    `yaml:"response_timeout_ms" json:"response_timeout_ms"`
+	APIKey                   string `yaml:"api_key" json:"api_key"`
+	BaseURL                  string `yaml:"base_url" json:"base_url"`
+	Model                    string `yaml:"model" json:"model"`
 }
 
 type Embedding struct {
-	Transport         string `yaml:"transport" json:"transport"`
-	RPM               int    `yaml:"rpm" json:"rpm"`
-	TPM               int    `yaml:"tpm" json:"tpm"`
-	RabbitMQURL       string `yaml:"rabbitmq_url" json:"rabbitmq_url"`
-	RequestQueue      string `yaml:"request_queue" json:"request_queue"`
-	WorkerSize        int    `yaml:"worker_size" json:"worker_size"`
-	ResponseTimeoutMs int    `yaml:"response_timeout_ms" json:"response_timeout_ms"`
-	APIKey            string `yaml:"api_key" json:"api_key"`
-	BaseURL           string `yaml:"base_url" json:"base_url"`
-	Model             string `yaml:"model" json:"model"`
+	Transport                string `yaml:"transport" json:"transport"`
+	RPM                      int    `yaml:"rpm" json:"rpm"`
+	TPM                      int    `yaml:"tpm" json:"tpm"`
+	RabbitMQURL              string `yaml:"rabbitmq_url" json:"rabbitmq_url"`
+	RequestQueue             string `yaml:"request_queue" json:"request_queue"`
+	RequestQueueMaxLength    int    `yaml:"request_queue_max_length" json:"request_queue_max_length"`
+	RequestQueueMessageTTLms int    `yaml:"request_queue_message_ttl_ms" json:"request_queue_message_ttl_ms"`
+	WorkerSize               int    `yaml:"worker_size" json:"worker_size"`
+	ResponseTimeoutMs        int    `yaml:"response_timeout_ms" json:"response_timeout_ms"`
+	APIKey                   string `yaml:"api_key" json:"api_key"`
+	BaseURL                  string `yaml:"base_url" json:"base_url"`
+	Model                    string `yaml:"model" json:"model"`
 }
 
 type Vector struct {
@@ -106,6 +114,20 @@ func (l LLM) RequestQueueOrDefault() string {
 		return strings.TrimSpace(l.RequestQueue)
 	}
 	return "ququchat.llm.request"
+}
+
+func (l LLM) RequestQueueMaxLengthOrDefault() int {
+	if l.RequestQueueMaxLength > 0 {
+		return l.RequestQueueMaxLength
+	}
+	return 0
+}
+
+func (l LLM) RequestQueueMessageTTLOrDefault() time.Duration {
+	if l.RequestQueueMessageTTLms > 0 {
+		return time.Duration(l.RequestQueueMessageTTLms) * time.Millisecond
+	}
+	return 0
 }
 
 func (l LLM) WorkerSizeOrDefault() int {
@@ -164,6 +186,20 @@ func (a AIGC) RequestQueueOrDefault() string {
 	return "ququchat.aigc.request"
 }
 
+func (a AIGC) RequestQueueMaxLengthOrDefault() int {
+	if a.RequestQueueMaxLength > 0 {
+		return a.RequestQueueMaxLength
+	}
+	return 0
+}
+
+func (a AIGC) RequestQueueMessageTTLOrDefault() time.Duration {
+	if a.RequestQueueMessageTTLms > 0 {
+		return time.Duration(a.RequestQueueMessageTTLms) * time.Millisecond
+	}
+	return 0
+}
+
 func (a AIGC) WorkerSizeOrDefault() int {
 	if a.WorkerSize > 0 {
 		return a.WorkerSize
@@ -218,6 +254,20 @@ func (e Embedding) RequestQueueOrDefault() string {
 		return strings.TrimSpace(e.RequestQueue)
 	}
 	return "ququchat.embedding.request"
+}
+
+func (e Embedding) RequestQueueMaxLengthOrDefault() int {
+	if e.RequestQueueMaxLength > 0 {
+		return e.RequestQueueMaxLength
+	}
+	return 0
+}
+
+func (e Embedding) RequestQueueMessageTTLOrDefault() time.Duration {
+	if e.RequestQueueMessageTTLms > 0 {
+		return time.Duration(e.RequestQueueMessageTTLms) * time.Millisecond
+	}
+	return 0
 }
 
 func (e Embedding) WorkerSizeOrDefault() int {
@@ -365,6 +415,20 @@ func (t Task) DoneEventQueueOrDefault() string {
 		return strings.TrimSpace(t.DoneEventQueue)
 	}
 	return "ququchat.task.done"
+}
+
+func (t Task) DoneEventQueueMaxLengthOrDefault() int {
+	if t.DoneEventQueueMaxLength > 0 {
+		return t.DoneEventQueueMaxLength
+	}
+	return 0
+}
+
+func (t Task) DoneEventQueueMessageTTLOrDefault() time.Duration {
+	if t.DoneEventQueueMessageTTLms > 0 {
+		return time.Duration(t.DoneEventQueueMessageTTLms) * time.Millisecond
+	}
+	return 0
 }
 
 func (t Task) DoneEventMQURLOrDefault() string {

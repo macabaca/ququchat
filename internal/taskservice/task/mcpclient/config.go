@@ -16,6 +16,7 @@ type MultiClientFileConfig struct {
 }
 
 type ServerConfig struct {
+	Type      string            `yaml:"type" json:"type"`
 	Endpoint  string            `yaml:"endpoint" json:"endpoint"`
 	APIKey    string            `yaml:"api_key" json:"apiKey"`
 	Headers   map[string]string `yaml:"headers" json:"headers"`
@@ -52,6 +53,13 @@ func BuildMultiClientOptions(cfg MultiClientFileConfig) (MultiClientOptions, err
 		}
 		if _, exists := servers[serverName]; exists {
 			return MultiClientOptions{}, fmt.Errorf("duplicate mcp server name: %s", serverName)
+		}
+		transportType := strings.ToLower(strings.TrimSpace(serverCfg.Type))
+		if transportType == "" {
+			transportType = "streamable_http"
+		}
+		if transportType != "streamable_http" {
+			return MultiClientOptions{}, fmt.Errorf("mcp server transport type is unsupported: %s (%s)", serverName, transportType)
 		}
 		endpoint := strings.TrimSpace(serverCfg.Endpoint)
 		if endpoint == "" {

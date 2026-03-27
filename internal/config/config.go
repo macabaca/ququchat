@@ -9,6 +9,7 @@ import (
 
 type Config struct {
 	Database       Database             `yaml:"database" json:"database"`
+	Redis          Redis                `yaml:"redis" json:"redis"`
 	Auth           Auth                 `yaml:"auth" json:"auth"`
 	Chat           Chat                 `yaml:"chat" json:"chat"`
 	Task           Task                 `yaml:"task" json:"task"`
@@ -27,6 +28,7 @@ type Config struct {
 }
 
 type MCPServer struct {
+	Type      string            `yaml:"type" json:"type"`
 	Endpoint  string            `yaml:"endpoint" json:"endpoint"`
 	APIKey    string            `yaml:"api_key" json:"api_key"`
 	Headers   map[string]string `yaml:"headers" json:"headers"`
@@ -37,6 +39,16 @@ type MCPServer struct {
 
 type RAGStopPhrasesConfig struct {
 	StopPhrases []string `yaml:"stop_phrases" json:"stop_phrases"`
+}
+
+type Redis struct {
+	Addr           string `yaml:"addr" json:"addr"`
+	Password       string `yaml:"password" json:"password"`
+	DB             int    `yaml:"db" json:"db"`
+	KeyPrefix      string `yaml:"key_prefix" json:"key_prefix"`
+	DialTimeoutMs  int    `yaml:"dial_timeout_ms" json:"dial_timeout_ms"`
+	ReadTimeoutMs  int    `yaml:"read_timeout_ms" json:"read_timeout_ms"`
+	WriteTimeoutMs int    `yaml:"write_timeout_ms" json:"write_timeout_ms"`
 }
 
 // Database 结构体已拆分至 config_db.go

@@ -50,6 +50,7 @@ func RunExecutorNode(ctx context.Context, state *State) (next string, err error)
 	}
 	record.Status = "succeeded"
 	record.Output = toolOutput
+	rememberObservedURLsInState(state, toolOutput)
 	state.ToolOutput = toolOutput
 	state.ToolError = ""
 	if state.MemorySession != nil {

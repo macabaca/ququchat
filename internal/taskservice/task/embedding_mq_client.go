@@ -12,6 +12,8 @@ import (
 type MQEmbeddingProviderOptions struct {
 	URL             string
 	RequestQueue    string
+	MaxLength       int
+	MessageTTL      time.Duration
 	ResponseTimeout time.Duration
 }
 
@@ -27,6 +29,8 @@ func NewMQEmbeddingProvider(opts MQEmbeddingProviderOptions) (*MQEmbeddingProvid
 	client, err := embeddingmq.NewClient(embeddingmq.ClientOptions{
 		URL:             opts.URL,
 		RequestQueue:    opts.RequestQueue,
+		MaxLength:       opts.MaxLength,
+		MessageTTL:      opts.MessageTTL,
 		ResponseTimeout: opts.ResponseTimeout,
 	})
 	if err != nil {

@@ -65,6 +65,8 @@ func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reas
 	builder.WriteString("- steps 至少1步，最多")
 	builder.WriteString(strconv.Itoa(maxSteps))
 	builder.WriteString("步。\n")
+	builder.WriteString("- 不要复杂化问题，优先给出最短、最直接的流程。\n")
+	builder.WriteString("- 能用更少步骤完成就不要拆分，避免冗余中间任务。\n")
 	builder.WriteString("- 每步都要有task和tool。\n")
 	if strings.TrimSpace(feedback) != "" {
 		builder.WriteString("上一轮反馈：")

@@ -24,6 +24,8 @@ type RuntimeOptions struct {
 	QueueRabbitMQMaxLength           int
 	DoneEventRabbitMQURL             string
 	DoneEventQueueName               string
+	DoneEventQueueMaxLength          int
+	DoneEventQueueMessageTTL         time.Duration
 	DoneEventPublishRetryMaxAttempts int
 	DoneEventPublishRetryDelay       time.Duration
 	DoneEventConsumeRetryMaxAttempts int
@@ -36,6 +38,8 @@ type RuntimeOptions struct {
 	LLMTransport                     string
 	LLMMQURL                         string
 	LLMMQQueue                       string
+	LLMMQMaxLength                   int
+	LLMMQMessageTTL                  time.Duration
 	LLMMQTimeout                     time.Duration
 	LLMAPIKey                        string
 	LLMBaseURL                       string
@@ -43,6 +47,8 @@ type RuntimeOptions struct {
 	AIGCTransport                    string
 	AIGCMQURL                        string
 	AIGCMQQueue                      string
+	AIGCMQMaxLength                  int
+	AIGCMQMessageTTL                 time.Duration
 	AIGCMQTimeout                    time.Duration
 	EmbeddingProvider                EmbeddingProvider
 	VectorStore                      VectorStore

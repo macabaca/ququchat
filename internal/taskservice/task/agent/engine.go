@@ -20,7 +20,7 @@ type MCPCallToolByQualifiedName func(ctx context.Context, qualifiedToolName stri
 
 const (
 	maxStepsDefault        = 4
-	maxStepsLimit          = 10
+	maxStepsLimit          = 20
 	roleRetryLimit         = 2
 	finalScorePass         = 50
 	readRecentDefaultLimit = 10
@@ -62,7 +62,12 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			Outline:            plannerOutline{Steps: nil},
 			OutlineIndex:       0,
 			CurrentTask:        "",
+			CoordinatorThought: "",
 			Feedback:           strings.TrimSpace(memorySession.BuildFeedback()),
+			URLAliasToValue:    map[string]string{},
+			URLValueToAlias:    map[string]string{},
+			URLAliasOrder:      make([]string, 0),
+			NextURLAliasIndex:  1,
 			AvailableToolSpecs: availableToolSpecs,
 			MemorySession:      memorySession,
 			ToolRuntime:        toolRunner,
@@ -99,8 +104,11 @@ func newRoutingService(client ChatClient) *agentrouting.Service {
 			agentrouting.NewFuncNode("planner", func(ctx context.Context, state *State) (string, error) {
 				return RunPlannerNode(ctx, client, state)
 			}),
-			agentrouting.NewFuncNode("coordinator", func(ctx context.Context, state *State) (string, error) {
-				return RunCoordinatorNode(ctx, client, state)
+			agentrouting.NewFuncNode("coordinator_think", func(ctx context.Context, state *State) (string, error) {
+				return RunCoordinatorThinkNode(ctx, client, state)
+			}),
+			agentrouting.NewFuncNode("coordinator_act", func(ctx context.Context, state *State) (string, error) {
+				return RunCoordinatorActNode(ctx, client, state)
 			}),
 			agentrouting.NewFuncNode("formatter", func(ctx context.Context, state *State) (string, error) {
 				return RunFormatterNode(ctx, client, state)
@@ -116,17 +124,18 @@ func newRoutingService(client ChatClient) *agentrouting.Service {
 			}),
 		},
 		[]agentrouting.Transition{
-			{From: "planner", Event: "planner.done", To: "coordinator"},
-			{From: "coordinator", Event: "coordinator.done", To: "formatter"},
+			{From: "planner", Event: "planner.done", To: "coordinator_think"},
+			{From: "coordinator_think", Event: "coordinator.think_done", To: "coordinator_act"},
+			{From: "coordinator_act", Event: "coordinator.act_done", To: "formatter"},
 			{From: "formatter", Event: "formatter.done", To: "validator"},
 			{From: "validator", Event: "validator.done", To: "executor"},
-			{From: "validator", Event: "validator.retry", To: "coordinator"},
-			{From: "executor", Event: "executor.done", To: "coordinator"},
-			{From: "executor", Event: "executor.failed", To: "coordinator"},
+			{From: "validator", Event: "validator.retry", To: "coordinator_think"},
+			{From: "executor", Event: "executor.done", To: "coordinator_think"},
+			{From: "executor", Event: "executor.failed", To: "coordinator_think"},
 			{From: "executor", Event: "executor.finish", To: "final_judge"},
 			{From: "executor", Event: "executor.replan", To: "planner"},
 			{From: "final_judge", Event: "final_judge.done", To: "end"},
-			{From: "final_judge", Event: "final_judge.retry", To: "coordinator"},
+			{From: "final_judge", Event: "final_judge.retry", To: "coordinator_think"},
 		},
 	)
 	policy := agentrouting.NewAgentPolicy("planner", map[string]int{

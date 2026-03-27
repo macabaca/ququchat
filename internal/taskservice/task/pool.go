@@ -102,6 +102,7 @@ func (p *Pool) runWorker(ctx context.Context, workerID int) {
 				continue
 			}
 		}
+		log.Printf("[task-worker-%d] 接收任务成功 task=%s priority=%d status=%s", workerID, runningTask.ID, runningTask.Priority, runningTask.Status)
 		result, execErr := p.exec.Execute(ctx, runningTask)
 		if execErr != nil {
 			doneTask, err := p.store.MarkFailed(t.ID, execErr.Error())
@@ -112,6 +113,7 @@ func (p *Pool) runWorker(ctx context.Context, workerID int) {
 				}
 				log.Printf("[task-worker-%d] mark failed failed task=%s err=%v", workerID, t.ID, err)
 			} else {
+				log.Printf("[task-worker-%d] 完成任务 task=%s status=%s", workerID, doneTask.ID, doneTask.Status)
 				p.publishDone(ctx, doneTask.Clone())
 			}
 			_ = msg.Ack()
@@ -136,6 +138,9 @@ func (p *Pool) runWorker(ctx context.Context, workerID int) {
 					doneTask, _ = p.store.Get(t.ID)
 				}
 			}
+		}
+		if doneTask != nil {
+			log.Printf("[task-worker-%d] 完成任务 task=%s status=%s", workerID, doneTask.ID, doneTask.Status)
 		}
 		p.publishDone(ctx, doneTask.Clone())
 		_ = msg.Ack()

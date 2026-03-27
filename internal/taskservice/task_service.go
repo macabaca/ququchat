@@ -50,6 +50,8 @@ type Service struct {
 	commandPriorityRules        []CommandPriorityRule
 	doneEventURL                string
 	doneEventQueue              string
+	doneEventQueueMaxLength     int
+	doneEventQueueMessageTTL    time.Duration
 	doneEventPub                DoneEventPublisher
 	donePublishRetryMaxAttempts int
 	donePublishRetryDelay       time.Duration
@@ -80,12 +82,14 @@ func NewServiceWithOptions(db *gorm.DB, opts tasksvc.RuntimeOptions, svcOpts Ser
 	s := &Service{
 		doneEventURL:                doneEventURL,
 		doneEventQueue:              doneEventQueue,
+		doneEventQueueMaxLength:     opts.DoneEventQueueMaxLength,
+		doneEventQueueMessageTTL:    opts.DoneEventQueueMessageTTL,
 		commandPriorityRules:        normalizeCommandPriorityRules(svcOpts.CommandPriorityRules),
 		donePublishRetryMaxAttempts: normalizeRetryMaxAttempts(opts.DoneEventPublishRetryMaxAttempts),
 		donePublishRetryDelay:       normalizeRetryDelay(opts.DoneEventPublishRetryDelay),
 	}
 	if doneEventURL != "" && doneEventQueue != "" {
-		if pub, err := NewRabbitMQDoneEventPublisher(doneEventURL, doneEventQueue); err == nil {
+		if pub, err := NewRabbitMQDoneEventPublisher(doneEventURL, doneEventQueue, s.doneEventQueueMaxLength, s.doneEventQueueMessageTTL); err == nil {
 			s.doneEventPub = pub
 		}
 	}

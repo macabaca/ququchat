@@ -1,0 +1,170 @@
+# QuquChat 配置模板
+# 使用方式：
+# 1) 复制为 internal/config/config.yaml
+# 2) 仅保留你需要的配置项并填值
+
+database:
+  # 例如：postgres
+  driver: ""
+  host: ""
+  port: 0
+  user: "${DB_USER}"
+  password: "${DB_PASSWORD}"
+  name: ""
+  params:
+    sslmode: ""
+    TimeZone: ""
+
+redis:
+  addr: ""
+  password: "${REDIS_PASSWORD}"
+  db: 0
+  key_prefix: ""
+  dial_timeout_ms: 0
+  read_timeout_ms: 0
+  write_timeout_ms: 0
+
+auth:
+  jwt_secret: "${AUTH_JWT_SECRET}"
+  access_ttl: ""
+  refresh_ttl: ""
+  refresh_token_bytes: 0
+
+chat:
+  history_limit: 0
+
+task:
+  queue_high_cap: 0
+  queue_normal_cap: 0
+  queue_low_cap: 0
+  # 可选：memory / rabbitmq
+  queue_transport: ""
+  queue_rabbitmq_url: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/"
+  queue_rabbitmq_name: ""
+  queue_rabbitmq_exchange: ""
+  queue_rabbitmq_max_priority: 0
+  queue_rabbitmq_max_length: 0
+  done_event_rabbitmq_url: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/"
+  done_event_queue_name: ""
+  done_event_queue_max_length: 0
+  done_event_queue_message_ttl_ms: 0
+  input_retry_max_attempts: 0
+  input_retry_delay_ms: 0
+  done_publish_retry_max_attempts: 0
+  done_publish_retry_delay_ms: 0
+  done_consume_retry_max_attempts: 0
+  done_consume_retry_delay_ms: 0
+  worker_size: 0
+
+task_priority:
+  # 按需添加规则：- task: "xxx" / priority: 1|2|3
+  rules: []
+
+file:
+  upload_dir: ""
+  max_size_bytes: 0
+  retention: ""
+  thumbnail:
+    max_dimension: 0
+    jpeg_quality: 0
+    retry_count: 0
+    retry_delay: ""
+    max_source_bytes: 0
+
+avatar:
+  max_size_bytes: 0
+  permanent: false
+  retention: ""
+
+storage:
+  # 可选：minio / oss
+  provider: ""
+
+minio:
+  endpoint: ""
+  access_key: "${MINIO_ACCESS_KEY}"
+  secret_key: "${MINIO_SECRET_KEY}"
+  bucket: ""
+  use_ssl: false
+
+oss:
+  region: ""
+  endpoint: ""
+  access_key_id: "${OSS_ACCESS_KEY_ID}"
+  access_key_secret: "${OSS_ACCESS_KEY_SECRET}"
+  security_token: "${OSS_SECURITY_TOKEN}"
+  bucket: ""
+  disable_ssl: false
+  use_cname: false
+  use_path_style: false
+
+llm:
+  # 可选：direct / rabbitmq
+  transport: ""
+  rpm: 0
+  tpm: 0
+  rabbitmq_url: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/"
+  request_queue: ""
+  request_queue_max_length: 0
+  request_queue_message_ttl_ms: 0
+  worker_size: 0
+  response_timeout_ms: 0
+  api_key: "${LLM_API_KEY}"
+  base_url: ""
+  model: ""
+
+aigc:
+  # 可选：direct / rabbitmq
+  transport: ""
+  ipm: 0
+  ipd: 0
+  rabbitmq_url: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/"
+  request_queue: ""
+  request_queue_max_length: 0
+  request_queue_message_ttl_ms: 0
+  worker_size: 0
+  response_timeout_ms: 0
+  api_key: "${AIGC_API_KEY}"
+  base_url: ""
+  model: ""
+
+embedding:
+  # 可选：direct / rabbitmq
+  transport: ""
+  rpm: 0
+  tpm: 0
+  rabbitmq_url: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/"
+  request_queue: ""
+  request_queue_max_length: 0
+  request_queue_message_ttl_ms: 0
+  worker_size: 0
+  response_timeout_ms: 0
+  api_key: "${EMBEDDING_API_KEY}"
+  base_url: ""
+  model: ""
+
+vector:
+  # 可选：qdrant
+  provider: ""
+  qdrant_url: ""
+  api_key: "${VECTOR_API_KEY}"
+  collection: ""
+  timeout_ms: 0
+  raw_vector_dim: 0
+  summary_vector_dim: 0
+  distance: ""
+
+rag_stop_phrases:
+  stop_phrases: []
+
+mcp_servers:
+  # 按需新增 server 名称（示例键名仅占位）
+  "<server_name>":
+    # 当前支持：streamable_http
+    type: ""
+    endpoint: ""
+    api_key: ""
+    headers: {}
+    name: ""
+    version: ""
+    timeout_ms: 0
