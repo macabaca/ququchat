@@ -48,6 +48,7 @@ func RunCoordinatorActNode(ctx context.Context, client ChatClient, state *State)
 	if coordinatorFeedback == "" && state.MemorySession != nil {
 		coordinatorFeedback = strings.TrimSpace(state.MemorySession.BuildFeedback())
 	}
+	coordinatorFeedback = appendURLAliasFeedback(coordinatorFeedback, state)
 	currentThought := strings.TrimSpace(state.CoordinatorThought)
 	if currentThought == "" {
 		return "", errors.New("coordinator_act 缺少 thought，请先执行 coordinator_think")

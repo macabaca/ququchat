@@ -232,7 +232,16 @@ func main() {
 	if len(cfg.MCPServers) > 0 {
 		serverCfg := make(map[string]mcpclient.ServerConfig, len(cfg.MCPServers))
 		for name, item := range cfg.MCPServers {
+			transportType := strings.ToLower(strings.TrimSpace(item.Type))
+			if transportType == "" {
+				transportType = "streamable_http"
+			}
+			if transportType != "streamable_http" {
+				log.Printf("跳过 MCP server=%s，未支持的 type=%s", name, transportType)
+				continue
+			}
 			serverCfg[name] = mcpclient.ServerConfig{
+				Type:      transportType,
 				Endpoint:  item.Endpoint,
 				APIKey:    item.APIKey,
 				Headers:   item.Headers,
@@ -241,12 +250,14 @@ func main() {
 				TimeoutMs: item.TimeoutMs,
 			}
 		}
-		client, clientErr := mcpclient.NewMultiClientFromServers(context.Background(), serverCfg)
-		if clientErr != nil {
-			log.Printf("初始化 MCP MultiClient 失败，将跳过 MCP: %v", clientErr)
-		} else {
-			mcpMultiClient = client
-			defer mcpMultiClient.Close()
+		if len(serverCfg) > 0 {
+			client, clientErr := mcpclient.NewMultiClientFromServers(context.Background(), serverCfg)
+			if clientErr != nil {
+				log.Printf("初始化 MCP MultiClient 失败，将跳过 MCP: %v", clientErr)
+			} else {
+				mcpMultiClient = client
+				defer mcpMultiClient.Close()
+			}
 		}
 	}
 

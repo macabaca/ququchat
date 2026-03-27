@@ -16,6 +16,7 @@ agent_node_calls.jsonl
 *.out
 
 *.yaml
+!internal/config/config.template.yaml
 # Dependency directories (remove the comment below to include it)
 # vendor/
 

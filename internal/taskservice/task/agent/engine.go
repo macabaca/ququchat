@@ -20,7 +20,7 @@ type MCPCallToolByQualifiedName func(ctx context.Context, qualifiedToolName stri
 
 const (
 	maxStepsDefault        = 4
-	maxStepsLimit          = 10
+	maxStepsLimit          = 20
 	roleRetryLimit         = 2
 	finalScorePass         = 50
 	readRecentDefaultLimit = 10
@@ -64,6 +64,10 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			CurrentTask:        "",
 			CoordinatorThought: "",
 			Feedback:           strings.TrimSpace(memorySession.BuildFeedback()),
+			URLAliasToValue:    map[string]string{},
+			URLValueToAlias:    map[string]string{},
+			URLAliasOrder:      make([]string, 0),
+			NextURLAliasIndex:  1,
 			AvailableToolSpecs: availableToolSpecs,
 			MemorySession:      memorySession,
 			ToolRuntime:        toolRunner,

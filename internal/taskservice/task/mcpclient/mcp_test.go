@@ -69,3 +69,43 @@ func TestTavilyListTools(t *testing.T) {
 		t.Logf("  InputSchema: \n  %s", string(schema))
 	}
 }
+
+func TestGezhePPTListTools(t *testing.T) {
+	ctx := context.Background()
+	mcpServers, err := loadConfig("../../../config/config.yaml")
+	assert.NoError(t, err)
+
+	clientOpts := make(map[string]ClientOptions)
+	for name, server := range mcpServers {
+		clientOpts[name] = ClientOptions{
+			Endpoint: server.Endpoint,
+			APIKey:   server.APIKey,
+			Headers:  server.Headers,
+			Name:     server.Name,
+			Version:  server.Version,
+			Timeout:  time.Duration(server.TimeoutMs) * time.Millisecond,
+		}
+	}
+
+	multiClientOpts := MultiClientOptions{
+		Servers: clientOpts,
+	}
+	multiClient, err := NewMultiClient(ctx, multiClientOpts)
+	assert.NoError(t, err)
+	defer multiClient.Close()
+
+	gezheClient, exists := multiClient.clients["歌者PPT"]
+	assert.True(t, exists)
+
+	tools, err := gezheClient.ListTools(ctx)
+	assert.NoError(t, err)
+
+	t.Logf("歌者PPT provides %d tools:", len(tools))
+	for _, tool := range tools {
+		t.Logf("- Tool Name: %s", tool.Name)
+		t.Logf("  Description: %s", tool.Description)
+
+		schema, _ := json.MarshalIndent(tool.InputSchema, "  ", "  ")
+		t.Logf("  InputSchema: \n  %s", string(schema))
+	}
+}

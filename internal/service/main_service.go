@@ -27,6 +27,7 @@ var ErrSummaryRoomRequired = errors.New("summary room id is required")
 var ErrSummarySourceEmpty = errors.New("no messages available for summary")
 var ErrAgentRoomRequired = errors.New("agent room id is required")
 var ErrAgentGoalRequired = errors.New("agent goal is required")
+var ErrAgentUserNotAllowed = errors.New("only user_code==1 can call agent service")
 var ErrRAGRoomRequired = errors.New("rag room id is required")
 var ErrRAGSearchQueryRequired = errors.New("rag search query is required")
 var ErrRAGSearchTopKInvalid = errors.New("rag search topK must be a positive integer")
@@ -37,7 +38,7 @@ var ErrRAGMemorySequenceRangeInvalid = errors.New("rag memory sequence range is 
 
 const summaryCountMax = 1000
 const agentRecentMessageLimit = 12
-const agentMaxSteps = 5
+const agentMaxSteps = 10
 const ragSegmentGapSeconds = 300
 const ragMaxCharsPerSegment = 2000
 const ragMaxMessagesPerSeg = 30
@@ -174,6 +175,9 @@ func (s *MainService) SubmitCommand(req SubmitCommandRequest) (string, error) {
 		if strings.TrimSpace(req.RoomID) == "" {
 			return "", ErrAgentRoomRequired
 		}
+		if err := s.ensureAgentUserAllowed(req.UserID); err != nil {
+			return "", err
+		}
 		goal, parseErr := parseAgentGoal(cmd)
 		if parseErr != nil {
 			return "", parseErr
@@ -245,6 +249,27 @@ func (s *MainService) SubmitCommand(req SubmitCommandRequest) (string, error) {
 		return "", err
 	}
 	return t.ID, nil
+}
+
+func (s *MainService) ensureAgentUserAllowed(userID string) error {
+	if s == nil || s.db == nil {
+		return ErrServiceNotInitialized
+	}
+	trimmedUserID := strings.TrimSpace(userID)
+	if trimmedUserID == "" {
+		return ErrAgentUserNotAllowed
+	}
+	var user models.User
+	if err := s.db.Select("id", "user_code").Where("id = ?", trimmedUserID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrAgentUserNotAllowed
+		}
+		return err
+	}
+	if user.UserCode != 1 {
+		return ErrAgentUserNotAllowed
+	}
+	return nil
 }
 
 func (s *MainService) StartDoneEventConsumer(ctx context.Context, handler DoneEventHandler) error {

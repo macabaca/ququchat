@@ -48,6 +48,7 @@ func RunCoordinatorThinkNode(ctx context.Context, client ChatClient, state *Stat
 	if coordinatorFeedback == "" && state.MemorySession != nil {
 		coordinatorFeedback = strings.TrimSpace(state.MemorySession.BuildFeedback())
 	}
+	coordinatorFeedback = appendURLAliasFeedback(coordinatorFeedback, state)
 	promptInput := agenttypes.CoordinatorPromptInput{
 		Goal:               goal,
 		RealtimeGuidance:   agentservices.BuildRealtimePlanningGuidance(state.AvailableToolSpecs, time.Now()),

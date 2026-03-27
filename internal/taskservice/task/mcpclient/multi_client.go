@@ -124,7 +124,11 @@ func (m *MultiClient) CallTool(ctx context.Context, server string, toolName stri
 	if trimmedServer == "" {
 		return nil, errors.New("mcp server name is empty")
 	}
-	client, ok := m.clients[trimmedServer]
+	resolvedServer, err := m.resolveServerName(trimmedServer)
+	if err != nil {
+		return nil, err
+	}
+	client, ok := m.clients[resolvedServer]
 	if !ok || client == nil {
 		return nil, fmt.Errorf("mcp server not found: %s", trimmedServer)
 	}
@@ -195,4 +199,31 @@ func closeClients(clients map[string]*Client) {
 		}
 		_ = client.Close()
 	}
+}
+
+func (m *MultiClient) resolveServerName(server string) (string, error) {
+	if m == nil || len(m.clients) == 0 {
+		return "", errors.New("multi mcp client is not initialized")
+	}
+	trimmedServer := strings.TrimSpace(server)
+	if trimmedServer == "" {
+		return "", errors.New("mcp server name is empty")
+	}
+	if _, ok := m.clients[trimmedServer]; ok {
+		return trimmedServer, nil
+	}
+	matches := make([]string, 0, 2)
+	for name := range m.clients {
+		if strings.EqualFold(strings.TrimSpace(name), trimmedServer) {
+			matches = append(matches, name)
+		}
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("mcp server not found: %s", trimmedServer)
+	}
+	if len(matches) > 1 {
+		sort.Strings(matches)
+		return "", fmt.Errorf("mcp server name is ambiguous: %s (%s)", trimmedServer, strings.Join(matches, ", "))
+	}
+	return matches[0], nil
 }

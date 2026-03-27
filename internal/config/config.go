@@ -28,6 +28,7 @@ type Config struct {
 }
 
 type MCPServer struct {
+	Type      string            `yaml:"type" json:"type"`
 	Endpoint  string            `yaml:"endpoint" json:"endpoint"`
 	APIKey    string            `yaml:"api_key" json:"api_key"`
 	Headers   map[string]string `yaml:"headers" json:"headers"`
