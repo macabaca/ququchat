@@ -57,6 +57,8 @@ type RabbitMQDoneEventConsumer struct {
 type RabbitMQDoneEventConsumerOptions struct {
 	URL              string
 	QueueName        string
+	QueueMaxLength   int
+	QueueMessageTTL  time.Duration
 	ConsumerTag      string
 	Prefetch         int
 	RetryMaxAttempts int
@@ -104,7 +106,7 @@ func NewRabbitMQDoneEventConsumer(opts RabbitMQDoneEventConsumerOptions) (*Rabbi
 		_ = conn.Close()
 		return nil, err
 	}
-	if _, err := ch.QueueDeclare(queueName, true, false, false, false, nil); err != nil {
+	if _, err := ch.QueueDeclare(queueName, true, false, false, false, resolveDoneEventQueueDeclareArgs(opts.QueueMaxLength, opts.QueueMessageTTL)); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
 		return nil, err
@@ -145,6 +147,22 @@ func NewRabbitMQDoneEventConsumer(opts RabbitMQDoneEventConsumerOptions) (*Rabbi
 		conn:             conn,
 		channel:          ch,
 	}, nil
+}
+
+func resolveDoneEventQueueDeclareArgs(maxLength int, messageTTL time.Duration) amqp.Table {
+	args := amqp.Table{
+		"x-overflow": "reject-publish",
+	}
+	if maxLength > 0 {
+		args["x-max-length"] = int32(maxLength)
+	}
+	if messageTTL > 0 {
+		args["x-message-ttl"] = int32(messageTTL / time.Millisecond)
+	}
+	if len(args) == 1 {
+		return nil
+	}
+	return args
 }
 
 func (c *RabbitMQDoneEventConsumer) Start(ctx context.Context, handler DoneEventHandler) error {

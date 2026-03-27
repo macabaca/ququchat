@@ -51,6 +51,8 @@ type MainService struct {
 	commandPriorityRules        []CommandPriorityRule
 	doneEventURL                string
 	doneEventQueue              string
+	doneEventQueueMaxLength     int
+	doneEventQueueMessageTTL    time.Duration
 	doneConsumeRetryMaxAttempts int
 	doneConsumeRetryDelay       time.Duration
 	doneConsumePrefetch         int
@@ -94,6 +96,8 @@ func NewMainServiceWithOptions(db *gorm.DB, opts tasksvc.RuntimeOptions, svcOpts
 		commandPriorityRules:        normalizeCommandPriorityRules(svcOpts.CommandPriorityRules),
 		doneEventURL:                doneEventURL,
 		doneEventQueue:              doneEventQueue,
+		doneEventQueueMaxLength:     opts.DoneEventQueueMaxLength,
+		doneEventQueueMessageTTL:    opts.DoneEventQueueMessageTTL,
 		doneConsumeRetryMaxAttempts: normalizeRetryMaxAttempts(opts.DoneEventConsumeRetryMaxAttempts),
 		doneConsumeRetryDelay:       normalizeRetryDelay(opts.DoneEventConsumeRetryDelay),
 		doneConsumePrefetch:         normalizePrefetch(opts.WorkerSize),
@@ -266,6 +270,8 @@ func (s *MainService) StartDoneEventConsumer(ctx context.Context, handler DoneEv
 	consumer, err := NewRabbitMQDoneEventConsumer(RabbitMQDoneEventConsumerOptions{
 		URL:              s.doneEventURL,
 		QueueName:        s.doneEventQueue,
+		QueueMaxLength:   s.doneEventQueueMaxLength,
+		QueueMessageTTL:  s.doneEventQueueMessageTTL,
 		Prefetch:         s.doneConsumePrefetch,
 		RetryMaxAttempts: s.doneConsumeRetryMaxAttempts,
 		RetryDelay:       s.doneConsumeRetryDelay,

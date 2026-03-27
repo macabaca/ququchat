@@ -51,7 +51,11 @@ func (r *defaultRuntime) Run(ctx context.Context, toolName string, input string,
 		if r.deps.MCPCallByQualifiedName == nil {
 			return "", errors.New("mcp tool is not configured")
 		}
-		return r.deps.MCPCallByQualifiedName(ctx, toolName, ParseMCPToolArguments(input))
+		args := ParseMCPToolArguments(input)
+		if err := validateKnownMCPToolArgs(toolName, args); err != nil {
+			return "", err
+		}
+		return r.deps.MCPCallByQualifiedName(ctx, toolName, args)
 	}
 	switch toolName {
 	case "search_rag":
@@ -95,6 +99,19 @@ func (r *defaultRuntime) Validate(toolName string, input string) *ValidationErro
 		return nil
 	}
 	if strings.Contains(toolName, ":") {
+		args, err := ParseActionInputJSONObject(input)
+		if err != nil {
+			return &ValidationError{
+				Message: "action.input 必须是 JSON 对象字符串",
+				Detail:  err.Error(),
+			}
+		}
+		if knownErr := validateKnownMCPToolArgs(toolName, args); knownErr != nil {
+			return &ValidationError{
+				Message: knownErr.Error(),
+				Detail:  "示例: {\"urls\":[\"https://example.com\"]}",
+			}
+		}
 		return nil
 	}
 	args, err := ParseActionInputJSONObject(input)
@@ -190,6 +207,38 @@ func ParseMCPToolArguments(raw string) map[string]any {
 	return map[string]any{
 		"input": trimmed,
 	}
+}
+
+func validateKnownMCPToolArgs(toolName string, args map[string]any) error {
+	normalized := strings.ToLower(strings.TrimSpace(toolName))
+	if normalized == "tavily:tavily_extract" || strings.HasSuffix(normalized, ":tavily_extract") {
+		urls, ok := args["urls"]
+		if !ok {
+			return errors.New("tavily_extract requires input.urls")
+		}
+		if !hasNonEmptyURLValues(urls) {
+			return errors.New("tavily_extract requires non-empty input.urls")
+		}
+	}
+	return nil
+}
+
+func hasNonEmptyURLValues(raw any) bool {
+	switch v := raw.(type) {
+	case []any:
+		for _, item := range v {
+			if strings.TrimSpace(fmt.Sprint(item)) != "" {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range v {
+			if strings.TrimSpace(item) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func timeNowRFC3339() string {

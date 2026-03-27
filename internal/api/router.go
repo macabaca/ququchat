@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -84,9 +85,17 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	files.POST("/multipart/abort", fileHandler.AbortMultipartUpload)
 
 	wsHandler := handler.NewWsHandler(db, hub, redisClient, taskService)
-	if err := wsHandler.StartTaskDoneConsumer(context.Background()); err != nil {
-		log.Printf("start done-event consumer failed: %v", err)
-	}
+	go func() {
+		for {
+			if err := wsHandler.StartTaskDoneConsumer(context.Background()); err != nil {
+				log.Printf("start done-event consumer failed: %v", err)
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			log.Printf("start done-event consumer ok")
+			return
+		}
+	}()
 	r.GET("/ws", middleware.JWTAuthFromHeaderOrQuery(authCfg.JWTSecret), wsHandler.Handle)
 
 	return r

@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 type PoolOptions struct {
 	URL             string
 	RequestQueue    string
+	MaxLength       int
+	MessageTTL      time.Duration
 	Provider        Provider
 	AttachmentSaver AttachmentSaver
 	Size            int
@@ -36,6 +39,8 @@ func NewPool(opts PoolOptions) (*Pool, error) {
 		worker, err := NewWorker(WorkerOptions{
 			URL:             opts.URL,
 			RequestQueue:    opts.RequestQueue,
+			MaxLength:       opts.MaxLength,
+			MessageTTL:      opts.MessageTTL,
 			Prefetch:        size,
 			Provider:        opts.Provider,
 			RateLimiter:     limiter,

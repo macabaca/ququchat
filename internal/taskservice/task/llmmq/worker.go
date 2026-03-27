@@ -20,6 +20,8 @@ type Provider interface {
 type WorkerOptions struct {
 	URL          string
 	RequestQueue string
+	MaxLength    int
+	MessageTTL   time.Duration
 	Prefetch     int
 	Provider     Provider
 	RateLimiter  *RateLimiter
@@ -85,7 +87,7 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		false,
 		false,
 		false,
-		nil,
+		resolveRequestQueueDeclareArgs(opts.MaxLength, opts.MessageTTL),
 	); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
@@ -123,6 +125,22 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 	}, nil
 }
 
+func resolveRequestQueueDeclareArgs(maxLength int, messageTTL time.Duration) amqp.Table {
+	args := amqp.Table{
+		"x-overflow": "reject-publish",
+	}
+	if maxLength > 0 {
+		args["x-max-length"] = int32(maxLength)
+	}
+	if messageTTL > 0 {
+		args["x-message-ttl"] = int32(messageTTL / time.Millisecond)
+	}
+	if len(args) == 1 {
+		return nil
+	}
+	return args
+}
+
 func (w *Worker) Start(ctx context.Context) error {
 	if w == nil || w.channel == nil || w.provider == nil {
 		return errors.New("llm worker is not initialized")
@@ -140,6 +158,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	log.Printf("[llm-worker] consumer started queue=%s tag=%s", strings.TrimSpace(w.requestQueue), strings.TrimSpace(w.consumerTag))
 	defer w.close()
 	go func() {
 		<-ctx.Done()
@@ -148,6 +167,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	for {
 		d, ok := <-deliveries
 		if !ok {
+			log.Printf("[llm-worker] delivery channel closed queue=%s tag=%s", strings.TrimSpace(w.requestQueue), strings.TrimSpace(w.consumerTag))
 			return nil
 		}
 		w.handleDelivery(d)
@@ -159,6 +179,12 @@ func (w *Worker) handleDelivery(d amqp.Delivery) {
 	response := ResponseMessage{}
 	var req RequestMessage
 	if err := json.Unmarshal(d.Body, &req); err != nil {
+		log.Printf("[llm-worker] invalid request body queue=%s message_id=%s correlation_id=%s err=%v",
+			strings.TrimSpace(w.requestQueue),
+			strings.TrimSpace(d.MessageId),
+			strings.TrimSpace(d.CorrelationId),
+			err,
+		)
 		response.Error = "invalid llm request message"
 		w.respondOrDeadLetter(opCtx, d, response, "invalid_llm_request_message")
 		return
@@ -180,12 +206,14 @@ func (w *Worker) handleDelivery(d amqp.Delivery) {
 		return
 	}
 	if err := w.rateLimiter.Wait(opCtx, prompt); err != nil {
+		log.Printf("[llm-worker] rate limiter failed request_id=%s queue=%s err=%v", requestID, strings.TrimSpace(w.requestQueue), err)
 		response.Error = err.Error()
 		w.respondOrDeadLetter(opCtx, d, response, "llm_rate_limit_wait_failed")
 		return
 	}
 	text, err := w.provider.Chat(opCtx, prompt)
 	if err != nil {
+		log.Printf("[llm-worker] provider chat failed request_id=%s err=%v", requestID, err)
 		response.Error = err.Error()
 	} else {
 		response.Text = strings.TrimSpace(text)
@@ -252,6 +280,13 @@ func (w *Worker) respondOrDeadLetter(ctx context.Context, d amqp.Delivery, respo
 				strings.TrimSpace(d.CorrelationId),
 			)
 		}
+		log.Printf("[llm-worker] response publish failed queue=%s message_id=%s correlation_id=%s reason=%s err=%v",
+			strings.TrimSpace(w.requestQueue),
+			strings.TrimSpace(d.MessageId),
+			strings.TrimSpace(d.CorrelationId),
+			dlqReason,
+			err,
+		)
 	}
 	_ = d.Ack(false)
 }

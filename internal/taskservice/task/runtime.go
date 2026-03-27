@@ -33,6 +33,8 @@ type RuntimeOptions struct {
 	QueueRabbitMQMaxLength           int
 	DoneEventRabbitMQURL             string
 	DoneEventQueueName               string
+	DoneEventQueueMaxLength          int
+	DoneEventQueueMessageTTL         time.Duration
 	DoneEventPublishRetryMaxAttempts int
 	DoneEventPublishRetryDelay       time.Duration
 	DoneEventConsumeRetryMaxAttempts int
@@ -45,6 +47,8 @@ type RuntimeOptions struct {
 	LLMTransport                     string
 	LLMMQURL                         string
 	LLMMQQueue                       string
+	LLMMQMaxLength                   int
+	LLMMQMessageTTL                  time.Duration
 	LLMMQTimeout                     time.Duration
 	LLMAPIKey                        string
 	LLMBaseURL                       string
@@ -53,6 +57,8 @@ type RuntimeOptions struct {
 	AIGCTransport                    string
 	AIGCMQURL                        string
 	AIGCMQQueue                      string
+	AIGCMQMaxLength                  int
+	AIGCMQMessageTTL                 time.Duration
 	AIGCMQTimeout                    time.Duration
 	EmbeddingProvider                EmbeddingProvider
 	VectorStore                      VectorStore
@@ -140,6 +146,9 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 		store = NewMemoryStore()
 	}
 	llmClient := opts.LLMClient
+	if llmClient != nil && strings.EqualFold(strings.TrimSpace(opts.LLMTransport), "rabbitmq") && strings.TrimSpace(opts.LLMMQQueue) != "" {
+		log.Printf("LLM 请求队列启动成功，queue=%s transport=rabbitmq", strings.TrimSpace(opts.LLMMQQueue))
+	}
 	if llmClient == nil {
 		if strings.EqualFold(strings.TrimSpace(opts.LLMTransport), "rabbitmq") &&
 			strings.TrimSpace(opts.LLMMQURL) != "" &&
@@ -147,10 +156,15 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 			client, err := llmmq.NewClient(llmmq.ClientOptions{
 				URL:             opts.LLMMQURL,
 				RequestQueue:    opts.LLMMQQueue,
+				MaxLength:       opts.LLMMQMaxLength,
+				MessageTTL:      opts.LLMMQMessageTTL,
 				ResponseTimeout: opts.LLMMQTimeout,
 			})
 			if err == nil {
 				llmClient = client
+				log.Printf("LLM 请求队列启动成功，queue=%s transport=rabbitmq", strings.TrimSpace(opts.LLMMQQueue))
+			} else {
+				log.Printf("LLM 请求队列启动失败，queue=%s transport=rabbitmq err=%v", strings.TrimSpace(opts.LLMMQQueue), err)
 			}
 		}
 		if llmClient == nil && strings.TrimSpace(opts.LLMAPIKey) != "" && strings.TrimSpace(opts.LLMBaseURL) != "" && strings.TrimSpace(opts.LLMModel) != "" {
@@ -165,6 +179,9 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 		}
 	}
 	aigcClient := opts.AIGCClient
+	if aigcClient != nil && strings.EqualFold(strings.TrimSpace(opts.AIGCTransport), "rabbitmq") && strings.TrimSpace(opts.AIGCMQQueue) != "" {
+		log.Printf("AIGC 请求队列启动成功，queue=%s transport=rabbitmq", strings.TrimSpace(opts.AIGCMQQueue))
+	}
 	if aigcClient == nil {
 		if strings.EqualFold(strings.TrimSpace(opts.AIGCTransport), "rabbitmq") &&
 			strings.TrimSpace(opts.AIGCMQURL) != "" &&
@@ -172,11 +189,18 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 			client, err := aigcmq.NewClient(aigcmq.ClientOptions{
 				URL:             opts.AIGCMQURL,
 				RequestQueue:    opts.AIGCMQQueue,
+				MaxLength:       opts.AIGCMQMaxLength,
+				MessageTTL:      opts.AIGCMQMessageTTL,
 				ResponseTimeout: opts.AIGCMQTimeout,
 			})
 			if err == nil {
 				aigcClient = client
+				log.Printf("AIGC 请求队列启动成功，queue=%s transport=rabbitmq", strings.TrimSpace(opts.AIGCMQQueue))
+			} else {
+				log.Printf("AIGC 请求队列启动失败，queue=%s transport=rabbitmq err=%v", strings.TrimSpace(opts.AIGCMQQueue), err)
 			}
+		} else if strings.EqualFold(strings.TrimSpace(opts.AIGCTransport), "rabbitmq") {
+			log.Printf("AIGC 请求队列启动失败，queue=%s transport=rabbitmq err=missing mq url or queue", strings.TrimSpace(opts.AIGCMQQueue))
 		}
 	}
 	mcpMultiClient := opts.MCPMultiClient

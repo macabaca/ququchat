@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 type ClientOptions struct {
 	URL             string
 	RequestQueue    string
+	MaxLength       int
+	MessageTTL      time.Duration
 	ResponseTimeout time.Duration
 }
 
@@ -52,7 +55,7 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		false,
 		false,
 		false,
-		nil,
+		resolveRequestQueueDeclareArgs(opts.MaxLength, opts.MessageTTL),
 	)
 	if err != nil {
 		_ = conn.Close()
@@ -102,6 +105,7 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 		return "", err
 	}
 	requestID := uuid.NewString()
+	startAt := time.Now()
 	body, err := json.Marshal(RequestMessage{
 		RequestID: requestID,
 		Prompt:    trimmedPrompt,
@@ -116,6 +120,7 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 		CorrelationId: requestID,
 		Timestamp:     time.Now(),
 	}); err != nil {
+		log.Printf("[llm-mq-client] publish request failed request_id=%s queue=%s err=%v", requestID, c.requestQueue, err)
 		return "", err
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, c.responseTimeout)
@@ -124,11 +129,13 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 		select {
 		case <-waitCtx.Done():
 			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				log.Printf("[llm-mq-client] response timeout request_id=%s queue=%s waited=%s", requestID, c.requestQueue, time.Since(startAt))
 				return "", errors.New("llm worker response timeout")
 			}
 			return "", waitCtx.Err()
 		case msg, ok := <-msgs:
 			if !ok {
+				log.Printf("[llm-mq-client] response channel closed request_id=%s queue=%s", requestID, c.requestQueue)
 				return "", errors.New("llm worker reply channel closed")
 			}
 			if strings.TrimSpace(msg.CorrelationId) != requestID {
@@ -136,9 +143,11 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 			}
 			var response ResponseMessage
 			if err := json.Unmarshal(msg.Body, &response); err != nil {
+				log.Printf("[llm-mq-client] response decode failed request_id=%s err=%v", requestID, err)
 				return "", err
 			}
 			if strings.TrimSpace(response.Error) != "" {
+				log.Printf("[llm-mq-client] response contains error request_id=%s err=%s", requestID, strings.TrimSpace(response.Error))
 				return "", errors.New(strings.TrimSpace(response.Error))
 			}
 			text := strings.TrimSpace(response.Text)

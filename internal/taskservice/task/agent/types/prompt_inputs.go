@@ -10,6 +10,7 @@ type CoordinatorPromptInput struct {
 	MaxSteps           int
 	OutlineText        string
 	CurrentTask        string
+	CurrentThought     string
 	Feedback           string
 	RecentMessageCount int
 }

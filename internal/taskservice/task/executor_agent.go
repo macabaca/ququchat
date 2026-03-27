@@ -394,11 +394,155 @@ func (e *DefaultExecutor) agentCallMCPToolByQualifiedName(ctx context.Context, q
 	if result == nil {
 		return "", nil
 	}
+	if businessErr := detectMCPBusinessError(result); businessErr != "" {
+		return "", errors.New(businessErr)
+	}
 	encoded, encodeErr := json.Marshal(result)
 	if encodeErr != nil {
 		return strings.TrimSpace(fmt.Sprint(result)), nil
 	}
 	return strings.TrimSpace(string(encoded)), nil
+}
+
+func detectMCPBusinessError(result any) string {
+	root := schemaAsMap(result)
+	if len(root) == 0 {
+		return ""
+	}
+	if readBoolValue(root, "is_error") || readBoolValue(root, "isError") {
+		msg := firstNonEmptyText(readStringValue(root, "error"), extractMCPErrorFromContent(root["content"]))
+		if msg == "" {
+			msg = "mcp tool returned business error"
+		}
+		return msg
+	}
+	message := extractMCPErrorFromContent(root["content"])
+	if message != "" {
+		return message
+	}
+	return ""
+}
+
+func extractMCPErrorFromContent(raw any) string {
+	items, ok := raw.([]any)
+	if !ok || len(items) == 0 {
+		return ""
+	}
+	for _, item := range items {
+		block := schemaAsMap(item)
+		if len(block) == 0 {
+			continue
+		}
+		text := strings.TrimSpace(readStringValue(block, "text"))
+		if text == "" {
+			continue
+		}
+		direct := parseMCPBusinessErrorText(text)
+		if direct != "" {
+			return direct
+		}
+	}
+	return ""
+}
+
+func parseMCPBusinessErrorText(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil || len(payload) == 0 {
+		return ""
+	}
+	errText := strings.TrimSpace(readStringValue(payload, "error"))
+	if errText != "" {
+		status := readIntValue(payload, "status")
+		if status > 0 {
+			return errText + " (status=" + strconv.Itoa(status) + ")"
+		}
+		return errText
+	}
+	if failed, ok := payload["failed_results"].([]any); ok && len(failed) > 0 {
+		results, _ := payload["results"].([]any)
+		if len(results) == 0 {
+			firstFailed := schemaAsMap(failed[0])
+			failedMsg := strings.TrimSpace(readStringValue(firstFailed, "error"))
+			if failedMsg != "" {
+				return failedMsg
+			}
+			return "mcp tool returned failed_results without successful results"
+		}
+	}
+	return ""
+}
+
+func readBoolValue(m map[string]any, key string) bool {
+	if len(m) == 0 {
+		return false
+	}
+	raw, ok := m[strings.TrimSpace(key)]
+	if !ok {
+		return false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		text := strings.ToLower(strings.TrimSpace(v))
+		return text == "true" || text == "1" || text == "yes"
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	}
+	return false
+}
+
+func readStringValue(m map[string]any, key string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	raw, ok := m[strings.TrimSpace(key)]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(raw))
+}
+
+func readIntValue(m map[string]any, key string) int {
+	if len(m) == 0 {
+		return 0
+	}
+	raw, ok := m[strings.TrimSpace(key)]
+	if !ok {
+		return 0
+	}
+	switch v := raw.(type) {
+	case int:
+		return v
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func formatAgentRAGSearchOutput(result Result) string {

@@ -14,6 +14,8 @@ import (
 type ClientOptions struct {
 	URL             string
 	RequestQueue    string
+	MaxLength       int
+	MessageTTL      time.Duration
 	ResponseTimeout time.Duration
 }
 
@@ -52,7 +54,7 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		false,
 		false,
 		false,
-		nil,
+		resolveRequestQueueDeclareArgs(opts.MaxLength, opts.MessageTTL),
 	)
 	if err != nil {
 		_ = conn.Close()

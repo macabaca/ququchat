@@ -12,6 +12,7 @@ type DomainState struct {
 	Outline            PlannerOutline
 	OutlineIndex       int
 	CurrentTask        string
+	CoordinatorThought string
 	CoordinatorRaw     string
 	FormattedRaw       string
 	Plan               Plan

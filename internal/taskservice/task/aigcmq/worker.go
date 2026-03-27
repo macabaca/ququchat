@@ -27,6 +27,8 @@ type AttachmentSaver interface {
 type WorkerOptions struct {
 	URL             string
 	RequestQueue    string
+	MaxLength       int
+	MessageTTL      time.Duration
 	Prefetch        int
 	Provider        Provider
 	RateLimiter     *RateLimiter
@@ -97,7 +99,7 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		false,
 		false,
 		false,
-		nil,
+		resolveRequestQueueDeclareArgs(opts.MaxLength, opts.MessageTTL),
 	); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
@@ -134,6 +136,22 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		rateLimiter:  opts.RateLimiter,
 		attachment:   opts.AttachmentSaver,
 	}, nil
+}
+
+func resolveRequestQueueDeclareArgs(maxLength int, messageTTL time.Duration) amqp.Table {
+	args := amqp.Table{
+		"x-overflow": "reject-publish",
+	}
+	if maxLength > 0 {
+		args["x-max-length"] = int32(maxLength)
+	}
+	if messageTTL > 0 {
+		args["x-message-ttl"] = int32(messageTTL / time.Millisecond)
+	}
+	if len(args) == 1 {
+		return nil
+	}
+	return args
 }
 
 func (w *Worker) Start(ctx context.Context) error {
