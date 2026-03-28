@@ -1,7 +1,7 @@
 # QuQuChat
 
 <p align="center">
-  <img src="./logo.png" alt="QuQuChat Logo" width="300" />
+  <img src="./logo.png" alt="QuQuChat Logo" width="400" />
 </p>
 
 QuQuChat 是一个聊天系统项目，包含：
