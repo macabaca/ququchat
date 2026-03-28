@@ -129,30 +129,7 @@ func enrichFinalAnswerWithObservedLinks(finalAnswer string, trace []agentmemory.
 		return trimmedFinal
 	}
 	rememberObservedURLsInStateFromTrace(state, trace)
-	observedURLs := collectObservedURLs(trace)
-	observedURLs = mergeUniqueURLs(observedURLs, listURLsFromState(state))
-	if len(observedURLs) == 0 {
-		return trimmedFinal
-	}
-	missing := make([]string, 0, len(observedURLs))
-	for _, u := range observedURLs {
-		if !strings.Contains(trimmedFinal, u) {
-			missing = append(missing, u)
-		}
-	}
-	if len(missing) == 0 {
-		return trimmedFinal
-	}
-	builder := strings.Builder{}
-	builder.WriteString(trimmedFinal)
-	builder.WriteString("\n\n可访问链接：")
-	for i, u := range missing {
-		builder.WriteString("\n")
-		builder.WriteString(strconv.Itoa(i + 1))
-		builder.WriteString(". ")
-		builder.WriteString(u)
-	}
-	return strings.TrimSpace(builder.String())
+	return trimmedFinal
 }
 
 func collectObservedURLs(trace []agentmemory.Observation) []string {

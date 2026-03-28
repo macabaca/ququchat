@@ -16,11 +16,9 @@ type Input struct {
 }
 
 type ToolSpec struct {
-	Name           string
-	Purpose        string
-	Usage          string
-	InputGuideline string
-	Aliases        []string
+	Name        string
+	Description string
+	Parameters  map[string]any
 }
 
 type SchemaField struct {

@@ -32,13 +32,14 @@ type RecallContext struct {
 }
 
 type Observation struct {
-	Step   int
-	Role   string
-	Tool   string
-	Input  string
-	Output string
-	Status string
-	Error  string
+	Step      int
+	Role      string
+	Tool      string
+	Input     string
+	RawOutput string
+	Output    string
+	Status    string
+	Error     string
 }
 
 type Result struct {
@@ -134,13 +135,14 @@ func (s *defaultSession) Recall(_ context.Context, req RecallRequest) (RecallCon
 
 func (s *defaultSession) AppendObservation(obs Observation) {
 	normalized := Observation{
-		Step:   obs.Step,
-		Role:   strings.TrimSpace(obs.Role),
-		Tool:   strings.TrimSpace(obs.Tool),
-		Input:  strings.TrimSpace(obs.Input),
-		Output: strings.TrimSpace(obs.Output),
-		Status: strings.TrimSpace(obs.Status),
-		Error:  strings.TrimSpace(obs.Error),
+		Step:      obs.Step,
+		Role:      strings.TrimSpace(obs.Role),
+		Tool:      strings.TrimSpace(obs.Tool),
+		Input:     strings.TrimSpace(obs.Input),
+		RawOutput: strings.TrimSpace(obs.RawOutput),
+		Output:    strings.TrimSpace(obs.Output),
+		Status:    strings.TrimSpace(obs.Status),
+		Error:     strings.TrimSpace(obs.Error),
 	}
 	if normalized.Status == "" {
 		normalized.Status = "succeeded"
@@ -276,6 +278,10 @@ func formatTrace(observations []Observation) string {
 			builder.WriteString(", output=")
 			builder.WriteString(ShortText(obs.Output, 160))
 		}
+		if strings.TrimSpace(obs.RawOutput) != "" {
+			builder.WriteString(", raw_output=")
+			builder.WriteString(ShortText(obs.RawOutput, 160))
+		}
 		if strings.TrimSpace(obs.Error) != "" {
 			builder.WriteString(", error=")
 			builder.WriteString(ShortText(obs.Error, 160))
@@ -308,6 +314,10 @@ func BuildTraceSnippet(observations []Observation, max int) string {
 		if strings.TrimSpace(obs.Output) != "" {
 			builder.WriteString(", output=")
 			builder.WriteString(ShortText(strings.TrimSpace(obs.Output), 120))
+		}
+		if strings.TrimSpace(obs.RawOutput) != "" {
+			builder.WriteString(", raw_output=")
+			builder.WriteString(ShortText(strings.TrimSpace(obs.RawOutput), 120))
 		}
 		if strings.TrimSpace(obs.Error) != "" {
 			builder.WriteString(", error=")

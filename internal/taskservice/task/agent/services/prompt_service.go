@@ -27,11 +27,6 @@ func HasTavilyTool(specs []agenttypes.ToolSpec) bool {
 		if strings.Contains(strings.ToLower(strings.TrimSpace(spec.Name)), "tavily") {
 			return true
 		}
-		for _, alias := range spec.Aliases {
-			if strings.Contains(strings.ToLower(strings.TrimSpace(alias)), "tavily") {
-				return true
-			}
-		}
 	}
 	return false
 }
@@ -178,12 +173,67 @@ func BuildCoordinatorActPrompt(input agenttypes.CoordinatorPromptInput) string {
 	builder.WriteString("最近消息条数：")
 	builder.WriteString(strconv.Itoa(input.RecentMessageCount))
 	builder.WriteString("\n")
-	builder.WriteString("输出格式要求:\n")
-	builder.WriteString("- 只输出一个 JSON 对象。\n")
-	builder.WriteString("- JSON 必须是 {\"tool\":\"工具名\",\"input\":\"JSON对象字符串\"}。\n")
-	builder.WriteString("- 不能输出 thought，不能输出解释文字。\n")
-	builder.WriteString("输出示例:\n")
-	builder.WriteString("{\"tool\":\"search_rag\",\"input\":\"{\\\"query\\\":\\\"用户当前问题关键词\\\"}\"}\n")
+	if strings.TrimSpace(input.FunctionToolsJSON) != "" {
+		builder.WriteString("Function Calling 工具定义(JSON):\n")
+		builder.WriteString(strings.TrimSpace(input.FunctionToolsJSON))
+		builder.WriteString("\n")
+	}
+	builder.WriteString("输出要求:\n")
+	builder.WriteString("- 优先通过原生 Function Calling 返回工具调用，不要在 content 里输出解释文本。\n")
+	builder.WriteString("- 若当前模型或网关不支持原生 Function Calling，则退化为只输出一个 JSON 对象。\n")
+	builder.WriteString("- 退化 JSON 格式必须是 {\"tool\":\"工具名\",\"input\":\"JSON对象字符串\"}。\n")
+	builder.WriteString("- 严禁输出 markdown 代码块与多余字段。\n")
+	return builder.String()
+}
+
+func BuildToolResponsePrompt(input agenttypes.ToolResponsePromptInput) string {
+	builder := strings.Builder{}
+	builder.WriteString("你是工具结果整合助手。请根据工具调用信息，生成可直接回复用户的 Final Response。\n")
+	if strings.TrimSpace(input.RealtimeGuidance) != "" {
+		builder.WriteString(strings.TrimSpace(input.RealtimeGuidance))
+		builder.WriteString("\n")
+	}
+	builder.WriteString("用户原始问题：")
+	builder.WriteString(strings.TrimSpace(input.Goal))
+	builder.WriteString("\n")
+	builder.WriteString("Assistant tool call：")
+	builder.WriteString("{\"tool\":\"")
+	builder.WriteString(strings.TrimSpace(input.ToolName))
+	builder.WriteString("\",\"input\":")
+	builder.WriteString(strings.TrimSpace(input.ToolInput))
+	builder.WriteString("}\n")
+	builder.WriteString("Tool 返回原始结果：")
+	builder.WriteString(strings.TrimSpace(input.ToolRawOutput))
+	builder.WriteString("\n")
+	builder.WriteString("输出要求：\n")
+	builder.WriteString("- 仅输出给用户的最终回复正文，不要 JSON，不要 markdown，不要额外解释。\n")
+	builder.WriteString("- 必须使用中文表达，内容准确引用工具结果。\n")
+	builder.WriteString("- 若工具结果不足以完整回答，明确说明已知信息与缺失信息。\n")
+	return builder.String()
+}
+
+func BuildTerminationGuardPrompt(input agenttypes.TerminationGuardPromptInput) string {
+	builder := strings.Builder{}
+	builder.WriteString("你是Termination Guard（收敛守卫）。请判断当前信息是否已经足够直接回答用户。\n")
+	builder.WriteString("用户目标：")
+	builder.WriteString(strings.TrimSpace(input.Goal))
+	builder.WriteString("\n")
+	builder.WriteString("最近消息（节选）：\n")
+	builder.WriteString(strings.TrimSpace(input.RecentMessagesText))
+	builder.WriteString("\n")
+	builder.WriteString("执行轨迹（节选）：\n")
+	builder.WriteString(strings.TrimSpace(input.TraceText))
+	builder.WriteString("\n")
+	builder.WriteString("最近工具原始输出：")
+	builder.WriteString(strings.TrimSpace(input.ToolOutputRaw))
+	builder.WriteString("\n")
+	builder.WriteString("最近工具总结输出：")
+	builder.WriteString(strings.TrimSpace(input.ToolOutputSummary))
+	builder.WriteString("\n")
+	builder.WriteString("输出要求：\n")
+	builder.WriteString("- 只输出一个JSON对象，不要markdown，不要额外解释。\n")
+	builder.WriteString("- JSON格式: {\"can_finish\":true|false,\"reason\":\"...\"}\n")
+	builder.WriteString("- 仅当信息已足够直接回答目标时 can_finish=true，否则必须为 false。\n")
 	return builder.String()
 }
 

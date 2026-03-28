@@ -1,45 +1,79 @@
 package agent
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 )
 
 var toolSpecs = []ToolSpec{
 	{
-		Name:           "search_rag",
-		Purpose:        "检索历史消息记忆（历史消息）",
-		Usage:          "action.tool=search_rag",
-		InputGuideline: "常规场景优先使用该工具；action.input 必须是 JSON 对象字符串。参数：query（string，必填，检索关键词）",
-		Aliases:        []string{"rag_search", "searchrag"},
+		Name:        "search_rag",
+		Description: "检索历史消息记忆（历史消息）",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "检索关键词",
+				},
+			},
+			"required":             []string{"query"},
+			"additionalProperties": false,
+		},
 	},
 	{
-		Name:           "generate_image",
-		Purpose:        "根据提示词生成图片并返回 attachment_id",
-		Usage:          "action.tool=generate_image",
-		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：prompt（string，必填，文生图提示词）；仅接受 prompt，其它参数由系统固定",
-		Aliases:        []string{"aigc", "gen_image", "image_generate"},
+		Name:        "generate_image",
+		Description: "根据提示词生成图片并返回 attachment_id",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "文生图提示词",
+				},
+			},
+			"required":             []string{"prompt"},
+			"additionalProperties": false,
+		},
 	},
 	{
-		Name:           "get_current_time",
-		Purpose:        "获取当前系统时间",
-		Usage:          "action.tool=get_current_time",
-		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：无（传 {} 即可）",
-		Aliases:        []string{"current_time", "now", "time_now"},
+		Name:        "get_current_time",
+		Description: "获取当前系统时间",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		},
 	},
 	{
-		Name:           "replan",
-		Purpose:        "重新规划后续小任务",
-		Usage:          "action.tool=replan",
-		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：reason（string，可选，重规划原因）",
-		Aliases:        []string{"re_plan", "replanner"},
+		Name:        "replan",
+		Description: "重新规划后续小任务",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"reason": map[string]any{
+					"type":        "string",
+					"description": "重规划原因",
+				},
+			},
+			"additionalProperties": false,
+		},
 	},
 	{
-		Name:           "finish",
-		Purpose:        "结束任务并输出最终答案",
-		Usage:          "action.tool=finish",
-		InputGuideline: "action.input 必须是 JSON 对象字符串。参数：final（string，必填，最终答案）",
-		Aliases:        []string{"done", "final", "finalize"},
+		Name:        "finish",
+		Description: "结束任务并输出最终答案",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"final": map[string]any{
+					"type":        "string",
+					"description": "最终答案正文",
+				},
+			},
+			"required":             []string{"final"},
+			"additionalProperties": false,
+		},
 	},
 }
 
@@ -126,29 +160,24 @@ func normalizeToolSpecs(specs []ToolSpec) []ToolSpec {
 		if name == "" {
 			continue
 		}
-		aliases := make([]string, 0, len(spec.Aliases))
-		seenAlias := make(map[string]struct{}, len(spec.Aliases))
-		for _, alias := range spec.Aliases {
-			trimmed := strings.TrimSpace(alias)
-			if trimmed == "" {
-				continue
-			}
-			key := strings.ToLower(trimmed)
-			if _, exists := seenAlias[key]; exists {
-				continue
-			}
-			seenAlias[key] = struct{}{}
-			aliases = append(aliases, trimmed)
-		}
 		next = append(next, ToolSpec{
-			Name:           name,
-			Purpose:        strings.TrimSpace(spec.Purpose),
-			Usage:          strings.TrimSpace(spec.Usage),
-			InputGuideline: strings.TrimSpace(spec.InputGuideline),
-			Aliases:        aliases,
+			Name:        name,
+			Description: strings.TrimSpace(spec.Description),
+			Parameters:  cloneToolParameters(spec.Parameters),
 		})
 	}
 	return next
+}
+
+func cloneToolParameters(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func getCoordinatorSchemaConfig() CoordinatorSchemaConfig {
@@ -167,13 +196,7 @@ func buildCoordinatorToolSectionFromSpecs(specs []ToolSpec) string {
 	for i, spec := range specs {
 		builder.WriteString(strconv.Itoa(i + 1))
 		builder.WriteString(") ")
-		builder.WriteString(spec.Name)
-		builder.WriteString(": ")
-		builder.WriteString(spec.Purpose)
-		builder.WriteString("；")
-		builder.WriteString(spec.InputGuideline)
-		builder.WriteString("；")
-		builder.WriteString(spec.Usage)
+		builder.WriteString(formatFunctionToolSpec(spec))
 		builder.WriteString("\n")
 	}
 	return builder.String()
@@ -187,18 +210,8 @@ func buildFormatCheckerToolSectionFromSpecs(specs []ToolSpec) string {
 	builder := strings.Builder{}
 	for i, spec := range specs {
 		builder.WriteString(strconv.Itoa(i + 1))
-		builder.WriteString(") name=")
-		builder.WriteString(spec.Name)
-		builder.WriteString(", purpose=")
-		builder.WriteString(spec.Purpose)
-		builder.WriteString(", usage=")
-		builder.WriteString(spec.Usage)
-		builder.WriteString(", input_rule=")
-		builder.WriteString(spec.InputGuideline)
-		if len(spec.Aliases) > 0 {
-			builder.WriteString(", aliases=")
-			builder.WriteString(strings.Join(spec.Aliases, "/"))
-		}
+		builder.WriteString(") ")
+		builder.WriteString(formatFunctionToolSpec(spec))
 		builder.WriteString("\n")
 	}
 	return builder.String()
@@ -366,19 +379,27 @@ func normalizeToolFromSpecs(specs []ToolSpec, raw string) string {
 			if normalized == strings.ToLower(strings.TrimSpace(spec.Name)) {
 				return strings.TrimSpace(spec.Name)
 			}
-			for _, alias := range spec.Aliases {
-				if normalized == strings.ToLower(strings.TrimSpace(alias)) {
-					return strings.TrimSpace(spec.Name)
-				}
-			}
-		}
-	}
-	for _, spec := range specs {
-		for _, alias := range spec.Aliases {
-			if tool == strings.ToLower(strings.TrimSpace(alias)) {
-				return strings.TrimSpace(spec.Name)
-			}
 		}
 	}
 	return ""
+}
+
+func formatFunctionToolSpec(spec ToolSpec) string {
+	payload := map[string]any{
+		"name":        strings.TrimSpace(spec.Name),
+		"description": strings.TrimSpace(spec.Description),
+		"parameters":  cloneToolParameters(spec.Parameters),
+	}
+	if len(payload["parameters"].(map[string]any)) == 0 {
+		payload["parameters"] = map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": true,
+		}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return strings.TrimSpace(spec.Name)
+	}
+	return strings.TrimSpace(string(data))
 }

@@ -1,5 +1,9 @@
 # QuQuChat
 
+<p align="center">
+  <img src="./logo.png" alt="QuQuChat Logo" width="300" />
+</p>
+
 QuQuChat 是一个聊天系统项目，包含：
 - Go 后端 API 服务（`cmd/main.go`）
 - Go 异步任务服务（`cmd/taskservice/main.go`）

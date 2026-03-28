@@ -422,18 +422,6 @@ func normalizeToolFromSpecs(specs []agenttypes.ToolSpec, raw string) string {
 			if normalized == strings.ToLower(strings.TrimSpace(spec.Name)) {
 				return strings.TrimSpace(spec.Name)
 			}
-			for _, alias := range spec.Aliases {
-				if normalized == strings.ToLower(strings.TrimSpace(alias)) {
-					return strings.TrimSpace(spec.Name)
-				}
-			}
-		}
-	}
-	for _, spec := range specs {
-		for _, alias := range spec.Aliases {
-			if tool == strings.ToLower(strings.TrimSpace(alias)) {
-				return strings.TrimSpace(spec.Name)
-			}
 		}
 	}
 	return ""

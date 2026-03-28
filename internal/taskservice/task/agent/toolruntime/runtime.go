@@ -34,9 +34,112 @@ type Runtime interface {
 	Validate(toolName string, input string) *ValidationError
 }
 
+type ToolDescriptor struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
+
+type FunctionToolDefinition struct {
+	Type     string                 `json:"type"`
+	Function FunctionDefinitionBody `json:"function"`
+}
+
+type FunctionDefinitionBody struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
 type defaultRuntime struct {
 	cfg  Config
 	deps Deps
+}
+
+var localFunctionToolDefinitions = map[string]FunctionToolDefinition{
+	"search_rag": {
+		Type: "function",
+		Function: FunctionDefinitionBody{
+			Name:        "search_rag",
+			Description: "检索历史消息记忆（历史消息）",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "检索关键词",
+					},
+				},
+				"required":             []string{"query"},
+				"additionalProperties": false,
+			},
+		},
+	},
+	"generate_image": {
+		Type: "function",
+		Function: FunctionDefinitionBody{
+			Name:        "generate_image",
+			Description: "根据提示词生成图片并返回 attachment_id",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt": map[string]any{
+						"type":        "string",
+						"description": "文生图提示词",
+					},
+				},
+				"required":             []string{"prompt"},
+				"additionalProperties": false,
+			},
+		},
+	},
+	"get_current_time": {
+		Type: "function",
+		Function: FunctionDefinitionBody{
+			Name:        "get_current_time",
+			Description: "获取当前系统时间",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+		},
+	},
+	"replan": {
+		Type: "function",
+		Function: FunctionDefinitionBody{
+			Name:        "replan",
+			Description: "重新规划后续小任务",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "重规划原因",
+					},
+				},
+				"additionalProperties": false,
+			},
+		},
+	},
+	"finish": {
+		Type: "function",
+		Function: FunctionDefinitionBody{
+			Name:        "finish",
+			Description: "结束任务并输出最终答案",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"final": map[string]any{
+						"type":        "string",
+						"description": "最终答案正文",
+					},
+				},
+				"required":             []string{"final"},
+				"additionalProperties": false,
+			},
+		},
+	},
 }
 
 func New(cfg Config, deps Deps) Runtime {
@@ -206,6 +309,102 @@ func ParseMCPToolArguments(raw string) map[string]any {
 	}
 	return map[string]any{
 		"input": trimmed,
+	}
+}
+
+func BuildFunctionToolDefinitions(descriptors []ToolDescriptor) []FunctionToolDefinition {
+	tools := make([]FunctionToolDefinition, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		name := strings.TrimSpace(descriptor.Name)
+		if name == "" {
+			continue
+		}
+		description := strings.TrimSpace(descriptor.Description)
+		if description == "" {
+			if localDef, ok := localFunctionToolDefinitions[strings.ToLower(name)]; ok {
+				description = strings.TrimSpace(localDef.Function.Description)
+			}
+		}
+		if description == "" {
+			description = "调用工具 " + name
+		}
+		tools = append(tools, FunctionToolDefinition{
+			Type: "function",
+			Function: FunctionDefinitionBody{
+				Name:        name,
+				Description: description,
+				Parameters:  functionParametersSchema(name, descriptor.Parameters),
+			},
+		})
+	}
+	return tools
+}
+
+func BuildFunctionToolDefinitionsJSON(descriptors []ToolDescriptor) string {
+	tools := BuildFunctionToolDefinitions(descriptors)
+	if len(tools) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(tools)
+	if err != nil {
+		return "[]"
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func functionParametersSchema(toolName string, configured map[string]any) map[string]any {
+	if len(configured) > 0 {
+		return cloneSchemaMap(configured)
+	}
+	normalized := strings.ToLower(strings.TrimSpace(toolName))
+	if localDef, ok := localFunctionToolDefinitions[normalized]; ok {
+		return cloneSchemaMap(localDef.Function.Parameters)
+	}
+	if strings.Contains(normalized, ":") {
+		return mcpFunctionParametersSchema(normalized)
+	}
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"additionalProperties": true,
+	}
+}
+
+func cloneSchemaMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": true,
+		}
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func mcpFunctionParametersSchema(normalizedToolName string) map[string]any {
+	if normalizedToolName == "tavily:tavily_extract" || strings.HasSuffix(normalizedToolName, ":tavily_extract") {
+		return map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"urls": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "string",
+					},
+					"description": "要抽取内容的 URL 列表",
+				},
+			},
+			"required": []string{"urls"},
+		}
+	}
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"additionalProperties": true,
 	}
 }
 
