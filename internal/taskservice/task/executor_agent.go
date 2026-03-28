@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +48,10 @@ func (e *DefaultExecutor) executeAgent(ctx context.Context, t *Task) (Result, er
 	if strings.TrimSpace(memory) != "" {
 		payload["memory"] = strings.TrimSpace(memory)
 	}
+	accessibleLinks := extractAccessibleLinkMap(final)
+	if len(accessibleLinks) > 0 {
+		payload["accessible_links"] = accessibleLinks
+	}
 	attachmentIDs := extractAIGCAttachmentIDs(text)
 	if len(attachmentIDs) > 0 {
 		payload["aigc_attachment_ids"] = attachmentIDs
@@ -56,6 +61,40 @@ func (e *DefaultExecutor) executeAgent(ctx context.Context, t *Task) (Result, er
 		Final:   stringPtr(strings.TrimSpace(final)),
 		Payload: payload,
 	}, nil
+}
+
+var accessibleURLPattern = regexp.MustCompile(`https?://[^\s<>"'\]\)]+`)
+
+func extractAccessibleLinkMap(text string) map[string]string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
+	}
+	matches := accessibleURLPattern.FindAllString(trimmed, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	ordered := make([]string, 0, len(matches))
+	for _, raw := range matches {
+		url := strings.TrimSpace(strings.TrimRight(raw, ".,;:!?，。；：！？）]】》」\"'"))
+		if url == "" {
+			continue
+		}
+		if _, ok := seen[url]; ok {
+			continue
+		}
+		seen[url] = struct{}{}
+		ordered = append(ordered, url)
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(ordered))
+	for i, url := range ordered {
+		result["URL_"+strconv.Itoa(i+1)] = url
+	}
+	return result
 }
 
 func extractAIGCAttachmentIDs(text string) []string {
@@ -206,19 +245,42 @@ func routedMCPToolToSpec(routed mcpclient.RoutedTool) (taskagent.ToolSpec, bool)
 	if qualifiedName == "" {
 		return taskagent.ToolSpec{}, false
 	}
-	purpose := "远程 MCP 工具"
+	description := resolveMCPToolDescription(routed, qualifiedName)
+	parameters := map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"additionalProperties": true,
+	}
 	if routed.Tool != nil {
-		desc := strings.TrimSpace(fmt.Sprint(routed.Tool.Description))
-		if desc != "" {
-			purpose = desc
+		schema := schemaAsMap(routed.Tool.InputSchema)
+		if len(schema) > 0 {
+			parameters = schema
 		}
 	}
 	return taskagent.ToolSpec{
-		Name:           qualifiedName,
-		Purpose:        purpose,
-		Usage:          "action.tool=" + qualifiedName,
-		InputGuideline: buildMCPInputGuideline(routed),
+		Name:        qualifiedName,
+		Description: description,
+		Parameters:  parameters,
 	}, true
+}
+
+func resolveMCPToolDescription(routed mcpclient.RoutedTool, qualifiedName string) string {
+	if routed.Tool != nil {
+		desc := strings.TrimSpace(fmt.Sprint(routed.Tool.Description))
+		if desc != "" && desc != "<nil>" {
+			return desc
+		}
+		schema := schemaAsMap(routed.Tool.InputSchema)
+		if len(schema) > 0 {
+			if value := strings.TrimSpace(fmt.Sprint(schema["description"])); value != "" && value != "<nil>" {
+				return value
+			}
+			if value := strings.TrimSpace(fmt.Sprint(schema["title"])); value != "" && value != "<nil>" {
+				return value
+			}
+		}
+	}
+	return "MCP 工具 " + qualifiedName
 }
 
 func buildMCPInputGuideline(routed mcpclient.RoutedTool) string {

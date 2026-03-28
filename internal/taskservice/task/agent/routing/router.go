@@ -253,6 +253,8 @@ func snapshotState(state *agenttypes.State) map[string]any {
 		"tool_name":            state.ToolName,
 		"action_input":         state.ActionInput,
 		"tool_output":          state.ToolOutput,
+		"tool_output_raw":      state.ToolOutputRaw,
+		"tool_output_summary":  state.ToolOutput,
 		"tool_error":           state.ToolError,
 		"final_answer":         state.FinalAnswer,
 		"final_review":         state.FinalReview,

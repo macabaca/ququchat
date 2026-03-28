@@ -104,6 +104,7 @@ func RunCoordinatorThinkNode(ctx context.Context, client ChatClient, state *Stat
 	state.ToolName = ""
 	state.ActionInput = ""
 	state.ToolOutput = ""
+	state.ToolOutputRaw = ""
 	state.ToolError = ""
 	return "coordinator.think_done", nil
 }

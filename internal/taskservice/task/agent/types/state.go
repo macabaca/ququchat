@@ -19,6 +19,7 @@ type DomainState struct {
 	ToolName           string
 	ActionInput        string
 	ToolOutput         string
+	ToolOutputRaw      string
 	ToolError          string
 	FinalAnswer        string
 	FinalReview        FinalReviewResult

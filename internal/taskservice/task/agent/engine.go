@@ -119,6 +119,15 @@ func newRoutingService(client ChatClient) *agentrouting.Service {
 			agentrouting.NewFuncNode("executor", func(ctx context.Context, state *State) (string, error) {
 				return RunExecutorNode(ctx, state)
 			}),
+			agentrouting.NewFuncNode("tool_response", func(ctx context.Context, state *State) (string, error) {
+				return RunToolResponseNode(ctx, client, state)
+			}),
+			agentrouting.NewFuncNode("termination_guard", func(ctx context.Context, state *State) (string, error) {
+				return RunTerminationGuardNode(ctx, client, state)
+			}),
+			agentrouting.NewFuncNode("final_think", func(ctx context.Context, state *State) (string, error) {
+				return RunFinalThinkNode(ctx, client, state)
+			}),
 			agentrouting.NewFuncNode("final_judge", func(ctx context.Context, state *State) (string, error) {
 				return RunFinalJudgeNode(ctx, client, state)
 			}),
@@ -126,11 +135,14 @@ func newRoutingService(client ChatClient) *agentrouting.Service {
 		[]agentrouting.Transition{
 			{From: "planner", Event: "planner.done", To: "coordinator_think"},
 			{From: "coordinator_think", Event: "coordinator.think_done", To: "coordinator_act"},
-			{From: "coordinator_act", Event: "coordinator.act_done", To: "formatter"},
-			{From: "formatter", Event: "formatter.done", To: "validator"},
-			{From: "validator", Event: "validator.done", To: "executor"},
-			{From: "validator", Event: "validator.retry", To: "coordinator_think"},
-			{From: "executor", Event: "executor.done", To: "coordinator_think"},
+			{From: "coordinator_act", Event: "coordinator.act_done", To: "executor"},
+			{From: "executor", Event: "executor.done_mcp", To: "tool_response"},
+			{From: "executor", Event: "executor.done_local", To: "termination_guard"},
+			{From: "tool_response", Event: "tool_response.done", To: "termination_guard"},
+			{From: "termination_guard", Event: "termination_guard.can_finish", To: "final_think"},
+			{From: "termination_guard", Event: "termination_guard.continue", To: "coordinator_think"},
+			{From: "final_think", Event: "final_think.done", To: "final_judge"},
+			{From: "final_think", Event: "final_think.retry", To: "coordinator_think"},
 			{From: "executor", Event: "executor.failed", To: "coordinator_think"},
 			{From: "executor", Event: "executor.finish", To: "final_judge"},
 			{From: "executor", Event: "executor.replan", To: "planner"},

@@ -42,6 +42,7 @@ func RunExecutorNode(ctx context.Context, state *State) (next string, err error)
 		record.Status = "failed"
 		record.Error = toolErr.Error()
 		state.ToolOutput = ""
+		state.ToolOutputRaw = ""
 		state.ToolError = toolErr.Error()
 		if state.MemorySession != nil {
 			state.MemorySession.AppendObservation(record)
@@ -51,7 +52,7 @@ func RunExecutorNode(ctx context.Context, state *State) (next string, err error)
 	record.Status = "succeeded"
 	record.Output = toolOutput
 	rememberObservedURLsInState(state, toolOutput)
-	state.ToolOutput = toolOutput
+	state.ToolOutputRaw = toolOutput
 	state.ToolError = ""
 	if state.MemorySession != nil {
 		state.MemorySession.AppendObservation(record)
@@ -59,5 +60,10 @@ func RunExecutorNode(ctx context.Context, state *State) (next string, err error)
 	if state.OutlineIndex < len(state.Outline.Steps)-1 {
 		state.OutlineIndex++
 	}
-	return "executor.done", nil
+	if strings.Contains(toolName, ":") {
+		state.ToolOutput = toolOutput
+		return "executor.done_mcp", nil
+	}
+	state.ToolOutput = state.ToolOutputRaw
+	return "executor.done_local", nil
 }
