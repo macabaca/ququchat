@@ -13,29 +13,36 @@ import (
 	agentservices "ququchat/internal/taskservice/task/agent/services"
 )
 
-func generatePlannerOutline(ctx context.Context, client ChatClient, goal string, recentMessages []string, maxSteps int, reason string, currentTask string, specs []ToolSpec) ([]plannerTask, error) {
+func generatePlannerOutline(ctx context.Context, client ChatClient, goal string, recentMessages []string, maxSteps int, reason string, currentTask string, specs []ToolSpec) ([]plannerTask, agentmemory.TokenUsage, error) {
 	feedback := ""
+	totalUsage := agentmemory.TokenUsage{}
 	for attempt := 1; attempt <= roleRetryLimit; attempt++ {
-		raw, err := client.Chat(ctx, buildPlannerPrompt(goal, recentMessages, maxSteps, reason, currentTask, feedback, specs))
+		raw, usage, err := chatWithUsage(ctx, client, buildPlannerPrompt(goal, recentMessages, maxSteps, reason, currentTask, feedback, specs))
+		totalUsage.PromptTokens += usage.PromptTokens
+		totalUsage.CompletionTokens += usage.CompletionTokens
+		totalUsage.TotalTokens += usage.TotalTokens
 		if err != nil {
-			return nil, err
+			return nil, totalUsage, err
 		}
 		candidateRaw := strings.TrimSpace(raw)
 		formatterPrompt := buildPlannerJSONFormatterPrompt(raw, specs)
-		formatterRaw, formatterErr := client.Chat(ctx, formatterPrompt)
+		formatterRaw, formatterUsage, formatterErr := chatWithUsage(ctx, client, formatterPrompt)
+		totalUsage.PromptTokens += formatterUsage.PromptTokens
+		totalUsage.CompletionTokens += formatterUsage.CompletionTokens
+		totalUsage.TotalTokens += formatterUsage.TotalTokens
 		if formatterErr == nil && strings.TrimSpace(formatterRaw) != "" {
 			candidateRaw = strings.TrimSpace(formatterRaw)
 		}
 		steps, _, issues := validatePlannerOutlineOutput(candidateRaw, maxSteps, specs)
 		if len(issues) == 0 {
-			return steps, nil
+			return steps, totalUsage, nil
 		}
 		feedback = buildPlannerValidationRetryFeedback(feedback, issues, specs)
 		if attempt == roleRetryLimit {
-			return nil, fmt.Errorf("planner输出格式连续校验失败: %s", agentservices.JoinValidationIssueTexts(issues, "；"))
+			return nil, totalUsage, fmt.Errorf("planner输出格式连续校验失败: %s", agentservices.JoinValidationIssueTexts(issues, "；"))
 		}
 	}
-	return nil, errors.New("planner输出未通过规则校验")
+	return nil, totalUsage, errors.New("planner输出未通过规则校验")
 }
 
 func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reason string, currentTask string, feedback string, specs []ToolSpec) string {

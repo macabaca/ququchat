@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	agentmemory "ququchat/internal/taskservice/task/agent/memory"
 )
@@ -31,12 +32,15 @@ func RunExecutorNode(ctx context.Context, state *State) (next string, err error)
 	if toolName == "replan" {
 		return "executor.replan", nil
 	}
+	startAt := time.Now()
 	toolOutput, toolErr := state.ToolRuntime.Run(ctx, toolName, actionInput, strings.TrimSpace(state.RoomID))
+	durationMs := time.Since(startAt).Milliseconds()
 	record := agentmemory.Observation{
-		Step:  state.Step,
-		Role:  "Executor",
-		Tool:  toolName,
-		Input: actionInput,
+		Step:       state.Step,
+		Role:       "Executor",
+		Tool:       toolName,
+		Input:      actionInput,
+		DurationMs: durationMs,
 	}
 	if toolErr != nil {
 		record.Status = "failed"

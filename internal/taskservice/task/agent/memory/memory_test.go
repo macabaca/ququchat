@@ -100,3 +100,26 @@ func TestNormalizeRecentMessages(t *testing.T) {
 		t.Fatalf("unexpected normalized messages: %#v", normalized)
 	}
 }
+
+func TestTraceContainsTokenUsageAndAutoFillsTotal(t *testing.T) {
+	session := NewFacade().NewSession(SessionInput{})
+	session.AppendObservation(Observation{
+		Step:             1,
+		Role:             "CoordinatorThink",
+		Tool:             "think",
+		PromptTokens:     12,
+		CompletionTokens: 8,
+		TotalTokens:      0,
+		Status:           "succeeded",
+	})
+	result := session.Finalize("ok")
+	if !strings.Contains(result.MemoryText, "total_tokens=20") {
+		t.Fatalf("unexpected memory text: %q", result.MemoryText)
+	}
+	if !strings.Contains(result.MemoryText, "prompt_tokens=12") {
+		t.Fatalf("unexpected memory text: %q", result.MemoryText)
+	}
+	if !strings.Contains(result.MemoryText, "completion_tokens=8") {
+		t.Fatalf("unexpected memory text: %q", result.MemoryText)
+	}
+}

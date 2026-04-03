@@ -31,15 +31,25 @@ type RecallContext struct {
 	CombinedText   string
 }
 
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
 type Observation struct {
-	Step      int
-	Role      string
-	Tool      string
-	Input     string
-	RawOutput string
-	Output    string
-	Status    string
-	Error     string
+	Step             int
+	Role             string
+	Tool             string
+	Input            string
+	RawOutput        string
+	Output           string
+	DurationMs       int64
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Status           string
+	Error            string
 }
 
 type Result struct {
@@ -135,14 +145,30 @@ func (s *defaultSession) Recall(_ context.Context, req RecallRequest) (RecallCon
 
 func (s *defaultSession) AppendObservation(obs Observation) {
 	normalized := Observation{
-		Step:      obs.Step,
-		Role:      strings.TrimSpace(obs.Role),
-		Tool:      strings.TrimSpace(obs.Tool),
-		Input:     strings.TrimSpace(obs.Input),
-		RawOutput: strings.TrimSpace(obs.RawOutput),
-		Output:    strings.TrimSpace(obs.Output),
-		Status:    strings.TrimSpace(obs.Status),
-		Error:     strings.TrimSpace(obs.Error),
+		Step:             obs.Step,
+		Role:             strings.TrimSpace(obs.Role),
+		Tool:             strings.TrimSpace(obs.Tool),
+		Input:            strings.TrimSpace(obs.Input),
+		RawOutput:        strings.TrimSpace(obs.RawOutput),
+		Output:           strings.TrimSpace(obs.Output),
+		DurationMs:       obs.DurationMs,
+		PromptTokens:     obs.PromptTokens,
+		CompletionTokens: obs.CompletionTokens,
+		TotalTokens:      obs.TotalTokens,
+		Status:           strings.TrimSpace(obs.Status),
+		Error:            strings.TrimSpace(obs.Error),
+	}
+	if normalized.PromptTokens < 0 {
+		normalized.PromptTokens = 0
+	}
+	if normalized.CompletionTokens < 0 {
+		normalized.CompletionTokens = 0
+	}
+	if normalized.TotalTokens < 0 {
+		normalized.TotalTokens = 0
+	}
+	if normalized.TotalTokens == 0 && (normalized.PromptTokens > 0 || normalized.CompletionTokens > 0) {
+		normalized.TotalTokens = normalized.PromptTokens + normalized.CompletionTokens
 	}
 	if normalized.Status == "" {
 		normalized.Status = "succeeded"
@@ -270,6 +296,18 @@ func formatTrace(observations []Observation) string {
 		builder.WriteString(strings.TrimSpace(obs.Tool))
 		builder.WriteString(", status=")
 		builder.WriteString(strings.TrimSpace(obs.Status))
+		if obs.DurationMs > 0 {
+			builder.WriteString(", duration_ms=")
+			builder.WriteString(strconv.FormatInt(obs.DurationMs, 10))
+		}
+		if obs.TotalTokens > 0 || obs.PromptTokens > 0 || obs.CompletionTokens > 0 {
+			builder.WriteString(", total_tokens=")
+			builder.WriteString(strconv.Itoa(obs.TotalTokens))
+			builder.WriteString(", prompt_tokens=")
+			builder.WriteString(strconv.Itoa(obs.PromptTokens))
+			builder.WriteString(", completion_tokens=")
+			builder.WriteString(strconv.Itoa(obs.CompletionTokens))
+		}
 		if strings.TrimSpace(obs.Input) != "" {
 			builder.WriteString(", input=")
 			builder.WriteString(ShortText(obs.Input, 120))
@@ -311,6 +349,18 @@ func BuildTraceSnippet(observations []Observation, max int) string {
 		builder.WriteString(strings.TrimSpace(obs.Tool))
 		builder.WriteString(", status=")
 		builder.WriteString(strings.TrimSpace(obs.Status))
+		if obs.DurationMs > 0 {
+			builder.WriteString(", duration_ms=")
+			builder.WriteString(strconv.FormatInt(obs.DurationMs, 10))
+		}
+		if obs.TotalTokens > 0 || obs.PromptTokens > 0 || obs.CompletionTokens > 0 {
+			builder.WriteString(", total_tokens=")
+			builder.WriteString(strconv.Itoa(obs.TotalTokens))
+			builder.WriteString(", prompt_tokens=")
+			builder.WriteString(strconv.Itoa(obs.PromptTokens))
+			builder.WriteString(", completion_tokens=")
+			builder.WriteString(strconv.Itoa(obs.CompletionTokens))
+		}
 		if strings.TrimSpace(obs.Output) != "" {
 			builder.WriteString(", output=")
 			builder.WriteString(ShortText(strings.TrimSpace(obs.Output), 120))

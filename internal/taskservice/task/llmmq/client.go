@@ -26,6 +26,11 @@ type Client struct {
 	responseTimeout time.Duration
 }
 
+type ChatObservation struct {
+	Text  string
+	Usage TokenUsage
+}
+
 func NewClient(opts ClientOptions) (*Client, error) {
 	url := strings.TrimSpace(opts.URL)
 	requestQueue := strings.TrimSpace(opts.RequestQueue)
@@ -69,16 +74,24 @@ func NewClient(opts ClientOptions) (*Client, error) {
 }
 
 func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
+	observation, err := c.ObserveChat(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	return observation.Text, nil
+}
+
+func (c *Client) ObserveChat(ctx context.Context, prompt string) (ChatObservation, error) {
 	if c == nil || c.conn == nil {
-		return "", errors.New("rabbitmq llm client is not initialized")
+		return ChatObservation{}, errors.New("rabbitmq llm client is not initialized")
 	}
 	trimmedPrompt := strings.TrimSpace(prompt)
 	if trimmedPrompt == "" {
-		return "", errors.New("llm prompt is empty")
+		return ChatObservation{}, errors.New("llm prompt is empty")
 	}
 	ch, err := c.conn.Channel()
 	if err != nil {
-		return "", err
+		return ChatObservation{}, err
 	}
 	defer ch.Close()
 	replyQueue, err := ch.QueueDeclare(
@@ -90,7 +103,7 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 		nil,
 	)
 	if err != nil {
-		return "", err
+		return ChatObservation{}, err
 	}
 	msgs, err := ch.Consume(
 		replyQueue.Name,
@@ -102,7 +115,7 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 		nil,
 	)
 	if err != nil {
-		return "", err
+		return ChatObservation{}, err
 	}
 	requestID := uuid.NewString()
 	startAt := time.Now()
@@ -111,7 +124,7 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 		Prompt:    trimmedPrompt,
 	})
 	if err != nil {
-		return "", err
+		return ChatObservation{}, err
 	}
 	if err := ch.PublishWithContext(ctx, "", c.requestQueue, false, false, amqp.Publishing{
 		ContentType:   "application/json",
@@ -121,7 +134,7 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 		Timestamp:     time.Now(),
 	}); err != nil {
 		log.Printf("[llm-mq-client] publish request failed request_id=%s queue=%s err=%v", requestID, c.requestQueue, err)
-		return "", err
+		return ChatObservation{}, err
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, c.responseTimeout)
 	defer cancel()
@@ -130,13 +143,13 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 		case <-waitCtx.Done():
 			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
 				log.Printf("[llm-mq-client] response timeout request_id=%s queue=%s waited=%s", requestID, c.requestQueue, time.Since(startAt))
-				return "", errors.New("llm worker response timeout")
+				return ChatObservation{}, errors.New("llm worker response timeout")
 			}
-			return "", waitCtx.Err()
+			return ChatObservation{}, waitCtx.Err()
 		case msg, ok := <-msgs:
 			if !ok {
 				log.Printf("[llm-mq-client] response channel closed request_id=%s queue=%s", requestID, c.requestQueue)
-				return "", errors.New("llm worker reply channel closed")
+				return ChatObservation{}, errors.New("llm worker reply channel closed")
 			}
 			if strings.TrimSpace(msg.CorrelationId) != requestID {
 				continue
@@ -144,17 +157,20 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 			var response ResponseMessage
 			if err := json.Unmarshal(msg.Body, &response); err != nil {
 				log.Printf("[llm-mq-client] response decode failed request_id=%s err=%v", requestID, err)
-				return "", err
+				return ChatObservation{}, err
 			}
 			if strings.TrimSpace(response.Error) != "" {
 				log.Printf("[llm-mq-client] response contains error request_id=%s err=%s", requestID, strings.TrimSpace(response.Error))
-				return "", errors.New(strings.TrimSpace(response.Error))
+				return ChatObservation{}, errors.New(strings.TrimSpace(response.Error))
 			}
 			text := strings.TrimSpace(response.Text)
 			if text == "" {
-				return "", errors.New("llm worker response content is empty")
+				return ChatObservation{}, errors.New("llm worker response content is empty")
 			}
-			return text, nil
+			return ChatObservation{
+				Text:  text,
+				Usage: response.Usage,
+			}, nil
 		}
 	}
 }

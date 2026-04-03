@@ -76,17 +76,23 @@ func RunCoordinatorActNode(ctx context.Context, client ChatClient, state *State)
 		RecentMessageCount: len(recentMessages),
 	}
 	actPrompt := agentservices.BuildCoordinatorActPrompt(promptInput)
-	toolName, actionInput, actionRaw, actErr := runCoordinatorActWithFunctionCalling(ctx, client, actPrompt, functionTools)
+	startAt := time.Now()
+	toolName, actionInput, actionRaw, usage, actErr := runCoordinatorActWithFunctionCalling(ctx, client, actPrompt, functionTools)
+	durationMs := time.Since(startAt).Milliseconds()
 	if actErr != nil {
 		if state.MemorySession != nil {
 			state.MemorySession.AppendObservation(agentmemory.Observation{
-				Step:   step,
-				Role:   "CoordinatorAct",
-				Tool:   "act",
-				Input:  agentmemory.ShortText(actPrompt, 220),
-				Output: agentmemory.ShortText(actionRaw, 220),
-				Status: "failed",
-				Error:  actErr.Error(),
+				Step:       step,
+				Role:       "CoordinatorAct",
+				Tool:       "act",
+				Input:      agentmemory.ShortText(actPrompt, 220),
+				Output:     agentmemory.ShortText(actionRaw, 220),
+				DurationMs: durationMs,
+				PromptTokens: usage.PromptTokens,
+				CompletionTokens: usage.CompletionTokens,
+				TotalTokens: usage.TotalTokens,
+				Status:     "failed",
+				Error:      actErr.Error(),
 			})
 		}
 		return "", fmt.Errorf("coordinator_act 调用失败: %w", actErr)
@@ -104,12 +110,16 @@ func RunCoordinatorActNode(ctx context.Context, client ChatClient, state *State)
 	}
 	if state.MemorySession != nil {
 		state.MemorySession.AppendObservation(agentmemory.Observation{
-			Step:   step,
-			Role:   "CoordinatorAct",
-			Tool:   "act",
-			Input:  agentmemory.ShortText(actPrompt, 220),
-			Output: agentmemory.ShortText(strings.TrimSpace(actionRaw), 220),
-			Status: "succeeded",
+			Step:       step,
+			Role:       "CoordinatorAct",
+			Tool:       "act",
+			Input:      agentmemory.ShortText(actPrompt, 220),
+			Output:     agentmemory.ShortText(strings.TrimSpace(actionRaw), 220),
+			DurationMs: durationMs,
+			PromptTokens: usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens: usage.TotalTokens,
+			Status:     "succeeded",
 		})
 	}
 	state.MaxSteps = maxSteps
@@ -131,31 +141,31 @@ func RunCoordinatorActNode(ctx context.Context, client ChatClient, state *State)
 	return "coordinator.act_done", nil
 }
 
-func runCoordinatorActWithFunctionCalling(ctx context.Context, client ChatClient, prompt string, tools []toolruntime.FunctionToolDefinition) (string, string, string, error) {
+func runCoordinatorActWithFunctionCalling(ctx context.Context, client ChatClient, prompt string, tools []toolruntime.FunctionToolDefinition) (string, string, string, agentmemory.TokenUsage, error) {
 	if fcClient, ok := client.(functionCallingClient); ok {
 		toolName, arguments, raw, err := fcClient.ChatWithFunctionCalling(ctx, prompt, tools)
 		if err != nil {
-			return "", "", raw, err
+			return "", "", raw, agentmemory.TokenUsage{}, err
 		}
 		toolName = strings.TrimSpace(toolName)
 		if toolName == "" {
-			return "", "", raw, errors.New("coordinator行动阶段缺少 action.tool")
+			return "", "", raw, agentmemory.TokenUsage{}, errors.New("coordinator行动阶段缺少 action.tool")
 		}
 		argsJSON, marshalErr := json.Marshal(arguments)
 		if marshalErr != nil {
-			return "", "", raw, errors.New("coordinator行动阶段函数参数编码失败")
+			return "", "", raw, agentmemory.TokenUsage{}, errors.New("coordinator行动阶段函数参数编码失败")
 		}
-		return toolName, strings.TrimSpace(string(argsJSON)), strings.TrimSpace(raw), nil
+		return toolName, strings.TrimSpace(string(argsJSON)), strings.TrimSpace(raw), agentmemory.TokenUsage{}, nil
 	}
-	actionRaw, err := client.Chat(ctx, prompt)
+	actionRaw, usage, err := chatWithUsage(ctx, client, prompt)
 	if err != nil {
-		return "", "", actionRaw, err
+		return "", "", actionRaw, usage, err
 	}
 	toolName, actionInput, parseErr := parseCoordinatorAction(actionRaw)
 	if parseErr != nil {
-		return "", "", actionRaw, parseErr
+		return "", "", actionRaw, usage, parseErr
 	}
-	return toolName, actionInput, strings.TrimSpace(actionRaw), nil
+	return toolName, actionInput, strings.TrimSpace(actionRaw), usage, nil
 }
 
 func parseCoordinatorAction(raw string) (string, string, error) {

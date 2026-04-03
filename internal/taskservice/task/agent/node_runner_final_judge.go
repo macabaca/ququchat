@@ -7,10 +7,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	agentmemory "ququchat/internal/taskservice/task/agent/memory"
 	agentservices "ququchat/internal/taskservice/task/agent/services"
 	"ququchat/internal/taskservice/task/agent/toolruntime"
+	agenttypes "ququchat/internal/taskservice/task/agent/types"
 )
 
 func RunFinalJudgeNode(ctx context.Context, client ChatClient, state *State) (next string, err error) {
@@ -37,14 +39,41 @@ func RunFinalJudgeNode(ctx context.Context, client ChatClient, state *State) (ne
 	if state.MemorySession != nil {
 		trace = state.MemorySession.Trace()
 	}
-	review, reviewErr := agentservices.EvaluateFinalAnswer(ctx, client, strings.TrimSpace(state.Goal), state.RecentMessages, trace, finalAnswer)
+	reviewStartAt := time.Now()
+	reviewPrompt := agentservices.BuildFinalJudgePrompt(agenttypes.FinalJudgePromptInput{
+		Goal:               strings.TrimSpace(state.Goal),
+		Candidate:          finalAnswer,
+		RecentMessagesText: agentmemory.BuildRecentMessagesSnippet(state.RecentMessages, 10),
+		TraceText:          agentmemory.BuildTraceSnippet(trace, 8),
+	})
+	reviewRaw, reviewUsage, reviewErr := chatWithUsage(ctx, client, reviewPrompt)
+	reviewDurationMs := time.Since(reviewStartAt).Milliseconds()
+	review := agenttypes.FinalReviewResult{}
+	if reviewErr == nil {
+		if decodeErr := agentservices.DecodeJSONFromText(reviewRaw, &review); decodeErr != nil {
+			reviewErr = decodeErr
+		}
+	}
+	if review.Score < 0 {
+		review.Score = 0
+	}
+	if review.Score > 100 {
+		review.Score = 100
+	}
+	if !review.Pass && len(review.Issues) == 0 {
+		review.Issues = []string{"未通过但未提供原因"}
+	}
 	state.FinalReview = review
 	reviewRecord := agentmemory.Observation{
-		Step:   state.Step,
-		Role:   "FinalJudge",
-		Tool:   "evaluate_final_answer",
-		Input:  agentmemory.ShortText(finalAnswer, 220),
-		Output: agentmemory.ShortText(agentservices.FormatFinalReviewOutput(review), 220),
+		Step:       state.Step,
+		Role:       "FinalJudge",
+		Tool:       "evaluate_final_answer",
+		Input:      agentmemory.ShortText(finalAnswer, 220),
+		Output:     agentmemory.ShortText(agentservices.FormatFinalReviewOutput(review), 220),
+		DurationMs: reviewDurationMs,
+		PromptTokens: reviewUsage.PromptTokens,
+		CompletionTokens: reviewUsage.CompletionTokens,
+		TotalTokens: reviewUsage.TotalTokens,
 	}
 	if reviewErr != nil {
 		reviewRecord.Status = "failed"
@@ -84,13 +113,25 @@ func RunFinalJudgeNode(ctx context.Context, client ChatClient, state *State) (ne
 		state.FinalAnswer = ""
 		return "final_judge.retry", nil
 	}
-	synthesized, synthErr := agentservices.SynthesizeFinalAnswer(ctx, client, strings.TrimSpace(state.Goal), state.RecentMessages, trace, finalAnswer)
+	synthStartAt := time.Now()
+	synthPrompt := agentservices.BuildFinalSynthesizerPrompt(agenttypes.FinalSynthesizerPromptInput{
+		Goal:               strings.TrimSpace(state.Goal),
+		Candidate:          finalAnswer,
+		RecentMessagesText: agentmemory.BuildRecentMessagesSnippet(state.RecentMessages, 12),
+		TraceText:          agentmemory.BuildTraceSnippet(trace, 10),
+	})
+	synthesized, synthUsage, synthErr := chatWithUsage(ctx, client, synthPrompt)
+	synthDurationMs := time.Since(synthStartAt).Milliseconds()
 	synthRecord := agentmemory.Observation{
-		Step:   state.Step,
-		Role:   "FinalSynthesizer",
-		Tool:   "synthesize_final_answer",
-		Input:  agentmemory.ShortText(finalAnswer, 220),
-		Output: agentmemory.ShortText(synthesized, 220),
+		Step:       state.Step,
+		Role:       "FinalSynthesizer",
+		Tool:       "synthesize_final_answer",
+		Input:      agentmemory.ShortText(finalAnswer, 220),
+		Output:     agentmemory.ShortText(synthesized, 220),
+		DurationMs: synthDurationMs,
+		PromptTokens: synthUsage.PromptTokens,
+		CompletionTokens: synthUsage.CompletionTokens,
+		TotalTokens: synthUsage.TotalTokens,
 	}
 	if synthErr != nil {
 		synthRecord.Status = "failed"

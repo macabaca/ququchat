@@ -3,9 +3,11 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 
 	"ququchat/internal/config"
@@ -28,6 +30,40 @@ func loadConfig(path string) (map[string]ServerConfig, error) {
 		}
 	}
 	return servers, nil
+}
+
+func logPromptsForClient(t *testing.T, ctx context.Context, label string, client *Client) {
+	t.Helper()
+	if client == nil || client.session == nil {
+		t.Logf("%s prompt 列表跳过: mcp client 未初始化", label)
+		return
+	}
+	var cursor string
+	total := 0
+	for {
+		resp, err := client.session.ListPrompts(ctx, &mcp.ListPromptsParams{Cursor: cursor})
+		if err != nil {
+			t.Logf("%s ListPrompts 调用失败(服务端可能未实现): %v", label, err)
+			return
+		}
+		if resp == nil {
+			break
+		}
+		for _, prompt := range resp.Prompts {
+			if prompt == nil {
+				continue
+			}
+			total++
+			raw, _ := json.MarshalIndent(prompt, "  ", "  ")
+			t.Logf("- Prompt[%d]:\n  %s", total, string(raw))
+		}
+		nextCursor := strings.TrimSpace(resp.NextCursor)
+		if nextCursor == "" || nextCursor == cursor {
+			break
+		}
+		cursor = nextCursor
+	}
+	t.Logf("%s provides %d prompts", label, total)
 }
 
 func TestTavilyListTools(t *testing.T) {
@@ -68,6 +104,7 @@ func TestTavilyListTools(t *testing.T) {
 		schema, _ := json.MarshalIndent(tool.InputSchema, "  ", "  ")
 		t.Logf("  InputSchema: \n  %s", string(schema))
 	}
+	logPromptsForClient(t, ctx, "Tavily", tavilyClient)
 }
 
 func TestGezhePPTListTools(t *testing.T) {
@@ -108,4 +145,5 @@ func TestGezhePPTListTools(t *testing.T) {
 		schema, _ := json.MarshalIndent(tool.InputSchema, "  ", "  ")
 		t.Logf("  InputSchema: \n  %s", string(schema))
 	}
+	logPromptsForClient(t, ctx, "歌者PPT", gezheClient)
 }

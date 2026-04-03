@@ -23,6 +23,8 @@ interface MemoryEntry {
     role: string;
     tool: string;
     status: string;
+    durationMs: string;
+    totalTokens: string;
     input: string;
     output: string;
     error: string;
@@ -59,8 +61,11 @@ const parseMemoryEntries = (memoryText: string): MemoryEntry[] => {
             continue;
         }
         const tail = head[6] || '';
+        const durationToken = ', duration_ms=';
+        const totalTokensToken = ', total_tokens=';
         const inputToken = ', input=';
         const outputToken = ', output=';
+        const rawOutputToken = ', raw_output=';
         const errorToken = ', error=';
         const readPart = (token: string, nextTokens: string[]) => {
             const start = tail.indexOf(token);
@@ -83,8 +88,10 @@ const parseMemoryEntries = (memoryText: string): MemoryEntry[] => {
             role: head[3].trim(),
             tool: head[4].trim(),
             status: head[5].trim(),
-            input: readPart(inputToken, [outputToken, errorToken]),
-            output: readPart(outputToken, [errorToken]),
+            durationMs: readPart(durationToken, [totalTokensToken, inputToken, outputToken, rawOutputToken, errorToken]),
+            totalTokens: readPart(totalTokensToken, [inputToken, outputToken, rawOutputToken, errorToken]).split(',')[0].trim(),
+            input: readPart(inputToken, [outputToken, rawOutputToken, errorToken]),
+            output: readPart(outputToken, [rawOutputToken, errorToken]),
             error: readPart(errorToken, []),
             raw: chunk
         });
@@ -642,6 +649,8 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                                                     <span style={{ fontWeight: 600, color: '#262626' }}>{entry.role}</span>
                                                     <span style={{ color: '#595959' }}>{entry.tool}</span>
                                                     <span style={{ color: entry.status === 'failed' ? '#cf1322' : '#389e0d' }}>{entry.status}</span>
+                                                    {entry.durationMs && <span style={{ color: '#8c8c8c' }}>{entry.durationMs} ms</span>}
+                                                    {entry.totalTokens && <span style={{ color: '#8c8c8c' }}>tokens: {entry.totalTokens}</span>}
                                                 </div>
                                                 {entry.input && <div style={{ padding: '6px 8px', fontSize: 12, color: '#595959', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>input:</strong> {entry.input}</div>}
                                                 {entry.output && <div style={{ padding: '0 8px 6px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><strong>output:</strong> {entry.output}</div>}

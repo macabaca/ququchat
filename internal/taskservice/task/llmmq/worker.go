@@ -17,6 +17,10 @@ type Provider interface {
 	Chat(ctx context.Context, prompt string) (string, error)
 }
 
+type ObservableProvider interface {
+	ChatWithUsage(ctx context.Context, prompt string) (string, int, int, int, error)
+}
+
 type WorkerOptions struct {
 	URL          string
 	RequestQueue string
@@ -209,6 +213,22 @@ func (w *Worker) handleDelivery(d amqp.Delivery) {
 		log.Printf("[llm-worker] rate limiter failed request_id=%s queue=%s err=%v", requestID, strings.TrimSpace(w.requestQueue), err)
 		response.Error = err.Error()
 		w.respondOrDeadLetter(opCtx, d, response, "llm_rate_limit_wait_failed")
+		return
+	}
+	if providerWithUsage, ok := w.provider.(ObservableProvider); ok {
+		text, promptTokens, completionTokens, totalTokens, err := providerWithUsage.ChatWithUsage(opCtx, prompt)
+		if err != nil {
+			log.Printf("[llm-worker] provider observable chat failed request_id=%s err=%v", requestID, err)
+			response.Error = err.Error()
+		} else {
+			response.Text = strings.TrimSpace(text)
+			response.Usage = TokenUsage{
+				PromptTokens:     promptTokens,
+				CompletionTokens: completionTokens,
+				TotalTokens:      totalTokens,
+			}
+		}
+		w.respondOrDeadLetter(opCtx, d, response, "llm_response_delivery_failed")
 		return
 	}
 	text, err := w.provider.Chat(opCtx, prompt)
