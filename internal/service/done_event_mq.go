@@ -2,6 +2,7 @@ package taskservice
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 )
 
 const wsCommandRequestIDPrefix = "ws_command"
+const wsCommandRequestIDPrefixV2 = "ws2"
 
 const (
 	DefaultDoneEventDLQExchange   = "ququchat.done_event.dlq.exchange"
@@ -507,13 +509,24 @@ func sleepWithContext(ctx context.Context, delay time.Duration) bool {
 }
 
 func BuildWSCommandRequestID(userID, roomID, parentMessageID string, parentSequenceID int64) string {
-	return fmt.Sprintf("%s|%s|%s|%s|%d|%s",
-		wsCommandRequestIDPrefix,
-		strings.TrimSpace(userID),
-		strings.TrimSpace(roomID),
-		strings.TrimSpace(parentMessageID),
-		parentSequenceID,
-		uuid.NewString(),
+	compactUserID := encodeCompactUUID(userID)
+	compactRoomID := encodeCompactUUID(roomID)
+	compactParentID := encodeCompactUUID(parentMessageID)
+	seq := parentSequenceID
+	if seq < 0 {
+		seq = 0
+	}
+	nonce := strings.ReplaceAll(uuid.NewString(), "-", "")
+	if len(nonce) > 8 {
+		nonce = nonce[:8]
+	}
+	return fmt.Sprintf("%s|%s|%s|%s|%s|%s",
+		wsCommandRequestIDPrefixV2,
+		compactUserID,
+		compactRoomID,
+		compactParentID,
+		strconv.FormatInt(seq, 36),
+		nonce,
 	)
 }
 
@@ -521,6 +534,28 @@ func ParseWSCommandRequestID(requestID string) (string, string, string, int64, b
 	parts := strings.Split(strings.TrimSpace(requestID), "|")
 	if len(parts) < 4 {
 		return "", "", "", 0, false
+	}
+	if parts[0] == wsCommandRequestIDPrefixV2 {
+		if len(parts) < 6 {
+			return "", "", "", 0, false
+		}
+		userID, ok := decodeCompactUUID(parts[1])
+		if !ok || strings.TrimSpace(userID) == "" {
+			return "", "", "", 0, false
+		}
+		roomID, ok := decodeCompactUUID(parts[2])
+		if !ok || strings.TrimSpace(roomID) == "" {
+			return "", "", "", 0, false
+		}
+		parentMessageID, ok := decodeCompactUUID(parts[3])
+		if !ok {
+			return "", "", "", 0, false
+		}
+		parentSequenceID := int64(0)
+		if parsedSeq, err := strconv.ParseInt(strings.TrimSpace(parts[4]), 36, 64); err == nil && parsedSeq > 0 {
+			parentSequenceID = parsedSeq
+		}
+		return userID, roomID, parentMessageID, parentSequenceID, true
 	}
 	if parts[0] != wsCommandRequestIDPrefix {
 		return "", "", "", 0, false
@@ -540,4 +575,32 @@ func ParseWSCommandRequestID(requestID string) (string, string, string, int64, b
 		}
 	}
 	return userID, roomID, parentMessageID, parentSequenceID, true
+}
+
+func encodeCompactUUID(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "-"
+	}
+	parsed, err := uuid.Parse(trimmed)
+	if err != nil {
+		return "-"
+	}
+	return base64.RawURLEncoding.EncodeToString(parsed[:])
+}
+
+func decodeCompactUUID(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "-" {
+		return "", true
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(trimmed)
+	if err != nil || len(decoded) != 16 {
+		return "", false
+	}
+	id, err := uuid.FromBytes(decoded)
+	if err != nil {
+		return "", false
+	}
+	return id.String(), true
 }
