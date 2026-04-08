@@ -46,6 +46,15 @@ interface AIGCImageEntry {
     attachmentID: string;
 }
 
+interface AgentStreamStepEntry {
+    index: number;
+    step: string;
+    role: string;
+    tool: string;
+    status: string;
+    content: string;
+}
+
 const parseMemoryEntries = (memoryText: string): MemoryEntry[] => {
     const normalized = memoryText.replace(/\r\n/g, '\n').trim();
     if (!normalized) {
@@ -185,6 +194,39 @@ const parseAIGCImageEntries = (payloadObject: Record<string, any> | null): AIGCI
     return entries;
 };
 
+const parseAgentStreamStepEntries = (payloadObject: Record<string, any> | null): AgentStreamStepEntry[] => {
+    if (!payloadObject || !Array.isArray(payloadObject.stream_steps)) {
+        return [];
+    }
+    const entries: AgentStreamStepEntry[] = [];
+    let fallbackIndex = 1;
+    for (const item of payloadObject.stream_steps) {
+        const row = asRecord(item);
+        if (!row) {
+            continue;
+        }
+        const role = String(row.role ?? '').trim();
+        const tool = String(row.tool ?? '').trim();
+        const content = String(row.content ?? '').trim();
+        const status = String(row.status ?? '').trim();
+        const step = String(row.step ?? '').trim();
+        if (!role && !tool && !content) {
+            continue;
+        }
+        const numericIndex = Number(row.index);
+        entries.push({
+            index: Number.isFinite(numericIndex) && numericIndex > 0 ? numericIndex : fallbackIndex,
+            step,
+            role,
+            tool,
+            status,
+            content
+        });
+        fallbackIndex += 1;
+    }
+    return entries;
+};
+
 const MessageItem: React.FC<{
     msg: Message;
     isMe: boolean;
@@ -253,6 +295,7 @@ const MessageItem: React.FC<{
     const memoryEntries = useMemo(() => parseMemoryEntries(memoryText), [memoryText]);
     const ragPayloadEntries = useMemo(() => parseRAGPayloadEntries(payloadObject), [payloadObject]);
     const aigcImageEntries = useMemo(() => parseAIGCImageEntries(payloadObject), [payloadObject]);
+    const streamStepEntries = useMemo(() => parseAgentStreamStepEntries(payloadObject), [payloadObject]);
 
     useEffect(() => {
         const isBlob = typeof msg.content === 'string' && msg.content.startsWith('blob:');
@@ -669,6 +712,22 @@ const MessageItem: React.FC<{
                                 </div>
                             )}
                             {renderContent()}
+                            {isRobotMessage && streamStepEntries.length > 0 && (
+                                <div style={{ marginTop: 8, border: '1px solid #d9d9d9', borderRadius: 6, background: '#fafafa', padding: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                    {streamStepEntries.map((entry) => (
+                                        <div key={`${msg.id || 'stream'}-${entry.index}-${entry.role}-${entry.tool}`} style={{ border: '1px solid #e8e8e8', borderRadius: 6, background: '#fff' }}>
+                                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 8px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                                                <span style={{ color: '#8c8c8c' }}>#{entry.index}</span>
+                                                {entry.step && <span style={{ color: '#8c8c8c' }}>step {entry.step}</span>}
+                                                <span style={{ fontWeight: 600, color: '#262626' }}>{entry.role || '-'}</span>
+                                                <span style={{ color: '#595959' }}>{entry.tool || '-'}</span>
+                                                {entry.status && <span style={{ color: entry.status === 'failed' ? '#cf1322' : '#389e0d' }}>{entry.status}</span>}
+                                            </div>
+                                            {entry.content && <div style={{ padding: '6px 8px', fontSize: 12, color: '#262626', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{entry.content}</div>}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                             {aigcImageUrls.length > 0 && (
                                 <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                                     {aigcImageUrls.map((item) => (

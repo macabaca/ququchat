@@ -830,8 +830,8 @@ export const useChatStore = create<ChatState>()(
                                         const role = String(payload.role || '').trim();
                                         const tool = String(payload.tool || '').trim();
                                         const content = String(payload.content || '').trim();
-                                        const line = [role, tool, content].filter(Boolean).join(' | ');
-                                        if (!line) {
+                                        const status = String(payload.status || '').trim() || 'running';
+                                        if (!role && !tool && !content) {
                                             continue;
                                         }
                                         set((state) => {
@@ -841,12 +841,34 @@ export const useChatStore = create<ChatState>()(
                                             const idx = current.findIndex((m) => m.id === session.tempMessageId);
                                             if (idx === -1) return state;
                                             const prev = current[idx];
-                                            const prevText = String(prev.content || '').trim();
-                                            const nextText = prevText === '正在处理中...' || prevText === '' ? line : `${prevText}\n${line}`;
+                                            const rawPayload = prev.payload_json;
+                                            const payloadObject = rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+                                                ? rawPayload as Record<string, any>
+                                                : {};
+                                            const existingSteps = Array.isArray(payloadObject.stream_steps)
+                                                ? payloadObject.stream_steps.filter((item) => item && typeof item === 'object')
+                                                : [];
+                                            const nextSteps = [
+                                                ...existingSteps,
+                                                {
+                                                    index: existingSteps.length + 1,
+                                                    step: typeof payload.step === 'number' ? payload.step : existingSteps.length + 1,
+                                                    role,
+                                                    tool,
+                                                    status,
+                                                    content
+                                                }
+                                            ];
                                             const nextMessages = current.slice();
                                             nextMessages[idx] = {
                                                 ...prev,
-                                                content: nextText,
+                                                content: '正在处理中...',
+                                                payload_json: {
+                                                    ...payloadObject,
+                                                    stream_steps: nextSteps,
+                                                    stream_status: 'running',
+                                                    stream_request_id: requestId
+                                                },
                                                 status: 'sending',
                                                 timestamp: Date.now() / 1000
                                             };
@@ -875,9 +897,19 @@ export const useChatStore = create<ChatState>()(
                                                 };
                                             }
                                             const nextMessages = current.slice();
+                                            const prevMessage = nextMessages[idx];
+                                            const rawPayload = prevMessage.payload_json;
+                                            const payloadObject = rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+                                                ? rawPayload as Record<string, any>
+                                                : {};
                                             nextMessages[idx] = {
-                                                ...nextMessages[idx],
-                                                content: finalText || nextMessages[idx].content,
+                                                ...prevMessage,
+                                                content: finalText || prevMessage.content,
+                                                payload_json: {
+                                                    ...payloadObject,
+                                                    stream_status: eventType === 'agent.done' ? 'done' : 'error',
+                                                    stream_request_id: requestId
+                                                },
                                                 status: eventType === 'agent.done' ? 'sent' : 'failed',
                                                 timestamp: Date.now() / 1000
                                             };
@@ -1003,10 +1035,26 @@ export const useChatStore = create<ChatState>()(
                                 }
                             };
                         }
+                        const persistedIds = new Set(loadedMessages.map((m) => m.id).filter(Boolean));
+                        const streamingTemps = current.filter((m) => {
+                            const messageId = String(m.id || '').trim();
+                            if (!messageId || !messageId.startsWith('temp-agent-stream-')) {
+                                return false;
+                            }
+                            if (persistedIds.has(messageId)) {
+                                return false;
+                            }
+                            return Object.values(state.agentStreamSessions).some((session) => {
+                                if (!session) {
+                                    return false;
+                                }
+                                return session.roomId === roomId && session.tempMessageId === messageId;
+                            });
+                        });
                         return {
                             messages: {
                                 ...state.messages,
-                                [roomId]: loadedMessages
+                                [roomId]: [...loadedMessages, ...streamingTemps]
                             }
                         };
                     });

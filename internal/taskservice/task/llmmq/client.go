@@ -81,6 +81,20 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 	return observation.Text, nil
 }
 
+func (c *Client) ChatWithUsage(ctx context.Context, prompt string) (string, int, int, int, error) {
+	observation, err := c.ObserveChat(ctx, prompt)
+	if err != nil {
+		return "", 0, 0, 0, err
+	}
+	promptTokens := observation.Usage.PromptTokens
+	completionTokens := observation.Usage.CompletionTokens
+	totalTokens := observation.Usage.TotalTokens
+	if totalTokens <= 0 {
+		totalTokens = promptTokens + completionTokens
+	}
+	return observation.Text, promptTokens, completionTokens, totalTokens, nil
+}
+
 func (c *Client) ObserveChat(ctx context.Context, prompt string) (ChatObservation, error) {
 	if c == nil || c.conn == nil {
 		return ChatObservation{}, errors.New("rabbitmq llm client is not initialized")
