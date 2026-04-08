@@ -52,7 +52,7 @@ interface ChatState {
     setActiveConversation: (id: string) => void;
     clearActiveConversation: () => void;
     markConversationRead: (roomId: string) => void;
-    sendMessage: (content: string, type: 'text' | 'image' | 'file', attachmentId?: string, thumbId?: string, cachePath?: string) => void;
+    sendMessage: (content: string, type: 'text' | 'image' | 'file', attachmentId?: string, thumbId?: string, cachePath?: string, parentMessageId?: string, parentSequenceId?: number | null) => void;
     
     // Handlers for incoming data
     handleIncomingMessage: (message: Message) => void;
@@ -356,7 +356,7 @@ export const useChatStore = create<ChatState>()(
                 });
             },
 
-            sendMessage: (content: string, type: 'text' | 'image' | 'file' = 'text', attachmentId?: string, thumbId?: string, cachePath?: string) => {
+            sendMessage: (content: string, type: 'text' | 'image' | 'file' = 'text', attachmentId?: string, thumbId?: string, cachePath?: string, parentMessageId?: string, parentSequenceId?: number | null) => {
                 const { activeConversationId, friends, groups, wsService, messages } = get();
                 const user = useAuthStore.getState().user;
                 if (!activeConversationId || !wsService || !user) return;
@@ -402,6 +402,12 @@ export const useChatStore = create<ChatState>()(
                 } else {
                     msgPayload.to_user_id = activeFriend!.id;
                 }
+                if (parentMessageId) {
+                    msgPayload.parent_message_id = parentMessageId;
+                }
+                if (typeof parentSequenceId === 'number') {
+                    msgPayload.parent_sequence_id = parentSequenceId;
+                }
 
                 wsService.sendMessage(msgPayload);
 
@@ -416,6 +422,8 @@ export const useChatStore = create<ChatState>()(
                     status: 'sending',
                     attachment_id: attachmentId,
                     thumb_attachment_id: thumbId,
+                    parent_message_id: parentMessageId,
+                    parent_sequence_id: typeof parentSequenceId === 'number' ? parentSequenceId : null,
                     cache_path: cachePath || null,
                     is_image: type === 'image'
                 };
@@ -630,6 +638,12 @@ export const useChatStore = create<ChatState>()(
                         if (row.attachment_id && !msg.attachment_id) {
                             msg.attachment_id = row.attachment_id;
                         }
+                        if (row.parent_message_id && !msg.parent_message_id) {
+                            msg.parent_message_id = row.parent_message_id;
+                        }
+                        if (msg.parent_sequence_id === undefined || msg.parent_sequence_id === null) {
+                            msg.parent_sequence_id = row.parent_sequence_id ?? null;
+                        }
                         // Ensure image flag can be recovered after restart even if payload_json is incomplete
                         if (row.content_type === 'image') {
                             msg.is_image = true;
@@ -637,6 +651,32 @@ export const useChatStore = create<ChatState>()(
                         
                         return msg;
                     }).reverse();
+                    const messageByID = new Map<string, Message>();
+                    const messageBySequence = new Map<number, Message>();
+                    for (const loaded of loadedMessages) {
+                        if (loaded.id) {
+                            messageByID.set(loaded.id, loaded);
+                        }
+                        if (typeof loaded.sequence_id === 'number') {
+                            messageBySequence.set(loaded.sequence_id, loaded);
+                        }
+                    }
+                    for (const loaded of loadedMessages) {
+                        if (loaded.parent_message) {
+                            continue;
+                        }
+                        const parentByID = loaded.parent_message_id ? messageByID.get(loaded.parent_message_id) : undefined;
+                        if (parentByID) {
+                            loaded.parent_message = parentByID;
+                            continue;
+                        }
+                        if (typeof loaded.parent_sequence_id === 'number') {
+                            const parentBySequence = messageBySequence.get(loaded.parent_sequence_id);
+                            if (parentBySequence) {
+                                loaded.parent_message = parentBySequence;
+                            }
+                        }
+                    }
 
                     set(state => {
                         const current = state.messages[roomId] || [];

@@ -7,6 +7,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { useAIChatStore } from '../../stores/aiChatStore';
 import { llmService } from '../../api/LLMService';
 import { buildReplySuggestionsPrompt, getRecentRoomMessages, parseReplySuggestions } from '../../stores/aiReplyUtils';
+import { Message as ChatMessage } from '../../types/models';
 
 interface InputAreaProps {
     onSend: (
@@ -14,15 +15,19 @@ interface InputAreaProps {
         type: 'text' | 'image' | 'file',
         attachmentId?: string,
         thumbId?: string,
-        cachePath?: string
+        cachePath?: string,
+        parentMessageId?: string,
+        parentSequenceId?: number | null
     ) => void;
     roomId: string;
     roomName?: string;
+    quotedMessage?: ChatMessage | null;
+    onClearQuote?: () => void;
 }
 
 const { TextArea } = Input;
 
-const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
+const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName, quotedMessage, onClearQuote }) => {
     const [value, setValue] = useState('');
     const [pendingFile, setPendingFile] = useState<{ file: File; type: 'image' | 'file' } | null>(null);
     const [uploading, setUploading] = useState(false);
@@ -32,6 +37,20 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
     const [aiError, setAiError] = useState<string>('');
     const currentUser = useAuthStore((state) => state.user);
     const aiConfig = useAIChatStore((state) => state.config);
+    const quotedParentMessageId = quotedMessage?.id;
+    const quotedParentSequenceId = typeof quotedMessage?.sequence_id === 'number' ? quotedMessage.sequence_id : null;
+    const quotedPreviewText = React.useMemo(() => {
+        if (!quotedMessage) {
+            return '';
+        }
+        if (quotedMessage.is_image) {
+            return '[图片]';
+        }
+        if (quotedMessage.attachment_id && !quotedMessage.content) {
+            return '[文件]';
+        }
+        return String(quotedMessage.content || '').trim() || '[空消息]';
+    }, [quotedMessage]);
 
     const handleSend = () => {
         if (pendingFile) {
@@ -39,9 +58,10 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
             return;
         }
         if (!value.trim()) return;
-        onSend(value, 'text');
+        onSend(value, 'text', undefined, undefined, undefined, quotedParentMessageId, quotedParentSequenceId);
         setValue('');
         setSuggestions([]);
+        onClearQuote?.();
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -193,10 +213,19 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
             }
 
             // Pass attachment_id / thumb_attachment_id / cache_path for local-first rendering and SQLite persistence
-            onSend(contentForSend, type, attachmentId, response.attachment?.thumb_attachment_id, cachePath);
+            onSend(
+                contentForSend,
+                type,
+                attachmentId,
+                response.attachment?.thumb_attachment_id,
+                cachePath,
+                quotedParentMessageId,
+                quotedParentSequenceId
+            );
             message.success('Upload successful');
             setPendingFile(null);
             setValue('');
+            onClearQuote?.();
         } catch (error) {
             message.error('Upload failed');
             console.error(error);
@@ -239,6 +268,19 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, roomId, roomName }) => {
                             </Button>
                         ))}
                     </Space>
+                </div>
+            )}
+            {quotedMessage && (
+                <div style={{ marginBottom: 8, border: '1px solid #d9d9d9', borderRadius: 8, padding: '8px 10px', background: '#fafafa', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                            引用 {typeof quotedParentSequenceId === 'number' ? `#${quotedParentSequenceId}` : ''}
+                        </div>
+                        <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {quotedPreviewText}
+                        </div>
+                    </div>
+                    <Button type="text" icon={<CloseCircleOutlined />} onClick={onClearQuote} />
                 </div>
             )}
             {pendingFile ? (

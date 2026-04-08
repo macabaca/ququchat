@@ -48,6 +48,11 @@ export const messageService = {
             ?? payload.aigc_attachment_ids
             ?? payload?.payload?.aigc_attachment_ids
         );
+        const normalizedParentMessageID = String(rawMsg.parent_message_id ?? payload.parent_message_id ?? '').trim() || null;
+        const normalizedParentSequenceIDRaw = rawMsg.parent_sequence_id ?? payload.parent_sequence_id;
+        const normalizedParentSequenceID = typeof normalizedParentSequenceIDRaw === 'number'
+            ? normalizedParentSequenceIDRaw
+            : (typeof normalizedParentSequenceIDRaw === 'string' && normalizedParentSequenceIDRaw.trim() !== '' ? Number(normalizedParentSequenceIDRaw) : null);
         const normalizedContentType = rawMsg.content_type || payload.content_type || (rawMsg.is_image ? 'image' : (normalizedAttachmentId ? 'file' : 'text'));
         const isImageMessage = !!rawMsg.is_image || normalizedContentType === 'image' || !!normalizedThumbAttachmentId;
         let normalizedCachePath = typeof rawMsg.cache_path === 'string' && rawMsg.cache_path.trim() ? rawMsg.cache_path : null;
@@ -84,6 +89,12 @@ export const messageService = {
         if (!rawMsg.is_image && isImageMessage) {
             rawMsg.is_image = true;
         }
+        if (!rawMsg.parent_message_id && normalizedParentMessageID) {
+            rawMsg.parent_message_id = normalizedParentMessageID;
+        }
+        if ((rawMsg.parent_sequence_id === undefined || rawMsg.parent_sequence_id === null) && normalizedParentSequenceID !== null && !Number.isNaN(normalizedParentSequenceID)) {
+            rawMsg.parent_sequence_id = normalizedParentSequenceID;
+        }
         // 1. Prepare message row
         const messageRow: MessageRow = {
             id: rawMsg.id || `msg-${Date.now()}`,
@@ -94,6 +105,8 @@ export const messageService = {
             content_text: rawMsg.content || rawMsg.content_text || '',
             cache_path: normalizedCachePath,
             attachment_id: normalizedAttachmentId,
+            parent_message_id: normalizedParentMessageID,
+            parent_sequence_id: normalizedParentSequenceID !== null && !Number.isNaN(normalizedParentSequenceID) ? normalizedParentSequenceID : null,
             payload_json: null,
             created_at: createdAtMs,
             status: rawMsg.status || 'sent'

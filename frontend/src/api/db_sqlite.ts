@@ -35,6 +35,8 @@ export interface MessageRow {
     content_text: string | null;
     cache_path: string | null;          // 图片路径，只有图片时可用
     attachment_id?: string | null;
+    parent_message_id?: string | null;
+    parent_sequence_id?: number | null;
     payload_json: string | null; // JSON string
     created_at: number;
     status: string; // 'sending' | 'sent' | 'failed'
@@ -97,6 +99,8 @@ export const initDatabase = async () => {
             content_text TEXT,
             cache_path TEXT,
             attachment_id TEXT,
+            parent_message_id TEXT,
+            parent_sequence_id INTEGER,
             payload_json TEXT,
             created_at INTEGER,
             status TEXT DEFAULT 'sent',
@@ -144,6 +148,13 @@ export const initDatabase = async () => {
     if (!msgCols.some((c) => c.name === 'user_id')) {
         await sqliteClient.execute("ALTER TABLE ai_messages ADD COLUMN user_id TEXT DEFAULT 'guest'");
         await sqliteClient.execute("UPDATE ai_messages SET user_id = 'guest' WHERE user_id IS NULL");
+    }
+    const messageCols = await sqliteClient.query<{ name: string }>('PRAGMA table_info(messages)');
+    if (!messageCols.some((c) => c.name === 'parent_message_id')) {
+        await sqliteClient.execute("ALTER TABLE messages ADD COLUMN parent_message_id TEXT");
+    }
+    if (!messageCols.some((c) => c.name === 'parent_sequence_id')) {
+        await sqliteClient.execute("ALTER TABLE messages ADD COLUMN parent_sequence_id INTEGER");
     }
     console.log('Database initialized successfully');
 };
@@ -228,14 +239,16 @@ export const roomDao = {
 export const messageDao = {
     async upsert(msg: MessageRow) {
         const sql = `
-            INSERT INTO messages (id, room_id, sequence_id, sender_id, content_type, content_text, cache_path, attachment_id, payload_json, created_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, room_id, sequence_id, sender_id, content_type, content_text, cache_path, attachment_id, parent_message_id, parent_sequence_id, payload_json, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 sequence_id = COALESCE(excluded.sequence_id, messages.sequence_id),
                 content_type = COALESCE(excluded.content_type, messages.content_type),
                 content_text = COALESCE(excluded.content_text, messages.content_text),
                 cache_path = COALESCE(excluded.cache_path, messages.cache_path),
                 attachment_id = COALESCE(excluded.attachment_id, messages.attachment_id),
+                parent_message_id = COALESCE(excluded.parent_message_id, messages.parent_message_id),
+                parent_sequence_id = COALESCE(excluded.parent_sequence_id, messages.parent_sequence_id),
                 payload_json = COALESCE(excluded.payload_json, messages.payload_json),
                 created_at = COALESCE(excluded.created_at, messages.created_at),
                 status = COALESCE(excluded.status, messages.status)
@@ -249,6 +262,8 @@ export const messageDao = {
             msg.content_text,
             msg.cache_path,
             msg.attachment_id,
+            msg.parent_message_id ?? null,
+            msg.parent_sequence_id ?? null,
             msg.payload_json,
             msg.created_at,
             msg.status

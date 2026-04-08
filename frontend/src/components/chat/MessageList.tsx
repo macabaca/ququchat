@@ -15,6 +15,7 @@ interface MessageListProps {
     canLoadPrevious?: boolean;
     isLoadingPrevious?: boolean;
     onLoadPrevious?: () => Promise<void> | void;
+    onQuoteMessage?: (msg: Message) => void;
 }
 
 interface MemoryEntry {
@@ -184,7 +185,16 @@ const parseAIGCImageEntries = (payloadObject: Record<string, any> | null): AIGCI
     return entries;
 };
 
-const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; senderName: string; isHighlighted?: boolean }> = ({ msg, isMe, avatarUrl, senderName, isHighlighted }) => {
+const MessageItem: React.FC<{
+    msg: Message;
+    isMe: boolean;
+    avatarUrl?: string;
+    senderName: string;
+    isHighlighted?: boolean;
+    parentMessage?: Message | null;
+    onJumpToMessage?: (messageId: string) => void;
+    onQuoteMessage?: (msg: Message) => void;
+}> = ({ msg, isMe, avatarUrl, senderName, isHighlighted, parentMessage, onJumpToMessage, onQuoteMessage }) => {
     const [thumbUrl, setThumbUrl] = useState<string>('');
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [originalUrl, setOriginalUrl] = useState<string>('');
@@ -210,6 +220,8 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
         : (typeof msg.content === 'string' && msg.content.trim() && !contentIsUrl ? msg.content : `File (${msg.attachment_id || 'attachment'})`);
     const isRobotMessage = msg.from_user_id === ROBOT_USER_ID;
     const sequenceID = typeof msg.sequence_id === 'number' ? msg.sequence_id : null;
+    const parentSequenceID = typeof msg.parent_sequence_id === 'number' ? msg.parent_sequence_id : null;
+    const parentMessageID = typeof msg.parent_message_id === 'string' && msg.parent_message_id.trim() ? msg.parent_message_id.trim() : '';
     const currentUserCode = useAuthStore((state) => state.user?.user_code ? String(state.user.user_code) : '');
     const payloadObject = useMemo(() => {
         const rawPayload = msg.payload_json;
@@ -553,17 +565,53 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                 key: 'show-sequence-id',
                 label: sequenceID === null ? '暂无 SequenceID' : `查看 SequenceID (${sequenceID})`,
                 disabled: sequenceID === null
+            },
+            {
+                key: 'show-parent-sequence-id',
+                label: parentSequenceID === null ? '暂无引用 SequenceID' : `查看引用 SequenceID (${parentSequenceID})`,
+                disabled: parentSequenceID === null
+            },
+            {
+                key: 'quote-message',
+                label: '引用'
             }
         ],
         onClick: ({ key }) => {
-            if (key !== 'show-sequence-id' || sequenceID === null) return;
-            Modal.info({
-                title: '消息 SequenceID',
-                content: <span>{sequenceID}</span>,
-                okText: '知道了'
-            });
+            if (key === 'quote-message') {
+                onQuoteMessage?.(msg);
+            }
+            if (key === 'show-sequence-id' && sequenceID !== null) {
+                Modal.info({
+                    title: '消息 SequenceID',
+                    content: <span>{sequenceID}</span>,
+                    okText: '知道了'
+                });
+            }
+            if (key === 'show-parent-sequence-id' && parentSequenceID !== null) {
+                Modal.info({
+                    title: '引用消息 SequenceID',
+                    content: <span>{parentSequenceID}</span>,
+                    okText: '知道了'
+                });
+            }
         }
     };
+    const parentPreviewText = (() => {
+        if (parentMessage) {
+            if (parentMessage.is_image) {
+                return '[图片]';
+            }
+            if (parentMessage.attachment_id && !parentMessage.content) {
+                return '[文件]';
+            }
+            return String(parentMessage.content || '').trim() || '[空消息]';
+        }
+        if (parentMessageID || parentSequenceID !== null) {
+            return '[引用消息不可用]';
+        }
+        return '';
+    })();
+    const canJumpToParent = !!parentMessage?.id;
 
     return (
         <List.Item id={`chat-msg-${msg.id}`} data-msg-id={msg.id} style={{ 
@@ -597,6 +645,29 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
                             boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
                             wordBreak: 'break-word'
                         }}>
+                            {parentPreviewText && (
+                                <div
+                                    onClick={() => {
+                                        if (canJumpToParent && parentMessage?.id) {
+                                            onJumpToMessage?.(parentMessage.id);
+                                        }
+                                    }}
+                                    style={{
+                                        marginBottom: 8,
+                                        borderLeft: `3px solid ${isMe ? 'rgba(255,255,255,0.7)' : '#d9d9d9'}`,
+                                        paddingLeft: 8,
+                                        opacity: 0.92,
+                                        cursor: canJumpToParent ? 'pointer' : 'default'
+                                    }}
+                                >
+                                    <div style={{ fontSize: 11, lineHeight: '16px', opacity: 0.85 }}>
+                                        引用 {parentSequenceID !== null ? `#${parentSequenceID}` : ''}
+                                    </div>
+                                    <div style={{ fontSize: 12, lineHeight: '18px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                        {parentPreviewText}
+                                    </div>
+                                </div>
+                            )}
                             {renderContent()}
                             {aigcImageUrls.length > 0 && (
                                 <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -691,7 +762,7 @@ const MessageItem: React.FC<{ msg: Message; isMe: boolean; avatarUrl?: string; s
     );
 };
 
-const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onFocusDone, canLoadPrevious = false, isLoadingPrevious = false, onLoadPrevious }) => {
+const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onFocusDone, canLoadPrevious = false, isLoadingPrevious = false, onLoadPrevious, onQuoteMessage }) => {
     const user = useAuthStore((state) => state.user);
     const friends = useChatStore((state) => state.friends);
     const activeConversationId = useChatStore((state) => state.activeConversationId);
@@ -703,6 +774,24 @@ const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onF
     const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
     const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
     const [isNearTop, setIsNearTop] = useState(false);
+    const messageByID = useMemo(() => {
+        const map = new Map<string, Message>();
+        for (const msg of messages) {
+            if (msg.id) {
+                map.set(msg.id, msg);
+            }
+        }
+        return map;
+    }, [messages]);
+    const messageBySequence = useMemo(() => {
+        const map = new Map<number, Message>();
+        for (const msg of messages) {
+            if (typeof msg.sequence_id === 'number') {
+                map.set(msg.sequence_id, msg);
+            }
+        }
+        return map;
+    }, [messages]);
 
     useEffect(() => {
         if (focusMessageId || !shouldAutoScroll) return;
@@ -728,6 +817,33 @@ const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onF
         }, 80);
         return () => window.clearTimeout(timer);
     }, [focusMessageId, messages, onFocusDone]);
+    const jumpToMessage = (targetMessageID: string) => {
+        if (!targetMessageID) {
+            return;
+        }
+        const target = document.getElementById(`chat-msg-${targetMessageID}`);
+        if (!target) {
+            return;
+        }
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setShouldAutoScroll(false);
+        setHighlightedMessageId(targetMessageID);
+        window.setTimeout(() => {
+            setHighlightedMessageId((prev) => prev === targetMessageID ? null : prev);
+        }, 1800);
+    };
+    const resolveParentMessage = (msg: Message): Message | null => {
+        if (msg.parent_message && msg.parent_message.id) {
+            return msg.parent_message;
+        }
+        if (msg.parent_message_id) {
+            return messageByID.get(msg.parent_message_id) || null;
+        }
+        if (typeof msg.parent_sequence_id === 'number') {
+            return messageBySequence.get(msg.parent_sequence_id) || null;
+        }
+        return null;
+    };
 
     useEffect(() => {
         let active = true;
@@ -839,6 +955,9 @@ const MessageList: React.FC<MessageListProps> = ({ messages, focusMessageId, onF
                         avatarUrl={msg.from_user_id ? avatarUrlByUserId[msg.from_user_id] : undefined}
                         senderName={msg.from_user_id ? (senderNameByUserId[msg.from_user_id] || (msg.from_user_id === ROBOT_USER_ID ? ROBOT_DISPLAY_NAME : `${msg.from_user_id.slice(0, 6)}`)) : '未知用户'}
                         isHighlighted={highlightedMessageId === msg.id}
+                        parentMessage={resolveParentMessage(msg)}
+                        onJumpToMessage={jumpToMessage}
+                        onQuoteMessage={onQuoteMessage}
                     />
                 )}
             />
