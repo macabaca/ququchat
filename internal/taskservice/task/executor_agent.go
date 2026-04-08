@@ -35,6 +35,37 @@ func (e *DefaultExecutor) executeAgent(ctx context.Context, t *Task) (Result, er
 		RecentMessages:             append([]string(nil), t.Payload.Agent.RecentMessages...),
 		MaxSteps:                   t.Payload.Agent.MaxSteps,
 		RoomID:                     strings.TrimSpace(t.Payload.Agent.RoomID),
+		RequestID:                  strings.TrimSpace(t.RequestID),
+		TaskID:                     strings.TrimSpace(t.ID),
+		OnObservation: func(event taskagent.ObservationEvent) {
+			if e == nil || e.progressReporter == nil {
+				return
+			}
+			content := strings.TrimSpace(event.Output)
+			if content == "" {
+				content = strings.TrimSpace(event.RawOutput)
+			}
+			if content == "" {
+				content = strings.TrimSpace(event.Error)
+			}
+			e.progressReporter.ReportAgentProgress(ctx, t, AgentProgressEvent{
+				EventType:        "agent.step",
+				RequestID:        strings.TrimSpace(event.RequestID),
+				TaskID:           strings.TrimSpace(event.TaskID),
+				RoomID:           strings.TrimSpace(event.RoomID),
+				UserID:           strings.TrimSpace(event.UserID),
+				Step:             event.Step,
+				Role:             strings.TrimSpace(event.Role),
+				Tool:             strings.TrimSpace(event.Tool),
+				Status:           strings.TrimSpace(event.Status),
+				Content:          content,
+				Error:            strings.TrimSpace(event.Error),
+				DurationMs:       event.DurationMs,
+				PromptTokens:     event.PromptTokens,
+				CompletionTokens: event.CompletionTokens,
+				TotalTokens:      event.TotalTokens,
+			})
+		},
 		RAGSearch:                  e.agentSearchRAG,
 		AIGCGenerate:               e.agentGenerateAIGC,
 		DynamicToolSpecs:           e.listAgentMCPToolSpecs(ctx),

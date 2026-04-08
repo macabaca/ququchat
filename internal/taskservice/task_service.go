@@ -94,6 +94,13 @@ func NewServiceWithOptions(db *gorm.DB, opts tasksvc.RuntimeOptions, svcOpts Ser
 		}
 	}
 	upstreamOnFinish := opts.OnFinish
+	upstreamProgressReporter := opts.AgentProgressReporter
+	opts.AgentProgressReporter = tasksvc.AgentProgressReporterFunc(func(ctx context.Context, task *tasksvc.Task, event tasksvc.AgentProgressEvent) {
+		s.ReportAgentProgress(ctx, task, event)
+		if upstreamProgressReporter != nil {
+			upstreamProgressReporter.ReportAgentProgress(ctx, task, event)
+		}
+	})
 	opts.OnFinish = func(ctx context.Context, doneTask *tasksvc.Task) {
 		_ = s.publishDoneEventWithRetry(ctx, doneTask)
 		if upstreamOnFinish != nil {
@@ -208,6 +215,62 @@ func (s *Service) publishDoneEventWithRetry(ctx context.Context, doneTask *tasks
 		log.Printf("[done-event-publish] mark failed to db failed task=%s err=%v", doneTask.ID, err)
 	}
 	return failureErr
+}
+
+func (s *Service) ReportAgentProgress(ctx context.Context, task *tasksvc.Task, progress tasksvc.AgentProgressEvent) {
+	if s == nil || s.doneEventPub == nil || task == nil {
+		return
+	}
+	event := BuildDoneEvent(task)
+	event.EventType = strings.TrimSpace(progress.EventType)
+	if event.EventType == "" {
+		event.EventType = "agent.step"
+	}
+	event.Status = tasksvc.StatusRunning
+	event.Step = progress.Step
+	event.Role = strings.TrimSpace(progress.Role)
+	event.Tool = strings.TrimSpace(progress.Tool)
+	event.Content = strings.TrimSpace(progress.Content)
+	event.ErrorMessage = strings.TrimSpace(progress.Error)
+	event.DurationMs = progress.DurationMs
+	event.PromptTokens = progress.PromptTokens
+	event.CompletionTokens = progress.CompletionTokens
+	event.TotalTokens = progress.TotalTokens
+	if strings.TrimSpace(progress.RequestID) != "" {
+		event.RequestID = strings.TrimSpace(progress.RequestID)
+	}
+	if strings.TrimSpace(progress.TaskID) != "" {
+		event.TaskID = strings.TrimSpace(progress.TaskID)
+	}
+	if strings.TrimSpace(progress.RoomID) != "" {
+		event.RoomID = strings.TrimSpace(progress.RoomID)
+	}
+	if strings.TrimSpace(progress.UserID) != "" {
+		event.UserID = strings.TrimSpace(progress.UserID)
+	}
+	_ = s.publishProgressEventWithRetry(ctx, event)
+}
+
+func (s *Service) publishProgressEventWithRetry(ctx context.Context, event DoneEvent) error {
+	if s == nil || s.doneEventPub == nil {
+		return nil
+	}
+	var lastErr error
+	for attempt := 1; attempt <= s.donePublishRetryMaxAttempts; attempt++ {
+		lastErr = s.doneEventPub.PublishEvent(ctx, event)
+		if lastErr == nil {
+			return nil
+		}
+		log.Printf("[progress-event-publish] task=%s attempt=%d/%d err=%v", event.TaskID, attempt, s.donePublishRetryMaxAttempts, lastErr)
+		if attempt == s.donePublishRetryMaxAttempts {
+			break
+		}
+		if !sleepWithContext(ctx, s.donePublishRetryDelay) {
+			lastErr = ctx.Err()
+			break
+		}
+	}
+	return lastErr
 }
 
 func (s *Service) markTaskFailed(taskID string, message string) error {

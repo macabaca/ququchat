@@ -71,6 +71,29 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 		RecentMessages:         append([]string(nil), recentMessages...),
 		MaxRecent:              readRecentDefaultLimit,
 		FeedbackOutputMaxChars: feedbackOutputMaxChars,
+		OnObservation: func(obs agentmemory.Observation) {
+			if input.OnObservation == nil {
+				return
+			}
+			input.OnObservation(ObservationEvent{
+				RequestID:        strings.TrimSpace(input.RequestID),
+				TaskID:           strings.TrimSpace(input.TaskID),
+				RoomID:           strings.TrimSpace(input.RoomID),
+				UserID:           strings.TrimSpace(input.UserID),
+				Step:             obs.Step,
+				Role:             strings.TrimSpace(obs.Role),
+				Tool:             strings.TrimSpace(obs.Tool),
+				Status:           strings.TrimSpace(obs.Status),
+				Input:            strings.TrimSpace(obs.Input),
+				Output:           strings.TrimSpace(obs.Output),
+				RawOutput:        strings.TrimSpace(obs.RawOutput),
+				Error:            strings.TrimSpace(obs.Error),
+				DurationMs:       obs.DurationMs,
+				PromptTokens:     obs.PromptTokens,
+				CompletionTokens: obs.CompletionTokens,
+				TotalTokens:      obs.TotalTokens,
+			})
+		},
 	})
 	state := &State{
 		DomainState: DomainState{

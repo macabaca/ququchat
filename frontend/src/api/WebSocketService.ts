@@ -1,11 +1,12 @@
 import { BASE_URL } from "../configs/config";
 import { Message } from "../types/models";
-import { WsServerEvent, WsServerHeartbeat, WsServerMsg } from "../types/websocket";
+import { WsAgentCommandAck, WsServerEvent, WsServerHeartbeat, WsServerMsg } from "../types/websocket";
 
 type MessageHandler = (message: Message) => void;
 type StatusHandler = (isConnected: boolean) => void;
 type ReconnectHandler = (isReconnecting: boolean) => void;
 type SystemEventHandler = (event: WsServerEvent) => void;
+type AgentAckHandler = (ack: WsAgentCommandAck) => void;
 
 export class WebSocketService {
     private ws: WebSocket | null = null;
@@ -14,6 +15,7 @@ export class WebSocketService {
     private statusHandlers: StatusHandler[] = [];
     private reconnectHandlers: ReconnectHandler[] = [];
     private systemEventHandlers: SystemEventHandler[] = [];
+    private agentAckHandlers: AgentAckHandler[] = [];
     
     private pingInterval: NodeJS.Timeout | null = null;
     private pongTimeout: NodeJS.Timeout | null = null;
@@ -71,6 +73,10 @@ export class WebSocketService {
                 }
                 if ((data as WsServerEvent)?.type === 'system_event') {
                     this.notifySystemEvent(data as WsServerEvent);
+                    return;
+                }
+                if ((data as WsAgentCommandAck)?.type === 'agent_command_ack') {
+                    this.notifyAgentAck(data as WsAgentCommandAck);
                     return;
                 }
                 this.notifyMessage(data as Message);
@@ -154,12 +160,24 @@ export class WebSocketService {
         this.systemEventHandlers = this.systemEventHandlers.filter(h => h !== handler);
     }
 
+    public addAgentAckHandler(handler: AgentAckHandler) {
+        this.agentAckHandlers.push(handler);
+    }
+
+    public removeAgentAckHandler(handler: AgentAckHandler) {
+        this.agentAckHandlers = this.agentAckHandlers.filter(h => h !== handler);
+    }
+
     private notifyMessage(message: Message) {
         this.messageHandlers.forEach(handler => handler(message));
     }
 
     private notifySystemEvent(event: WsServerEvent) {
         this.systemEventHandlers.forEach(handler => handler(event));
+    }
+
+    private notifyAgentAck(ack: WsAgentCommandAck) {
+        this.agentAckHandlers.forEach(handler => handler(ack));
     }
 
     private notifyStatus(isConnected: boolean) {

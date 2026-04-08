@@ -68,7 +68,39 @@ type RuntimeOptions struct {
 	RAGStopPhrases                   []string
 	RAGHandler                       RAGHandler
 	MCPMultiClient                   *mcpclient.MultiClient
+	AgentProgressReporter            AgentProgressReporter
 	OnFinish                         func(ctx context.Context, doneTask *Task)
+}
+
+type AgentProgressEvent struct {
+	EventType        string
+	RequestID        string
+	TaskID           string
+	RoomID           string
+	UserID           string
+	Step             int
+	Role             string
+	Tool             string
+	Status           string
+	Content          string
+	Error            string
+	DurationMs       int64
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
+type AgentProgressReporter interface {
+	ReportAgentProgress(ctx context.Context, task *Task, event AgentProgressEvent)
+}
+
+type AgentProgressReporterFunc func(ctx context.Context, task *Task, event AgentProgressEvent)
+
+func (f AgentProgressReporterFunc) ReportAgentProgress(ctx context.Context, task *Task, event AgentProgressEvent) {
+	if f == nil {
+		return
+	}
+	f(ctx, task, event)
 }
 
 type Runtime struct {
@@ -205,10 +237,11 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 	}
 	mcpMultiClient := opts.MCPMultiClient
 	exec := NewDefaultExecutor(ExecutorOptions{
-		LLMClient:      llmClient,
-		RAGHandler:     opts.RAGHandler,
-		AIGCClient:     aigcClient,
-		MCPMultiClient: mcpMultiClient,
+		LLMClient:        llmClient,
+		RAGHandler:       opts.RAGHandler,
+		AIGCClient:       aigcClient,
+		MCPMultiClient:   mcpMultiClient,
+		ProgressReporter: opts.AgentProgressReporter,
 	})
 	pools := make([]*Pool, 0, len(consumerQueues))
 	for _, queue := range consumerQueues {

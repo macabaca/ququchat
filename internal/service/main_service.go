@@ -72,10 +72,13 @@ type ServiceOptions struct {
 }
 
 type SubmitCommandRequest struct {
-	UserID   string
-	RoomID   string
-	Content  string
-	Priority tasksvc.Priority
+	RequestID        string
+	UserID           string
+	RoomID           string
+	Content          string
+	ParentMessageID  string
+	ParentSequenceID int64
+	Priority         tasksvc.Priority
 }
 
 func NewMainService(db *gorm.DB, opts tasksvc.RuntimeOptions) *MainService {
@@ -109,7 +112,10 @@ func (s *MainService) SubmitCommand(req SubmitCommandRequest) (string, error) {
 	if s == nil || s.producer == nil {
 		return "", ErrServiceNotInitialized
 	}
-	requestID := BuildWSCommandRequestID(req.UserID, req.RoomID)
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = BuildWSCommandRequestID(req.UserID, req.RoomID, req.ParentMessageID, req.ParentSequenceID)
+	}
 	raw := strings.TrimSpace(req.Content)
 	if raw == "" {
 		return "", ErrCommandRequired

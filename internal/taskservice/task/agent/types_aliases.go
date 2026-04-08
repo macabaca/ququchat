@@ -7,6 +7,7 @@ type SchemaField = agenttypes.SchemaField
 type CoordinatorSchemaConfig = agenttypes.CoordinatorSchemaConfig
 type AgentIdentityConfig = agenttypes.AgentIdentityConfig
 type Input = agenttypes.Input
+type ObservationEvent = agenttypes.ObservationEvent
 
 type plannerTask = agenttypes.PlannerTask
 type plannerOutline = agenttypes.PlannerOutline

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -36,6 +37,7 @@ type WsHandler struct {
 	hub             *Hub
 	cacheClient     *cachepkg.RedisClient
 	taskService     *taskservice.MainService
+	streamHub       *taskservice.AgentStreamHub
 	robotInit       sync.Once
 	robotErr        error
 	doneConsumerMu  sync.Mutex
@@ -43,7 +45,7 @@ type WsHandler struct {
 	doneConsumerErr error
 }
 
-func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, taskService *taskservice.MainService) *WsHandler {
+func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, taskService *taskservice.MainService, streamHub *taskservice.AgentStreamHub) *WsHandler {
 	if hub == nil {
 		hub = NewHub()
 	}
@@ -58,6 +60,7 @@ func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, task
 		hub:         hub,
 		cacheClient: cacheClient,
 		taskService: taskService,
+		streamHub:   streamHub,
 	}
 }
 
@@ -290,6 +293,15 @@ type OutgoingMessage struct {
 	SequenceID       int64              `json:"sequence_id"`
 }
 
+type AgentCommandAck struct {
+	Type             string `json:"type"`
+	RequestID        string `json:"request_id"`
+	TaskID           string `json:"task_id"`
+	RoomID           string `json:"room_id"`
+	ParentMessageID  string `json:"parent_message_id,omitempty"`
+	ParentSequenceID int64  `json:"parent_sequence_id,omitempty"`
+}
+
 type AttachmentPayload struct {
 	AttachmentID      string  `json:"attachment_id"`
 	FileName          *string `json:"file_name,omitempty"`
@@ -464,18 +476,43 @@ func (c *Client) readLoop(h *WsHandler) {
 				}
 				userID := c.userID
 				roomID := msg.RoomID
-				_, err = h.taskService.SubmitCommand(taskservice.SubmitCommandRequest{
-					UserID:  userID,
-					RoomID:  roomID,
-					Content: msg.Content,
+				requestID := taskservice.BuildWSCommandRequestID(userID, roomID, savedMsg.ID, savedMsg.SequenceID)
+				taskID, err := h.taskService.SubmitCommand(taskservice.SubmitCommandRequest{
+					RequestID:        requestID,
+					UserID:           userID,
+					RoomID:           roomID,
+					Content:          msg.Content,
+					ParentMessageID:  savedMsg.ID,
+					ParentSequenceID: savedMsg.SequenceID,
 				})
 				if err != nil {
+					h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+						EventType:        "agent.error",
+						RequestID:        requestID,
+						RoomID:           roomID,
+						UserID:           userID,
+						Status:           "failed",
+						Error:            err.Error(),
+						ParentMessageID:  savedMsg.ID,
+						ParentSequenceID: savedMsg.SequenceID,
+					})
 					log.Printf("submit command failed user=%s room=%s err=%v", userID, roomID, err)
-					if sendErr := h.sendRobotGroupMessage(roomID, err.Error(), nil); sendErr != nil {
+					if sendErr := h.sendRobotGroupMessage(roomID, err.Error(), nil, savedMsg.ID, &savedMsg.SequenceID); sendErr != nil {
 						log.Printf("send robot submit-failed message failed room=%s err=%v", roomID, sendErr)
 					}
 					continue
 				}
+				h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+					EventType:        "agent.start",
+					RequestID:        requestID,
+					RoomID:           roomID,
+					UserID:           userID,
+					Status:           "running",
+					Content:          strings.TrimSpace(msg.Content),
+					ParentMessageID:  savedMsg.ID,
+					ParentSequenceID: savedMsg.SequenceID,
+				})
+				h.sendAgentCommandAck(userID, roomID, requestID, taskID, savedMsg.ID, savedMsg.SequenceID)
 				continue
 			}
 			// Check if user is a member of the group and not muted
@@ -862,6 +899,30 @@ func (h *WsHandler) StartTaskDoneConsumer(ctx context.Context) error {
 		return h.doneConsumerErr
 	}
 	h.doneConsumerErr = h.taskService.StartDoneEventConsumer(ctx, func(handlerCtx context.Context, event taskservice.DoneEvent) error {
+		eventType := strings.TrimSpace(event.EventType)
+		if eventType == "agent.step" {
+			h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+				EventType: "agent.step",
+				RequestID: strings.TrimSpace(event.RequestID),
+				TaskID:    strings.TrimSpace(event.TaskID),
+				RoomID:    strings.TrimSpace(event.RoomID),
+				UserID:    strings.TrimSpace(event.UserID),
+				Step:      event.Step,
+				Role:      strings.TrimSpace(event.Role),
+				Tool:      strings.TrimSpace(event.Tool),
+				Status:    strings.TrimSpace(string(event.Status)),
+				Content:   strings.TrimSpace(event.Content),
+				Error:     strings.TrimSpace(event.ErrorMessage),
+				TokenUsage: map[string]int{
+					"prompt_tokens":     event.PromptTokens,
+					"completion_tokens": event.CompletionTokens,
+					"total_tokens":      event.TotalTokens,
+				},
+				ParentMessageID:  strings.TrimSpace(event.ParentMessageID),
+				ParentSequenceID: event.ParentSequenceID,
+			})
+			return nil
+		}
 		replyText := strings.TrimSpace(event.Final)
 		if replyText == "" {
 			replyText = strings.TrimSpace(event.ErrorMessage)
@@ -872,7 +933,40 @@ func (h *WsHandler) StartTaskDoneConsumer(ctx context.Context) error {
 		if strings.TrimSpace(replyText) == "" || strings.TrimSpace(event.RoomID) == "" {
 			return nil
 		}
-		return h.sendRobotGroupMessage(event.RoomID, replyText, event.Payload)
+		if eventType == "" {
+			for _, line := range splitMemoryLines(event.Payload) {
+				h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+					EventType:        "agent.step",
+					RequestID:        strings.TrimSpace(event.RequestID),
+					TaskID:           strings.TrimSpace(event.TaskID),
+					RoomID:           strings.TrimSpace(event.RoomID),
+					UserID:           strings.TrimSpace(event.UserID),
+					Status:           string(event.Status),
+					Content:          line,
+					ParentMessageID:  strings.TrimSpace(event.ParentMessageID),
+					ParentSequenceID: event.ParentSequenceID,
+				})
+			}
+		}
+		doneType := "agent.done"
+		if event.Status == tasksvc.StatusFailed {
+			doneType = "agent.error"
+		}
+		h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+			EventType:        doneType,
+			RequestID:        strings.TrimSpace(event.RequestID),
+			TaskID:           strings.TrimSpace(event.TaskID),
+			RoomID:           strings.TrimSpace(event.RoomID),
+			UserID:           strings.TrimSpace(event.UserID),
+			Status:           string(event.Status),
+			Content:          strings.TrimSpace(event.Final),
+			Error:            strings.TrimSpace(event.ErrorMessage),
+			Payload:          clonePayloadForStream(event.Payload),
+			ParentMessageID:  strings.TrimSpace(event.ParentMessageID),
+			ParentSequenceID: event.ParentSequenceID,
+		})
+		parentSequenceID := event.ParentSequenceID
+		return h.sendRobotGroupMessage(event.RoomID, replyText, event.Payload, event.ParentMessageID, &parentSequenceID)
 	})
 	if h.doneConsumerErr == nil {
 		h.doneConsumerUp = true
@@ -880,7 +974,7 @@ func (h *WsHandler) StartTaskDoneConsumer(ctx context.Context) error {
 	return h.doneConsumerErr
 }
 
-func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[string]interface{}) error {
+func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[string]interface{}, parentMessageID string, parentSequenceID *int64) error {
 	text := strings.TrimSpace(content)
 	if roomID == "" || text == "" {
 		return nil
@@ -892,7 +986,7 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[st
 	if err != nil {
 		return err
 	}
-	savedMsg, err := h.saveMessage(roomID, wsRobotUserID, models.ContentTypeText, &text, nil, payloadJSON, "", nil)
+	savedMsg, err := h.saveMessage(roomID, wsRobotUserID, models.ContentTypeText, &text, nil, payloadJSON, strings.TrimSpace(parentMessageID), parentSequenceID)
 	if err != nil {
 		return err
 	}
@@ -927,6 +1021,82 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[st
 		Data:    b,
 	}
 	return nil
+}
+
+func (h *WsHandler) publishAgentStreamEvent(event taskservice.AgentStreamEvent) {
+	if h == nil || h.streamHub == nil {
+		return
+	}
+	h.streamHub.Publish(event)
+}
+
+func splitMemoryLines(payload map[string]interface{}) []string {
+	if payload == nil {
+		return nil
+	}
+	rawMemory, ok := payload["memory"]
+	if !ok {
+		return nil
+	}
+	memoryText := strings.TrimSpace(fmt.Sprint(rawMemory))
+	if memoryText == "" {
+		return nil
+	}
+	lines := strings.Split(memoryText, "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func clonePayloadForStream(payload map[string]interface{}) map[string]interface{} {
+	if payload == nil {
+		return nil
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		cloned := make(map[string]interface{}, len(payload))
+		for k, v := range payload {
+			cloned[k] = v
+		}
+		return cloned
+	}
+	var cloned map[string]interface{}
+	if err := json.Unmarshal(b, &cloned); err != nil {
+		cloned = make(map[string]interface{}, len(payload))
+		for k, v := range payload {
+			cloned[k] = v
+		}
+	}
+	return cloned
+}
+
+func (h *WsHandler) sendAgentCommandAck(userID, roomID, requestID, taskID, parentMessageID string, parentSequenceID int64) {
+	if h == nil || h.hub == nil {
+		return
+	}
+	ack := AgentCommandAck{
+		Type:             "agent_command_ack",
+		RequestID:        strings.TrimSpace(requestID),
+		TaskID:           strings.TrimSpace(taskID),
+		RoomID:           strings.TrimSpace(roomID),
+		ParentMessageID:  strings.TrimSpace(parentMessageID),
+		ParentSequenceID: parentSequenceID,
+	}
+	b, err := json.Marshal(ack)
+	if err != nil {
+		return
+	}
+	h.hub.direct <- DirectMessage{
+		FromUserID: wsRobotUserID,
+		ToUserID:   strings.TrimSpace(userID),
+		Data:       b,
+	}
 }
 
 func toJSONPayload(payload map[string]interface{}) (datatypes.JSON, error) {

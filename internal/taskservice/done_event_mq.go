@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,18 +19,30 @@ import (
 const wsCommandRequestIDPrefix = "ws_command"
 
 type DoneEvent struct {
-	TaskID       string                 `json:"task_id"`
-	RequestID    string                 `json:"request_id,omitempty"`
-	Status       tasksvc.Status         `json:"status"`
-	Final        string                 `json:"final,omitempty"`
-	Payload      map[string]interface{} `json:"payload,omitempty"`
-	ErrorMessage string                 `json:"error_message,omitempty"`
-	RoomID       string                 `json:"room_id,omitempty"`
-	UserID       string                 `json:"user_id,omitempty"`
+	TaskID           string                 `json:"task_id"`
+	RequestID        string                 `json:"request_id,omitempty"`
+	EventType        string                 `json:"event_type,omitempty"`
+	Status           tasksvc.Status         `json:"status"`
+	Final            string                 `json:"final,omitempty"`
+	Payload          map[string]interface{} `json:"payload,omitempty"`
+	ErrorMessage     string                 `json:"error_message,omitempty"`
+	RoomID           string                 `json:"room_id,omitempty"`
+	UserID           string                 `json:"user_id,omitempty"`
+	ParentMessageID  string                 `json:"parent_message_id,omitempty"`
+	ParentSequenceID int64                  `json:"parent_sequence_id,omitempty"`
+	Step             int                    `json:"step,omitempty"`
+	Role             string                 `json:"role,omitempty"`
+	Tool             string                 `json:"tool,omitempty"`
+	Content          string                 `json:"content,omitempty"`
+	DurationMs       int64                  `json:"duration_ms,omitempty"`
+	PromptTokens     int                    `json:"prompt_tokens,omitempty"`
+	CompletionTokens int                    `json:"completion_tokens,omitempty"`
+	TotalTokens      int                    `json:"total_tokens,omitempty"`
 }
 
 type DoneEventPublisher interface {
 	Publish(ctx context.Context, doneTask *tasksvc.Task) error
+	PublishEvent(ctx context.Context, event DoneEvent) error
 	Close() error
 }
 
@@ -88,6 +101,13 @@ func (p *RabbitMQDoneEventPublisher) Publish(ctx context.Context, doneTask *task
 		return nil
 	}
 	event := BuildDoneEvent(doneTask)
+	return p.PublishEvent(ctx, event)
+}
+
+func (p *RabbitMQDoneEventPublisher) PublishEvent(ctx context.Context, event DoneEvent) error {
+	if p == nil {
+		return nil
+	}
 	body, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -147,24 +167,40 @@ func sleepWithContext(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
-func BuildWSCommandRequestID(userID, roomID string) string {
-	return fmt.Sprintf("%s|%s|%s|%s", wsCommandRequestIDPrefix, strings.TrimSpace(userID), strings.TrimSpace(roomID), uuid.NewString())
+func BuildWSCommandRequestID(userID, roomID, parentMessageID string, parentSequenceID int64) string {
+	return fmt.Sprintf("%s|%s|%s|%s|%d|%s",
+		wsCommandRequestIDPrefix,
+		strings.TrimSpace(userID),
+		strings.TrimSpace(roomID),
+		strings.TrimSpace(parentMessageID),
+		parentSequenceID,
+		uuid.NewString(),
+	)
 }
 
-func ParseWSCommandRequestID(requestID string) (string, string, bool) {
+func ParseWSCommandRequestID(requestID string) (string, string, string, int64, bool) {
 	parts := strings.Split(strings.TrimSpace(requestID), "|")
 	if len(parts) < 4 {
-		return "", "", false
+		return "", "", "", 0, false
 	}
 	if parts[0] != wsCommandRequestIDPrefix {
-		return "", "", false
+		return "", "", "", 0, false
 	}
 	userID := strings.TrimSpace(parts[1])
 	roomID := strings.TrimSpace(parts[2])
 	if userID == "" || roomID == "" {
-		return "", "", false
+		return "", "", "", 0, false
 	}
-	return userID, roomID, true
+	parentMessageID := ""
+	var parentSequenceID int64
+	if len(parts) >= 6 {
+		parentMessageID = strings.TrimSpace(parts[3])
+		parsedSeq, err := strconv.ParseInt(strings.TrimSpace(parts[4]), 10, 64)
+		if err == nil && parsedSeq > 0 {
+			parentSequenceID = parsedSeq
+		}
+	}
+	return userID, roomID, parentMessageID, parentSequenceID, true
 }
 
 func BuildDoneEvent(doneTask *tasksvc.Task) DoneEvent {
@@ -176,14 +212,20 @@ func BuildDoneEvent(doneTask *tasksvc.Task) DoneEvent {
 	event = DoneEvent{
 		TaskID:       doneTask.ID,
 		RequestID:    doneTask.RequestID,
+		EventType:    "agent.done",
 		Status:       doneTask.Status,
 		Final:        strings.TrimSpace(final),
 		Payload:      payload,
 		ErrorMessage: strings.TrimSpace(doneTask.ErrorMessage),
 	}
-	if userID, roomID, ok := ParseWSCommandRequestID(doneTask.RequestID); ok {
+	if doneTask.Status == tasksvc.StatusFailed {
+		event.EventType = "agent.error"
+	}
+	if userID, roomID, parentMessageID, parentSequenceID, ok := ParseWSCommandRequestID(doneTask.RequestID); ok {
 		event.UserID = userID
 		event.RoomID = roomID
+		event.ParentMessageID = parentMessageID
+		event.ParentSequenceID = parentSequenceID
 	}
 	return event
 }

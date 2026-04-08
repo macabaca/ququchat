@@ -72,6 +72,9 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	api.GET("/messages/history/after", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetHistoryAfter)
 	api.GET("/messages/history/latest", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByFriend)
 	api.GET("/messages/history/group", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByGroup)
+	streamHub := taskservice.NewAgentStreamHub()
+	agentStreamHandler := handler.NewAgentStreamHandler(streamHub)
+	api.GET("/agent/stream", middleware.JWTAuth(authCfg.JWTSecret), agentStreamHandler.Stream)
 
 	fileHandler := handler.NewFileHandler(db, fileCfg, objStorage, bucket)
 	files := api.Group("/files", middleware.JWTAuth(authCfg.JWTSecret))
@@ -84,7 +87,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	files.POST("/multipart/complete", fileHandler.CompleteMultipartUpload)
 	files.POST("/multipart/abort", fileHandler.AbortMultipartUpload)
 
-	wsHandler := handler.NewWsHandler(db, hub, redisClient, taskService)
+	wsHandler := handler.NewWsHandler(db, hub, redisClient, taskService, streamHub)
 	go func() {
 		for {
 			if err := wsHandler.StartTaskDoneConsumer(context.Background()); err != nil {

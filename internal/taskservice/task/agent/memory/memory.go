@@ -19,6 +19,7 @@ type SessionInput struct {
 	RecentMessages         []string
 	MaxRecent              int
 	FeedbackOutputMaxChars int
+	OnObservation          func(obs Observation)
 }
 
 type RecallRequest struct {
@@ -80,6 +81,7 @@ type defaultSession struct {
 	recent                 []string
 	maxRecent              int
 	feedbackOutputMaxChars int
+	onObservation          func(obs Observation)
 	observations           []Observation
 }
 
@@ -117,6 +119,7 @@ func (d defaultFacade) NewSession(input SessionInput) Session {
 		recent:                 recent,
 		maxRecent:              maxRecent,
 		feedbackOutputMaxChars: input.FeedbackOutputMaxChars,
+		onObservation:          input.OnObservation,
 		observations:           make([]Observation, 0),
 	}
 }
@@ -174,6 +177,9 @@ func (s *defaultSession) AppendObservation(obs Observation) {
 		normalized.Status = "succeeded"
 	}
 	s.observations = append(s.observations, normalized)
+	if s.onObservation != nil {
+		s.onObservation(normalized)
+	}
 }
 
 func (s *defaultSession) BuildFeedback() string {
