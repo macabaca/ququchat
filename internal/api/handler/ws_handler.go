@@ -265,25 +265,29 @@ type Client struct {
 }
 
 type IncomingMessage struct {
-	Type         string `json:"type"`
-	ToUser       string `json:"to_user_id,omitempty"`
-	RoomID       string `json:"room_id,omitempty"`
-	Content      string `json:"content,omitempty"`
-	AttachmentID string `json:"attachment_id,omitempty"`
+	Type             string `json:"type"`
+	ToUser           string `json:"to_user_id,omitempty"`
+	RoomID           string `json:"room_id,omitempty"`
+	Content          string `json:"content,omitempty"`
+	AttachmentID     string `json:"attachment_id,omitempty"`
+	ParentMessageID  string `json:"parent_message_id,omitempty"`
+	ParentSequenceID *int64 `json:"parent_sequence_id,omitempty"`
 }
 
 type OutgoingMessage struct {
-	ID           string             `json:"id"`
-	Type         string             `json:"type"`
-	FromUser     string             `json:"from_user_id"`
-	ToUser       string             `json:"to_user_id,omitempty"`
-	RoomID       string             `json:"room_id,omitempty"`
-	Content      string             `json:"content,omitempty"`
-	AttachmentID string             `json:"attachment_id,omitempty"`
-	Attachment   *AttachmentPayload `json:"attachment,omitempty"`
-	PayloadJSON  datatypes.JSON     `json:"payload_json,omitempty"`
-	Timestamp    int64              `json:"timestamp"`
-	SequenceID   int64              `json:"sequence_id"`
+	ID               string             `json:"id"`
+	Type             string             `json:"type"`
+	FromUser         string             `json:"from_user_id"`
+	ToUser           string             `json:"to_user_id,omitempty"`
+	RoomID           string             `json:"room_id,omitempty"`
+	Content          string             `json:"content,omitempty"`
+	AttachmentID     string             `json:"attachment_id,omitempty"`
+	Attachment       *AttachmentPayload `json:"attachment,omitempty"`
+	PayloadJSON      datatypes.JSON     `json:"payload_json,omitempty"`
+	ParentMessageID  string             `json:"parent_message_id,omitempty"`
+	ParentSequenceID *int64             `json:"parent_sequence_id,omitempty"`
+	Timestamp        int64              `json:"timestamp"`
+	SequenceID       int64              `json:"sequence_id"`
 }
 
 type AttachmentPayload struct {
@@ -385,19 +389,26 @@ func (c *Client) readLoop(h *WsHandler) {
 			if err != nil {
 				continue
 			}
-			savedMsg, err := h.saveDirectMessage(roomID, c.userID, msg.Content)
+			savedMsg, err := h.saveDirectMessage(roomID, c.userID, msg.Content, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 			if err != nil {
 				continue
 			}
 			out := OutgoingMessage{
-				ID:         savedMsg.ID,
-				Type:       "friend_message",
-				FromUser:   c.userID,
-				ToUser:     msg.ToUser,
-				RoomID:     roomID,
-				Content:    msg.Content,
-				Timestamp:  savedMsg.CreatedAt.Unix(),
-				SequenceID: savedMsg.SequenceID,
+				ID:       savedMsg.ID,
+				Type:     "friend_message",
+				FromUser: c.userID,
+				ToUser:   msg.ToUser,
+				RoomID:   roomID,
+				Content:  msg.Content,
+				ParentMessageID: func() string {
+					if savedMsg.ParentMessageID == nil {
+						return ""
+					}
+					return strings.TrimSpace(*savedMsg.ParentMessageID)
+				}(),
+				ParentSequenceID: savedMsg.ParentSequenceID,
+				Timestamp:        savedMsg.CreatedAt.Unix(),
+				SequenceID:       savedMsg.SequenceID,
 			}
 			b, err := json.Marshal(out)
 			if err != nil {
@@ -416,7 +427,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
 					continue
 				}
-				savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content)
+				savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 				if err != nil {
 					continue
 				}
@@ -425,13 +436,20 @@ func (c *Client) readLoop(h *WsHandler) {
 					continue
 				}
 				commandOut := OutgoingMessage{
-					ID:         savedMsg.ID,
-					Type:       "group_message",
-					FromUser:   c.userID,
-					RoomID:     msg.RoomID,
-					Content:    msg.Content,
-					Timestamp:  savedMsg.CreatedAt.Unix(),
-					SequenceID: savedMsg.SequenceID,
+					ID:       savedMsg.ID,
+					Type:     "group_message",
+					FromUser: c.userID,
+					RoomID:   msg.RoomID,
+					Content:  msg.Content,
+					ParentMessageID: func() string {
+						if savedMsg.ParentMessageID == nil {
+							return ""
+						}
+						return strings.TrimSpace(*savedMsg.ParentMessageID)
+					}(),
+					ParentSequenceID: savedMsg.ParentSequenceID,
+					Timestamp:        savedMsg.CreatedAt.Unix(),
+					SequenceID:       savedMsg.SequenceID,
 				}
 				commandBroadcast, err := json.Marshal(commandOut)
 				if err == nil {
@@ -465,7 +483,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				// Optionally send error back to user
 				continue
 			}
-			savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content)
+			savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 			if err != nil {
 				continue
 			}
@@ -477,13 +495,20 @@ func (c *Client) readLoop(h *WsHandler) {
 			}
 
 			out := OutgoingMessage{
-				ID:         savedMsg.ID,
-				Type:       "group_message",
-				FromUser:   c.userID,
-				RoomID:     msg.RoomID,
-				Content:    msg.Content,
-				Timestamp:  savedMsg.CreatedAt.Unix(),
-				SequenceID: savedMsg.SequenceID,
+				ID:       savedMsg.ID,
+				Type:     "group_message",
+				FromUser: c.userID,
+				RoomID:   msg.RoomID,
+				Content:  msg.Content,
+				ParentMessageID: func() string {
+					if savedMsg.ParentMessageID == nil {
+						return ""
+					}
+					return strings.TrimSpace(*savedMsg.ParentMessageID)
+				}(),
+				ParentSequenceID: savedMsg.ParentSequenceID,
+				Timestamp:        savedMsg.CreatedAt.Unix(),
+				SequenceID:       savedMsg.SequenceID,
 			}
 			b, err := json.Marshal(out)
 			if err != nil {
@@ -516,7 +541,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				if err != nil {
 					continue
 				}
-				savedMsg, err := h.saveAttachmentMessage(roomID, c.userID, attachment.ID, payloadJSON, contentType)
+				savedMsg, err := h.saveAttachmentMessage(roomID, c.userID, attachment.ID, payloadJSON, contentType, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 				if err != nil {
 					continue
 				}
@@ -528,8 +553,15 @@ func (c *Client) readLoop(h *WsHandler) {
 					RoomID:       roomID,
 					AttachmentID: attachment.ID,
 					Attachment:   payload,
-					Timestamp:    savedMsg.CreatedAt.Unix(),
-					SequenceID:   savedMsg.SequenceID,
+					ParentMessageID: func() string {
+						if savedMsg.ParentMessageID == nil {
+							return ""
+						}
+						return strings.TrimSpace(*savedMsg.ParentMessageID)
+					}(),
+					ParentSequenceID: savedMsg.ParentSequenceID,
+					Timestamp:        savedMsg.CreatedAt.Unix(),
+					SequenceID:       savedMsg.SequenceID,
 				}
 				b, err := json.Marshal(out)
 				if err != nil {
@@ -544,7 +576,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
 					continue
 				}
-				savedMsg, err := h.saveAttachmentMessage(msg.RoomID, c.userID, attachment.ID, payloadJSON, contentType)
+				savedMsg, err := h.saveAttachmentMessage(msg.RoomID, c.userID, attachment.ID, payloadJSON, contentType, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 				if err != nil {
 					continue
 				}
@@ -559,8 +591,15 @@ func (c *Client) readLoop(h *WsHandler) {
 					RoomID:       msg.RoomID,
 					AttachmentID: attachment.ID,
 					Attachment:   payload,
-					Timestamp:    savedMsg.CreatedAt.Unix(),
-					SequenceID:   savedMsg.SequenceID,
+					ParentMessageID: func() string {
+						if savedMsg.ParentMessageID == nil {
+							return ""
+						}
+						return strings.TrimSpace(*savedMsg.ParentMessageID)
+					}(),
+					ParentSequenceID: savedMsg.ParentSequenceID,
+					Timestamp:        savedMsg.CreatedAt.Unix(),
+					SequenceID:       savedMsg.SequenceID,
 				}
 				b, err := json.Marshal(out)
 				if err != nil {
@@ -853,7 +892,7 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[st
 	if err != nil {
 		return err
 	}
-	savedMsg, err := h.saveMessage(roomID, wsRobotUserID, models.ContentTypeText, &text, nil, payloadJSON)
+	savedMsg, err := h.saveMessage(roomID, wsRobotUserID, models.ContentTypeText, &text, nil, payloadJSON, "", nil)
 	if err != nil {
 		return err
 	}
@@ -868,8 +907,15 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[st
 		RoomID:      roomID,
 		Content:     text,
 		PayloadJSON: payloadJSON,
-		Timestamp:   savedMsg.CreatedAt.Unix(),
-		SequenceID:  savedMsg.SequenceID,
+		ParentMessageID: func() string {
+			if savedMsg.ParentMessageID == nil {
+				return ""
+			}
+			return strings.TrimSpace(*savedMsg.ParentMessageID)
+		}(),
+		ParentSequenceID: savedMsg.ParentSequenceID,
+		Timestamp:        savedMsg.CreatedAt.Unix(),
+		SequenceID:       savedMsg.SequenceID,
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
@@ -894,23 +940,24 @@ func toJSONPayload(payload map[string]interface{}) (datatypes.JSON, error) {
 	return datatypes.JSON(b), nil
 }
 
-func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) (*models.Message, error) {
+func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string, parentMessageID string, parentSequenceID *int64) (*models.Message, error) {
 	text := content
-	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil)
+	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil, parentMessageID, parentSequenceID)
 }
 
-func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string) (*models.Message, error) {
+func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string, parentMessageID string, parentSequenceID *int64) (*models.Message, error) {
 	text := content
-	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil)
+	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil, parentMessageID, parentSequenceID)
 }
 
-func (h *WsHandler) saveAttachmentMessage(roomID, fromUserID, attachmentID string, payload datatypes.JSON, contentType models.ContentType) (*models.Message, error) {
+func (h *WsHandler) saveAttachmentMessage(roomID, fromUserID, attachmentID string, payload datatypes.JSON, contentType models.ContentType, parentMessageID string, parentSequenceID *int64) (*models.Message, error) {
 	aid := attachmentID
-	return h.saveMessage(roomID, fromUserID, contentType, nil, &aid, payload)
+	return h.saveMessage(roomID, fromUserID, contentType, nil, &aid, payload, parentMessageID, parentSequenceID)
 }
 
-func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.ContentType, contentText *string, attachmentID *string, payload datatypes.JSON) (*models.Message, error) {
+func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.ContentType, contentText *string, attachmentID *string, payload datatypes.JSON, parentMessageID string, parentSequenceID *int64) (*models.Message, error) {
 	now := time.Now()
+	trimmedParentMessageID := strings.TrimSpace(parentMessageID)
 
 	// 重试逻辑：处理高并发下的 SequenceID 冲突（尤其是在 Postgres 无间隙锁的情况下）
 	maxRetries := 3
@@ -927,6 +974,12 @@ func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.Co
 		}
 
 		err := h.db.Transaction(func(tx *gorm.DB) error {
+			resolvedParentMessageID, resolvedParentSequenceID, resolveErr := h.resolveParentReference(tx, roomID, trimmedParentMessageID, parentSequenceID)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			m.ParentMessageID = resolvedParentMessageID
+			m.ParentSequenceID = resolvedParentSequenceID
 			var lastMsg models.Message
 			// 尝试锁定最新的一条消息
 			// 注意：如果房间为空，First 会返回 RecordNotFound，此时无法加锁，依赖唯一索引冲突重试
@@ -952,6 +1005,33 @@ func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.Co
 	}
 	// TODO: 记录重试失败日志
 	return nil, errors.New("failed to save message after retries")
+}
+
+func (h *WsHandler) resolveParentReference(tx *gorm.DB, roomID string, parentMessageID string, parentSequenceID *int64) (*string, *int64, error) {
+	trimmedParentMessageID := strings.TrimSpace(parentMessageID)
+	hasParentSequence := parentSequenceID != nil && *parentSequenceID > 0
+	if trimmedParentMessageID == "" && !hasParentSequence {
+		return nil, nil, nil
+	}
+	var parent models.Message
+	if trimmedParentMessageID != "" {
+		if err := tx.Where("id = ?", trimmedParentMessageID).First(&parent).Error; err != nil {
+			return nil, nil, err
+		}
+	} else {
+		if err := tx.Where("room_id = ? AND sequence_id = ?", roomID, *parentSequenceID).First(&parent).Error; err != nil {
+			return nil, nil, err
+		}
+	}
+	if strings.TrimSpace(parent.RoomID) != strings.TrimSpace(roomID) {
+		return nil, nil, errors.New("parent message does not belong to room")
+	}
+	if hasParentSequence && parent.SequenceID != *parentSequenceID {
+		return nil, nil, errors.New("parent sequence does not match parent message")
+	}
+	parentID := strings.TrimSpace(parent.ID)
+	parentSeq := parent.SequenceID
+	return &parentID, &parentSeq, nil
 }
 
 func (h *WsHandler) loadAttachmentPayload(userID, attachmentID string) (*models.Attachment, *AttachmentPayload, datatypes.JSON, error) {

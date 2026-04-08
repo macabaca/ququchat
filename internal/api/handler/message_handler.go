@@ -34,15 +34,17 @@ type HistoryRequest struct {
 }
 
 type MessageDTO struct {
-	ID           string          `json:"id"`
-	RoomID       string          `json:"room_id"`
-	SequenceID   int64           `json:"sequence_id"`
-	SenderID     string          `json:"sender_id,omitempty"`
-	ContentType  string          `json:"content_type"`
-	ContentText  string          `json:"content_text,omitempty"`
-	AttachmentID string          `json:"attachment_id,omitempty"`
-	PayloadJSON  json.RawMessage `json:"payload_json,omitempty"`
-	CreatedAt    int64           `json:"created_at"`
+	ID               string          `json:"id"`
+	RoomID           string          `json:"room_id"`
+	SequenceID       int64           `json:"sequence_id"`
+	SenderID         string          `json:"sender_id,omitempty"`
+	ContentType      string          `json:"content_type"`
+	ContentText      string          `json:"content_text,omitempty"`
+	AttachmentID     string          `json:"attachment_id,omitempty"`
+	ParentMessageID  string          `json:"parent_message_id,omitempty"`
+	ParentSequenceID *int64          `json:"parent_sequence_id,omitempty"`
+	PayloadJSON      json.RawMessage `json:"payload_json,omitempty"`
+	CreatedAt        int64           `json:"created_at"`
 }
 
 func (h *MessageHandler) GetHistoryBefore(c *gin.Context) {
@@ -180,6 +182,10 @@ func (h *MessageHandler) GetHistoryBefore(c *gin.Context) {
 		if m.AttachmentID != nil {
 			dto.AttachmentID = *m.AttachmentID
 		}
+		if m.ParentMessageID != nil {
+			dto.ParentMessageID = *m.ParentMessageID
+		}
+		dto.ParentSequenceID = m.ParentSequenceID
 		if len(m.PayloadJSON) > 0 {
 			dto.PayloadJSON = json.RawMessage(m.PayloadJSON)
 		}
@@ -280,6 +286,10 @@ func (h *MessageHandler) GetHistoryAfter(c *gin.Context) {
 		if m.AttachmentID != nil {
 			dto.AttachmentID = *m.AttachmentID
 		}
+		if m.ParentMessageID != nil {
+			dto.ParentMessageID = *m.ParentMessageID
+		}
+		dto.ParentSequenceID = m.ParentSequenceID
 		if len(m.PayloadJSON) > 0 {
 			dto.PayloadJSON = json.RawMessage(m.PayloadJSON)
 		}
@@ -365,6 +375,10 @@ func (h *MessageHandler) GetLatestByGroup(c *gin.Context) {
 		if m.AttachmentID != nil {
 			dto.AttachmentID = *m.AttachmentID
 		}
+		if m.ParentMessageID != nil {
+			dto.ParentMessageID = *m.ParentMessageID
+		}
+		dto.ParentSequenceID = m.ParentSequenceID
 		if len(m.PayloadJSON) > 0 {
 			dto.PayloadJSON = json.RawMessage(m.PayloadJSON)
 		}
@@ -454,6 +468,10 @@ func (h *MessageHandler) GetLatestByFriend(c *gin.Context) {
 		if m.AttachmentID != nil {
 			dto.AttachmentID = *m.AttachmentID
 		}
+		if m.ParentMessageID != nil {
+			dto.ParentMessageID = *m.ParentMessageID
+		}
+		dto.ParentSequenceID = m.ParentSequenceID
 		if len(m.PayloadJSON) > 0 {
 			dto.PayloadJSON = json.RawMessage(m.PayloadJSON)
 		}

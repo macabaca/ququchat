@@ -31,7 +31,7 @@ document/
 # Project local folders
 bash/
 bin/
-documents/
+# documents/
 data/
 einoagent/
 
