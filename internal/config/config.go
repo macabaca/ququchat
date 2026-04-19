@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Database       Database             `yaml:"database" json:"database"`
 	Redis          Redis                `yaml:"redis" json:"redis"`
+	WS             WS                   `yaml:"ws" json:"ws"`
 	Auth           Auth                 `yaml:"auth" json:"auth"`
 	Chat           Chat                 `yaml:"chat" json:"chat"`
 	Task           Task                 `yaml:"task" json:"task"`
@@ -18,6 +19,7 @@ type Config struct {
 	AIGC           AIGC                 `yaml:"aigc" json:"aigc"`
 	Embedding      Embedding            `yaml:"embedding" json:"embedding"`
 	Vector         Vector               `yaml:"vector" json:"vector"`
+	Rerank         Rerank               `yaml:"rerank" json:"rerank"`
 	RAGStopPhrases RAGStopPhrasesConfig `yaml:"rag_stop_phrases" json:"rag_stop_phrases"`
 	MCPServers     map[string]MCPServer `yaml:"mcp_servers" json:"mcp_servers"`
 	File           File                 `yaml:"file" json:"file"`
@@ -39,6 +41,10 @@ type MCPServer struct {
 
 type RAGStopPhrasesConfig struct {
 	StopPhrases []string `yaml:"stop_phrases" json:"stop_phrases"`
+}
+
+type WS struct {
+	NodeID string `yaml:"node_id" json:"node_id"`
 }
 
 type Redis struct {

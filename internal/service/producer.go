@@ -51,7 +51,6 @@ func NewProducer(db *gorm.DB, opts tasksvc.RuntimeOptions) *Producer {
 				URL:          opts.QueueRabbitMQURL,
 				QueueName:    queueName,
 				ExchangeName: exchangeName,
-				MaxPriority:  opts.QueueRabbitMQMaxPriority,
 				MaxLength:    opts.QueueRabbitMQMaxLength,
 			})
 			if err == nil {

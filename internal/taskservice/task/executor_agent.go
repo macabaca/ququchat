@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strconv"
@@ -31,12 +32,12 @@ func (e *DefaultExecutor) executeAgent(ctx context.Context, t *Task) (Result, er
 		return Result{}, errors.New("agent goal is required")
 	}
 	text, err := taskagent.Execute(ctx, e.llmClient, taskagent.Input{
-		Goal:                       goal,
-		RecentMessages:             append([]string(nil), t.Payload.Agent.RecentMessages...),
-		MaxSteps:                   t.Payload.Agent.MaxSteps,
-		RoomID:                     strings.TrimSpace(t.Payload.Agent.RoomID),
-		RequestID:                  strings.TrimSpace(t.RequestID),
-		TaskID:                     strings.TrimSpace(t.ID),
+		Goal:           goal,
+		RecentMessages: append([]string(nil), t.Payload.Agent.RecentMessages...),
+		MaxSteps:       t.Payload.Agent.MaxSteps,
+		RoomID:         strings.TrimSpace(t.Payload.Agent.RoomID),
+		RequestID:      strings.TrimSpace(t.RequestID),
+		TaskID:         strings.TrimSpace(t.ID),
 		OnObservation: func(event taskagent.ObservationEvent) {
 			if e == nil || e.progressReporter == nil {
 				return
@@ -480,21 +481,59 @@ func (e *DefaultExecutor) agentCallMCPToolByQualifiedName(ctx context.Context, q
 	if e == nil || e.mcpMultiClient == nil {
 		return "", errors.New("mcp client is not configured")
 	}
-	result, err := e.mcpMultiClient.CallToolByQualifiedName(ctx, qualifiedToolName, arguments)
+	debugTextToAudio := shouldLogMinimaxTextToAudio(qualifiedToolName)
+	if debugTextToAudio {
+		payload := formatSchemaValue(arguments)
+		log.Printf("mcp debug tool=%s input=%s", strings.TrimSpace(qualifiedToolName), payload)
+	}
+	rawResult, err := e.mcpMultiClient.CallToolByQualifiedNameRaw(ctx, qualifiedToolName, arguments)
 	if err != nil {
+		if debugTextToAudio {
+			log.Printf("mcp debug tool=%s transport_error=%v", strings.TrimSpace(qualifiedToolName), err)
+		}
 		return "", err
 	}
-	if result == nil {
+	trimmed := strings.TrimSpace(rawResult)
+	if debugTextToAudio {
+		log.Printf("mcp debug tool=%s raw_output=%s", strings.TrimSpace(qualifiedToolName), trimmed)
+	}
+	if trimmed == "" {
 		return "", nil
 	}
-	if businessErr := detectMCPBusinessError(result); businessErr != "" {
+	if businessErr := detectMCPBusinessErrorFromRaw(trimmed); businessErr != "" {
+		if debugTextToAudio {
+			log.Printf("mcp debug tool=%s business_error=%s", strings.TrimSpace(qualifiedToolName), businessErr)
+		}
 		return "", errors.New(businessErr)
 	}
-	encoded, encodeErr := json.Marshal(result)
-	if encodeErr != nil {
-		return strings.TrimSpace(fmt.Sprint(result)), nil
+	return trimmed, nil
+}
+
+func shouldLogMinimaxTextToAudio(qualifiedToolName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(qualifiedToolName))
+	return normalized == "minimax:text_to_audio" || strings.HasSuffix(normalized, ":text_to_audio")
+}
+
+func detectMCPBusinessErrorFromRaw(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
 	}
-	return strings.TrimSpace(string(encoded)), nil
+	var root map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &root); err != nil || len(root) == 0 {
+		return ""
+	}
+	if errPayload := schemaAsMap(root["error"]); len(errPayload) > 0 {
+		msg := strings.TrimSpace(readStringValue(errPayload, "message"))
+		if msg != "" {
+			return msg
+		}
+		return "mcp tool returned protocol error"
+	}
+	if result := schemaAsMap(root["result"]); len(result) > 0 {
+		return detectMCPBusinessError(result)
+	}
+	return ""
 }
 
 func detectMCPBusinessError(result any) string {

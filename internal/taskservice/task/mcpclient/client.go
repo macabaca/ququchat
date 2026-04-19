@@ -1,8 +1,12 @@
 package mcpclient
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -20,6 +24,7 @@ type ClientOptions struct {
 }
 
 type Client struct {
+	endpoint   string
 	sdkClient  *mcp.Client
 	session    *mcp.ClientSession
 	httpClient *http.Client
@@ -82,6 +87,7 @@ func NewClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
+		endpoint:   endpoint,
 		sdkClient:  sdkClient,
 		session:    session,
 		httpClient: httpClient,
@@ -140,6 +146,55 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments map[string
 		Name:      toolName,
 		Arguments: args,
 	})
+}
+
+func (c *Client) CallToolRaw(ctx context.Context, name string, arguments map[string]any) (string, error) {
+	if c == nil || c.httpClient == nil {
+		return "", errors.New("mcp client is not initialized")
+	}
+	toolName := strings.TrimSpace(name)
+	if toolName == "" {
+		return "", errors.New("tool name is empty")
+	}
+	args := arguments
+	if args == nil {
+		args = map[string]any{}
+	}
+	payload := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      fmt.Sprintf("raw-call-%d", time.Now().UnixNano()),
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      toolName,
+			"arguments": args,
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSpace(c.endpoint), bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	text := strings.TrimSpace(string(respBody))
+	if resp.StatusCode >= 400 {
+		if text == "" {
+			text = fmt.Sprintf("http status %d", resp.StatusCode)
+		}
+		return "", errors.New(text)
+	}
+	return text, nil
 }
 
 type headerRoundTripper struct {

@@ -29,6 +29,8 @@ agent_node_calls.jsonl
 document/
 
 # Project local folders
+MCPServer/
+RerankServer/
 bash/
 bin/
 # documents/

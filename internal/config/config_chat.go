@@ -88,6 +88,13 @@ type Vector struct {
 	Distance         string `yaml:"distance" json:"distance"`
 }
 
+type Rerank struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	Endpoint   string `yaml:"endpoint" json:"endpoint"`
+	TimeoutMs  int    `yaml:"timeout_ms" json:"timeout_ms"`
+	RecallTopN int    `yaml:"recall_top_n" json:"recall_top_n"`
+}
+
 func (l LLM) TransportOrDefault() string {
 	if strings.TrimSpace(l.Transport) != "" {
 		return strings.TrimSpace(l.Transport)
@@ -345,6 +352,28 @@ func (v Vector) DistanceOrDefault() string {
 		return strings.TrimSpace(v.Distance)
 	}
 	return "Cosine"
+}
+
+func (r Rerank) EnabledOrDefault() bool {
+	return r.Enabled && strings.TrimSpace(r.Endpoint) != ""
+}
+
+func (r Rerank) EndpointOrDefault() string {
+	return strings.TrimSpace(r.Endpoint)
+}
+
+func (r Rerank) TimeoutOrDefault() time.Duration {
+	if r.TimeoutMs > 0 {
+		return time.Duration(r.TimeoutMs) * time.Millisecond
+	}
+	return 3 * time.Second
+}
+
+func (r Rerank) RecallTopNOrDefault() int {
+	if r.RecallTopN > 0 {
+		return r.RecallTopN
+	}
+	return 20
 }
 
 func (t Task) QueueHighCapOrDefault() int {

@@ -63,6 +63,10 @@ func (c *RedisClient) Ping(ctx context.Context) error {
 	return c.raw.Ping(ctx).Err()
 }
 
+func (c *RedisClient) KeyPrefix() string {
+	return c.keyPrefix
+}
+
 func (c *RedisClient) Close() error {
 	return c.raw.Close()
 }
@@ -119,4 +123,36 @@ func (c *RedisClient) Del(ctx context.Context, keys ...string) error {
 		return nil
 	}
 	return c.raw.Del(ctx, keys...).Err()
+}
+
+func (c *RedisClient) SAdd(ctx context.Context, key string, members ...string) error {
+	args := make([]interface{}, len(members))
+	for i, m := range members {
+		args[i] = m
+	}
+	return c.raw.SAdd(ctx, key, args...).Err()
+}
+
+func (c *RedisClient) SRem(ctx context.Context, key string, members ...string) error {
+	args := make([]interface{}, len(members))
+	for i, m := range members {
+		args[i] = m
+	}
+	return c.raw.SRem(ctx, key, args...).Err()
+}
+
+func (c *RedisClient) SMembers(ctx context.Context, key string) ([]string, error) {
+	return c.raw.SMembers(ctx, key).Result()
+}
+
+func (c *RedisClient) SCard(ctx context.Context, key string) (int64, error) {
+	return c.raw.SCard(ctx, key).Result()
+}
+
+func (c *RedisClient) Publish(ctx context.Context, channel string, payload string) error {
+	return c.raw.Publish(ctx, channel, payload).Err()
+}
+
+func (c *RedisClient) Subscribe(ctx context.Context, channel string) *redis.PubSub {
+	return c.raw.Subscribe(ctx, channel)
 }

@@ -221,7 +221,6 @@ func main() {
 			URL:          cfg.Task.QueueRabbitMQURL,
 			QueueName:    cfg.Task.QueueRabbitMQNameOrDefault(),
 			ExchangeName: cfg.Task.QueueRabbitMQExchangeOrDefault(),
-			MaxPriority:  cfg.Task.QueueRabbitMQMaxPriorityOrDefault(),
 			MaxLength:    cfg.Task.QueueRabbitMQMaxLengthOrDefault(),
 		}); err != nil {
 			log.Fatalf("迁移任务队列失败: %v", err)
@@ -269,7 +268,6 @@ func main() {
 		QueueRabbitMQURL:                 cfg.Task.QueueRabbitMQURL,
 		QueueRabbitMQName:                cfg.Task.QueueRabbitMQNameOrDefault(),
 		QueueRabbitMQExchange:            cfg.Task.QueueRabbitMQExchangeOrDefault(),
-		QueueRabbitMQMaxPriority:         cfg.Task.QueueRabbitMQMaxPriorityOrDefault(),
 		QueueRabbitMQMaxLength:           cfg.Task.QueueRabbitMQMaxLengthOrDefault(),
 		DoneEventRabbitMQURL:             cfg.Task.DoneEventMQURLOrDefault(),
 		DoneEventQueueName:               cfg.Task.DoneEventQueueOrDefault(),
@@ -304,6 +302,10 @@ func main() {
 		EmbeddingModelSummary:            cfg.Embedding.ModelOrDefault(),
 		SummaryVectorDim:                 cfg.Vector.SummaryVectorDimOrDefault(),
 		RAGStopPhrases:                   cfg.RAGStopPhrases.StopPhrases,
+		RAGRerankEnabled:                 cfg.Rerank.EnabledOrDefault(),
+		RAGRerankEndpoint:                cfg.Rerank.EndpointOrDefault(),
+		RAGRerankTimeout:                 cfg.Rerank.TimeoutOrDefault(),
+		RAGRerankRecallTopN:              cfg.Rerank.RecallTopNOrDefault(),
 		MCPMultiClient:                   mcpMultiClient,
 	})
 

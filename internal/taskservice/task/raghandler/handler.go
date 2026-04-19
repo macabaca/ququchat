@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ const defaultMaxSummaryChars = 2000
 const defaultMinSummaryMessageCount = 5
 const defaultRAGSearchTopK = 5
 const maxRAGSearchTopK = 20
+const defaultRAGRerankRecallTopN = 20
 const ragSearchVectorRaw = "raw"
 const ragSearchVectorSummary = "summary"
 
@@ -39,6 +41,8 @@ type Handler struct {
 	embeddingModelSummary string
 	summaryVectorDim      int
 	stopPhrases           map[string]struct{}
+	rerankClient          *HTTPRerankClient
+	rerankRecallTopN      int
 }
 
 type Options struct {
@@ -50,6 +54,10 @@ type Options struct {
 	EmbeddingModelSummary string
 	SummaryVectorDim      int
 	StopPhrases           []string
+	RerankEnabled         bool
+	RerankEndpoint        string
+	RerankTimeout         time.Duration
+	RerankRecallTopN      int
 }
 
 type ragSegmentLine struct {
@@ -62,6 +70,20 @@ var ragSpaceRe = regexp.MustCompile(`\s+`)
 var ragNoiseOnlyRe = regexp.MustCompile(`^[\p{P}\p{S}\s]+$`)
 
 func New(opts Options) *Handler {
+	var rerankClient *HTTPRerankClient
+	if opts.RerankEnabled && strings.TrimSpace(opts.RerankEndpoint) != "" {
+		rerankClient = NewHTTPRerankClient(HTTPRerankClientOptions{
+			Endpoint: strings.TrimSpace(opts.RerankEndpoint),
+			Timeout:  opts.RerankTimeout,
+		})
+	}
+	rerankRecallTopN := opts.RerankRecallTopN
+	if rerankRecallTopN <= 0 {
+		rerankRecallTopN = defaultRAGRerankRecallTopN
+	}
+	if rerankRecallTopN > maxRAGSearchTopK {
+		rerankRecallTopN = maxRAGSearchTopK
+	}
 	return &Handler{
 		db:                    opts.DB,
 		llmClient:             opts.LLMClient,
@@ -71,6 +93,8 @@ func New(opts Options) *Handler {
 		embeddingModelSummary: strings.TrimSpace(opts.EmbeddingModelSummary),
 		summaryVectorDim:      opts.SummaryVectorDim,
 		stopPhrases:           normalizeStopPhrases(opts.StopPhrases),
+		rerankClient:          rerankClient,
+		rerankRecallTopN:      rerankRecallTopN,
 	}
 }
 
@@ -359,6 +383,13 @@ func (h *Handler) ExecuteRAGSearch(ctx context.Context, payload *tasksvc.RAGSear
 	if topK > maxRAGSearchTopK {
 		topK = maxRAGSearchTopK
 	}
+	recallTopN := topK
+	if h.rerankClient != nil && recallTopN < h.rerankRecallTopN {
+		recallTopN = h.rerankRecallTopN
+	}
+	if recallTopN > maxRAGSearchTopK {
+		recallTopN = maxRAGSearchTopK
+	}
 	vectors, err := h.embeddingProvider.EmbedTexts(ctx, []string{query})
 	if err != nil {
 		return tasksvc.Result{}, err
@@ -373,9 +404,9 @@ func (h *Handler) ExecuteRAGSearch(ctx context.Context, payload *tasksvc.RAGSear
 	var hits []tasksvc.VectorSearchHit
 	switch vectorMode {
 	case ragSearchVectorSummary:
-		hits, err = h.vectorStore.SearchSummary(ctx, strings.TrimSpace(payload.RoomID), vectors[0], topK)
+		hits, err = h.vectorStore.SearchSummary(ctx, strings.TrimSpace(payload.RoomID), vectors[0], recallTopN)
 	case ragSearchVectorRaw:
-		hits, err = h.vectorStore.SearchRaw(ctx, strings.TrimSpace(payload.RoomID), vectors[0], topK)
+		hits, err = h.vectorStore.SearchRaw(ctx, strings.TrimSpace(payload.RoomID), vectors[0], recallTopN)
 	default:
 		return tasksvc.Result{}, fmt.Errorf("invalid rag search vector: %s", vectorMode)
 	}
@@ -405,16 +436,56 @@ func (h *Handler) ExecuteRAGSearch(ctx context.Context, payload *tasksvc.RAGSear
 			rawTextBySegmentID[seg.SegmentID] = seg.RawText
 		}
 	}
+	resolvedTexts := make([]string, len(hits))
+	for i, hit := range hits {
+		resolvedTexts[i] = resolveSearchHitText(hit, rawTextBySegmentID)
+	}
+	reranked := false
+	rerankScores := make([]float64, 0, len(hits))
+	if h.rerankClient != nil && len(hits) > 1 {
+		documents := make([]string, len(hits))
+		copy(documents, resolvedTexts)
+		scores, rerankErr := h.rerankClient.Score(ctx, query, documents)
+		if rerankErr == nil && len(scores) == len(hits) {
+			indices := make([]int, len(hits))
+			for i := range indices {
+				indices[i] = i
+			}
+			sort.SliceStable(indices, func(i, j int) bool {
+				return scores[indices[i]] > scores[indices[j]]
+			})
+			reorderedHits := make([]tasksvc.VectorSearchHit, 0, len(hits))
+			reorderedTexts := make([]string, 0, len(hits))
+			reorderedScores := make([]float64, 0, len(hits))
+			for _, idx := range indices {
+				reorderedHits = append(reorderedHits, hits[idx])
+				reorderedTexts = append(reorderedTexts, resolvedTexts[idx])
+				reorderedScores = append(reorderedScores, scores[idx])
+			}
+			hits = reorderedHits
+			resolvedTexts = reorderedTexts
+			rerankScores = reorderedScores
+			reranked = true
+		}
+	}
+	if len(hits) > topK {
+		hits = hits[:topK]
+		resolvedTexts = resolvedTexts[:topK]
+		if reranked && len(rerankScores) >= topK {
+			rerankScores = rerankScores[:topK]
+		}
+	}
 	results := make([]map[string]interface{}, 0, len(hits))
-	for _, hit := range hits {
+	for i, hit := range hits {
 		segmentID := strings.TrimSpace(fmt.Sprint(hit.Payload["segment_id"]))
-		rawText := strings.TrimSpace(rawTextBySegmentID[segmentID])
-		if rawText == "" {
-			rawText = strings.TrimSpace(fmt.Sprint(hit.Payload["raw_text"]))
+		score := hit.Score
+		if reranked && i < len(rerankScores) {
+			score = rerankScores[i]
 		}
 		results = append(results, map[string]interface{}{
 			"point_id":      hit.PointID,
-			"score":         hit.Score,
+			"score":         score,
+			"vector_score":  hit.Score,
 			"segment_id":    segmentID,
 			"start_seq":     hit.Payload["start_seq"],
 			"end_seq":       hit.Payload["end_seq"],
@@ -422,7 +493,7 @@ func (h *Handler) ExecuteRAGSearch(ctx context.Context, payload *tasksvc.RAGSear
 			"text_preview":  hit.Payload["text_preview"],
 			"summary":       hit.Payload["summary"],
 			"summary_ready": hit.Payload["summary_ready"],
-			"raw_text":      rawText,
+			"raw_text":      resolvedTexts[i],
 		})
 	}
 	resultsJSONBytes, err := json.Marshal(results)
@@ -439,6 +510,8 @@ func (h *Handler) ExecuteRAGSearch(ctx context.Context, payload *tasksvc.RAGSear
 			"query":        query,
 			"vector":       vectorMode,
 			"top_k":        topK,
+			"recall_top_n": recallTopN,
+			"reranked":     reranked,
 			"result_count": len(results),
 			"results":      results,
 			"results_json": resultsJSON,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -52,10 +53,13 @@ func NewMultiClient(ctx context.Context, opts MultiClientOptions) (*MultiClient,
 		serverOpts := normalizedServers[name]
 		client, err := NewClient(ctx, serverOpts)
 		if err != nil {
-			closeClients(clients)
-			return nil, fmt.Errorf("connect mcp server %s failed: %w", name, err)
+			log.Printf("mcp server connect failed, skip server=%s err=%v", name, err)
+			continue
 		}
 		clients[name] = client
+	}
+	if len(clients) == 0 {
+		return nil, errors.New("no available mcp server client after initialization")
 	}
 	return &MultiClient{
 		clients: clients,
@@ -95,7 +99,8 @@ func (m *MultiClient) ListTools(ctx context.Context) ([]RoutedTool, error) {
 		}
 		tools, err := client.ListTools(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list tools from %s failed: %w", server, err)
+			log.Printf("mcp list tools failed, skip server=%s err=%v", server, err)
+			continue
 		}
 		for _, tool := range tools {
 			if tool == nil {
@@ -112,6 +117,9 @@ func (m *MultiClient) ListTools(ctx context.Context) ([]RoutedTool, error) {
 				Tool:          tool,
 			})
 		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("no available mcp tools from all servers")
 	}
 	return out, nil
 }
@@ -141,6 +149,33 @@ func (m *MultiClient) CallToolByQualifiedName(ctx context.Context, qualifiedTool
 		return nil, err
 	}
 	return m.CallTool(ctx, server, toolName, arguments)
+}
+
+func (m *MultiClient) CallToolRaw(ctx context.Context, server string, toolName string, arguments map[string]any) (string, error) {
+	if m == nil || len(m.clients) == 0 {
+		return "", errors.New("multi mcp client is not initialized")
+	}
+	trimmedServer := strings.TrimSpace(server)
+	if trimmedServer == "" {
+		return "", errors.New("mcp server name is empty")
+	}
+	resolvedServer, err := m.resolveServerName(trimmedServer)
+	if err != nil {
+		return "", err
+	}
+	client, ok := m.clients[resolvedServer]
+	if !ok || client == nil {
+		return "", fmt.Errorf("mcp server not found: %s", trimmedServer)
+	}
+	return client.CallToolRaw(ctx, toolName, arguments)
+}
+
+func (m *MultiClient) CallToolByQualifiedNameRaw(ctx context.Context, qualifiedToolName string, arguments map[string]any) (string, error) {
+	server, toolName, err := parseQualifiedToolName(qualifiedToolName)
+	if err != nil {
+		return "", err
+	}
+	return m.CallToolRaw(ctx, server, toolName, arguments)
 }
 
 func (m *MultiClient) CallToolAuto(ctx context.Context, toolName string, arguments map[string]any) (*mcp.CallToolResult, error) {

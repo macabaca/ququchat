@@ -35,6 +35,7 @@ const (
 type WsHandler struct {
 	db              *gorm.DB
 	hub             *Hub
+	router          *HubRouter
 	cacheClient     *cachepkg.RedisClient
 	taskService     *taskservice.MainService
 	streamHub       *taskservice.AgentStreamHub
@@ -45,7 +46,7 @@ type WsHandler struct {
 	doneConsumerErr error
 }
 
-func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, taskService *taskservice.MainService, streamHub *taskservice.AgentStreamHub) *WsHandler {
+func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, taskService *taskservice.MainService, streamHub *taskservice.AgentStreamHub, router *HubRouter) *WsHandler {
 	if hub == nil {
 		hub = NewHub()
 	}
@@ -58,6 +59,7 @@ func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, task
 	return &WsHandler{
 		db:          db,
 		hub:         hub,
+		router:      router,
 		cacheClient: cacheClient,
 		taskService: taskService,
 		streamHub:   streamHub,
@@ -262,9 +264,11 @@ func (h *Hub) listFriendIDs(userID string) ([]string, error) {
 
 type Client struct {
 	hub    *Hub
+	router *HubRouter
 	conn   *websocket.Conn
 	send   chan []byte
 	userID string
+	connID string
 }
 
 type IncomingMessage struct {
@@ -338,13 +342,20 @@ func (h *WsHandler) Handle(c *gin.Context) {
 		return
 	}
 	log.Printf("ws connected user=%s ip=%s", userID, c.ClientIP())
+	connID := uuid.NewString()
 	client := &Client{
 		hub:    h.hub,
+		router: h.router,
 		conn:   conn,
 		send:   make(chan []byte, 256),
 		userID: userID,
+		connID: connID,
 	}
 	client.hub.register <- client
+	if h.router != nil {
+		roomIDs, _ := h.getUserRoomIDs(userID)
+		h.router.OnConnect(c.Request.Context(), userID, connID, roomIDs)
+	}
 
 	go client.writeLoop()
 	go client.readLoop(h)
@@ -353,6 +364,9 @@ func (h *WsHandler) Handle(c *gin.Context) {
 func (c *Client) readLoop(h *WsHandler) {
 	defer func() {
 		c.hub.unregister <- c
+		if c.router != nil {
+			c.router.OnDisconnect(context.Background(), c.userID, c.connID)
+		}
 		_ = c.conn.Close()
 	}()
 	c.conn.SetReadLimit(wsMaxMsgBytes)
@@ -426,11 +440,7 @@ func (c *Client) readLoop(h *WsHandler) {
 			if err != nil {
 				continue
 			}
-			c.hub.direct <- DirectMessage{
-				FromUserID: c.userID,
-				ToUserID:   msg.ToUser,
-				Data:       b,
-			}
+			c.routeDirect(c.userID, msg.ToUser, b)
 		} else if msg.Type == "group_message" {
 			if msg.RoomID == "" || msg.Content == "" {
 				continue
@@ -465,11 +475,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				}
 				commandBroadcast, err := json.Marshal(commandOut)
 				if err == nil {
-					c.hub.broadcast <- GroupMessage{
-						RoomID:  msg.RoomID,
-						UserIDs: memberIDs,
-						Data:    commandBroadcast,
-					}
+					c.routeBroadcast(msg.RoomID, memberIDs, commandBroadcast)
 				}
 				if h.taskService == nil {
 					continue
@@ -551,11 +557,7 @@ func (c *Client) readLoop(h *WsHandler) {
 			if err != nil {
 				continue
 			}
-			c.hub.broadcast <- GroupMessage{
-				RoomID:  msg.RoomID,
-				UserIDs: memberIDs,
-				Data:    b,
-			}
+			c.routeBroadcast(msg.RoomID, memberIDs, b)
 		} else if msg.Type == "file_message" || msg.Type == "image_message" {
 			if msg.AttachmentID == "" {
 				continue
@@ -604,11 +606,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				if err != nil {
 					continue
 				}
-				c.hub.direct <- DirectMessage{
-					FromUserID: c.userID,
-					ToUserID:   msg.ToUser,
-					Data:       b,
-				}
+				c.routeDirect(c.userID, msg.ToUser, b)
 			} else if msg.RoomID != "" {
 				if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
 					continue
@@ -642,11 +640,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				if err != nil {
 					continue
 				}
-				c.hub.broadcast <- GroupMessage{
-					RoomID:  msg.RoomID,
-					UserIDs: memberIDs,
-					Data:    b,
-				}
+				c.routeBroadcast(msg.RoomID, memberIDs, b)
 			}
 		}
 	}
@@ -1015,10 +1009,10 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[st
 	if err != nil {
 		return err
 	}
-	h.hub.broadcast <- GroupMessage{
-		RoomID:  roomID,
-		UserIDs: memberIDs,
-		Data:    b,
+	if h.router != nil {
+		h.router.RouteBroadcast(context.Background(), roomID, memberIDs, b)
+	} else {
+		h.hub.broadcast <- GroupMessage{RoomID: roomID, UserIDs: memberIDs, Data: b}
 	}
 	return nil
 }
@@ -1092,10 +1086,10 @@ func (h *WsHandler) sendAgentCommandAck(userID, roomID, requestID, taskID, paren
 	if err != nil {
 		return
 	}
-	h.hub.direct <- DirectMessage{
-		FromUserID: wsRobotUserID,
-		ToUserID:   strings.TrimSpace(userID),
-		Data:       b,
+	if h.router != nil {
+		h.router.RouteDirectMessage(context.Background(), wsRobotUserID, strings.TrimSpace(userID), b)
+	} else {
+		h.hub.direct <- DirectMessage{FromUserID: wsRobotUserID, ToUserID: strings.TrimSpace(userID), Data: b}
 	}
 }
 
@@ -1259,4 +1253,28 @@ func (h *WsHandler) ensureDirectRoomMembers(roomID, a, b string) {
 			}
 		}
 	}
+}
+
+func (h *WsHandler) getUserRoomIDs(userID string) ([]string, error) {
+	var roomIDs []string
+	err := h.db.Model(&models.RoomMember{}).
+		Where("user_id = ? AND left_at IS NULL", userID).
+		Pluck("room_id", &roomIDs).Error
+	return roomIDs, err
+}
+
+func (c *Client) routeDirect(fromUserID, toUserID string, data []byte) {
+	if c.router != nil {
+		c.router.RouteDirectMessage(context.Background(), fromUserID, toUserID, data)
+		return
+	}
+	c.hub.direct <- DirectMessage{FromUserID: fromUserID, ToUserID: toUserID, Data: data}
+}
+
+func (c *Client) routeBroadcast(roomID string, userIDs []string, data []byte) {
+	if c.router != nil {
+		c.router.RouteBroadcast(context.Background(), roomID, userIDs, data)
+		return
+	}
+	c.hub.broadcast <- GroupMessage{RoomID: roomID, UserIDs: userIDs, Data: data}
 }

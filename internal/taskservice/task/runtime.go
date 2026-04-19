@@ -29,7 +29,6 @@ type RuntimeOptions struct {
 	QueueRabbitMQHighExchange        string
 	QueueRabbitMQNormalExchange      string
 	QueueRabbitMQLowExchange         string
-	QueueRabbitMQMaxPriority         int
 	QueueRabbitMQMaxLength           int
 	DoneEventRabbitMQURL             string
 	DoneEventQueueName               string
@@ -66,6 +65,10 @@ type RuntimeOptions struct {
 	EmbeddingModelSummary            string
 	SummaryVectorDim                 int
 	RAGStopPhrases                   []string
+	RAGRerankEnabled                 bool
+	RAGRerankEndpoint                string
+	RAGRerankTimeout                 time.Duration
+	RAGRerankRecallTopN              int
 	RAGHandler                       RAGHandler
 	MCPMultiClient                   *mcpclient.MultiClient
 	AgentProgressReporter            AgentProgressReporter
@@ -153,7 +156,6 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 				URL:          opts.QueueRabbitMQURL,
 				QueueName:    queueName,
 				ExchangeName: exchangeName,
-				MaxPriority:  opts.QueueRabbitMQMaxPriority,
 				MaxLength:    opts.QueueRabbitMQMaxLength,
 				Prefetch:     workerSize,
 			}

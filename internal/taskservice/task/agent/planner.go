@@ -65,6 +65,9 @@ func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reas
 	builder.WriteString("最近消息（节选）：\n")
 	builder.WriteString(agentmemory.BuildRecentMessagesSnippet(recentMessages, 8))
 	builder.WriteString("\n")
+	builder.WriteString("可用工具（仅展示名称与用途，不包含参数）:\n")
+	builder.WriteString(plannerToolSummaryText(specs))
+	builder.WriteString("\n")
 	builder.WriteString("约束：\n")
 	builder.WriteString("- 仅使用允许工具：")
 	builder.WriteString(allowedToolNamesCSVFromSpecs(specs))
@@ -83,6 +86,27 @@ func buildPlannerPrompt(goal string, recentMessages []string, maxSteps int, reas
 	builder.WriteString("输出格式：\n")
 	builder.WriteString("{\"steps\":[{\"task\":\"检索相关历史片段\",\"tool\":\"search_rag\"},{\"task\":\"整理答案并准备收敛\",\"tool\":\"finish\"}]}\n")
 	return builder.String()
+}
+
+func plannerToolSummaryText(specs []ToolSpec) string {
+	builder := strings.Builder{}
+	for i, spec := range specs {
+		name := strings.TrimSpace(spec.Name)
+		if name == "" {
+			continue
+		}
+		desc := strings.TrimSpace(spec.Description)
+		if desc == "" {
+			desc = "暂无描述"
+		}
+		builder.WriteString(strconv.Itoa(i + 1))
+		builder.WriteString(") ")
+		builder.WriteString(name)
+		builder.WriteString("：")
+		builder.WriteString(desc)
+		builder.WriteString("\n")
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func buildPlannerJSONFormatterPrompt(rawOutput string, specs []ToolSpec) string {
