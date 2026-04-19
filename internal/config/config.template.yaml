@@ -157,6 +157,12 @@ vector:
 rag_stop_phrases:
   stop_phrases: []
 
+rerank:
+  enabled: false
+  endpoint: ""
+  timeout_ms: 0
+  recall_top_n: 0
+
 mcp_servers:
   # 按需新增 server 名称（示例键名仅占位）
   "<server_name>":
@@ -168,3 +174,6 @@ mcp_servers:
     name: ""
     version: ""
     timeout_ms: 0
+
+ws:
+  node_id: "" 

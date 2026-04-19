@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { Friend, Group, Message, FriendRequest, Conversation, GroupMember } from '../types/models';
-import { WsServerEvent } from '../types/websocket';
+import { BASE_URL } from '../configs/config';
+import { Friend, Group, Message, FriendRequest, Conversation, GroupMember, ROBOT_USER_ID } from '../types/models';
+import { WsAgentCommandAck, WsServerEvent } from '../types/websocket';
 import { friendService } from '../api/FriendService';
 import { groupService } from '../api/GroupService';
 import { WebSocketService } from '../api/WebSocketService';
@@ -52,17 +53,75 @@ interface ChatState {
     setActiveConversation: (id: string) => void;
     clearActiveConversation: () => void;
     markConversationRead: (roomId: string) => void;
-    sendMessage: (content: string, type: 'text' | 'image' | 'file', attachmentId?: string, thumbId?: string, cachePath?: string) => void;
+    sendMessage: (content: string, type: 'text' | 'image' | 'file', attachmentId?: string, thumbId?: string, cachePath?: string, parentMessageId?: string, parentSequenceId?: number | null) => void;
     
     // Handlers for incoming data
     handleIncomingMessage: (message: Message) => void;
+    handleAgentCommandAck: (ack: WsAgentCommandAck) => void;
 
             // Load messages from SQLite
     loadMessages: (roomId: string, limit?: number, offset?: number, mode?: 'replace' | 'prepend') => Promise<number>;
 
     // Incremental Sync
     syncRoomMessages: (roomId: string) => Promise<void>;
+    agentStreamSessions: Record<string, AgentStreamSession>;
+    agentStreamControllers: Record<string, AbortController>;
 }
+
+interface AgentStreamSession {
+    requestId: string;
+    taskId: string;
+    roomId: string;
+    parentMessageId: string;
+    parentSequenceId: number;
+    tempMessageId: string;
+    finalized: boolean;
+    finalText: string;
+}
+
+interface AgentSSEEvent {
+    event_id?: string;
+    event_type?: string;
+    request_id?: string;
+    task_id?: string;
+    room_id?: string;
+    user_id?: string;
+    step?: number;
+    role?: string;
+    tool?: string;
+    status?: string;
+    content?: string;
+    error?: string;
+    payload?: Record<string, any>;
+}
+
+const buildAgentStreamURL = (requestId: string) => {
+    const base = new URL(BASE_URL);
+    return `${base.protocol}//${base.host}/api/agent/stream?request_id=${encodeURIComponent(requestId)}`;
+};
+
+const parseSSEChunk = (chunk: string): { event: string; data: string }[] => {
+    const blocks = chunk.split('\n\n');
+    const events: { event: string; data: string }[] = [];
+    for (const block of blocks) {
+        const trimmed = block.trim();
+        if (!trimmed) continue;
+        const lines = trimmed.split('\n');
+        let event = 'message';
+        const dataLines: string[] = [];
+        for (const line of lines) {
+            if (line.startsWith('event:')) {
+                event = line.slice(6).trim();
+                continue;
+            }
+            if (line.startsWith('data:')) {
+                dataLines.push(line.slice(5).trim());
+            }
+        }
+        events.push({ event, data: dataLines.join('\n') });
+    }
+    return events;
+};
 
 export const useChatStore = create<ChatState>()(
     persist(
@@ -78,6 +137,8 @@ export const useChatStore = create<ChatState>()(
             unreadCountByConversation: {},
             latestUnreadMessageIdByConversation: {},
             earliestUnreadMessageIdByConversation: {},
+            agentStreamSessions: {},
+            agentStreamControllers: {},
             
             isConnected: false,
             isReconnecting: false,
@@ -130,6 +191,7 @@ export const useChatStore = create<ChatState>()(
                 console.log('[WS][connect] create new wsService');
                 const ws = new WebSocketService(token);
                 ws.addMessageHandler(get().handleIncomingMessage);
+                ws.addAgentAckHandler(get().handleAgentCommandAck);
                 ws.addStatusHandler((isConnected) => set((state) => ({ isConnected, isReconnecting: isConnected ? false : state.isReconnecting })));
                 ws.addReconnectHandler((isReconnecting) => set({ isReconnecting }));
                 ws.addSystemEventHandler((event: WsServerEvent) => {
@@ -149,9 +211,20 @@ export const useChatStore = create<ChatState>()(
 
             disconnectWebSocket: () => {
                 const ws = get().wsService;
+                const controllerMap = get().agentStreamControllers;
+                Object.keys(controllerMap).forEach((key) => {
+                    const controller = controllerMap[key];
+                    if (!controller) {
+                        return;
+                    }
+                    try {
+                        controller.abort();
+                    } catch {
+                    }
+                });
                 if (ws) {
                     ws.disconnect();
-                    set({ wsService: null, isConnected: false, isReconnecting: false });
+                    set({ wsService: null, isConnected: false, isReconnecting: false, agentStreamControllers: {}, agentStreamSessions: {} });
                 }
             },
 
@@ -356,7 +429,7 @@ export const useChatStore = create<ChatState>()(
                 });
             },
 
-            sendMessage: (content: string, type: 'text' | 'image' | 'file' = 'text', attachmentId?: string, thumbId?: string, cachePath?: string) => {
+            sendMessage: (content: string, type: 'text' | 'image' | 'file' = 'text', attachmentId?: string, thumbId?: string, cachePath?: string, parentMessageId?: string, parentSequenceId?: number | null) => {
                 const { activeConversationId, friends, groups, wsService, messages } = get();
                 const user = useAuthStore.getState().user;
                 if (!activeConversationId || !wsService || !user) return;
@@ -402,6 +475,12 @@ export const useChatStore = create<ChatState>()(
                 } else {
                     msgPayload.to_user_id = activeFriend!.id;
                 }
+                if (parentMessageId) {
+                    msgPayload.parent_message_id = parentMessageId;
+                }
+                if (typeof parentSequenceId === 'number') {
+                    msgPayload.parent_sequence_id = parentSequenceId;
+                }
 
                 wsService.sendMessage(msgPayload);
 
@@ -416,6 +495,8 @@ export const useChatStore = create<ChatState>()(
                     status: 'sending',
                     attachment_id: attachmentId,
                     thumb_attachment_id: thumbId,
+                    parent_message_id: parentMessageId,
+                    parent_sequence_id: typeof parentSequenceId === 'number' ? parentSequenceId : null,
                     cache_path: cachePath || null,
                     is_image: type === 'image'
                 };
@@ -447,6 +528,54 @@ export const useChatStore = create<ChatState>()(
                 }
 
                 if (!conversationId) return;
+
+                if (
+                    normalizedIncoming.from_user_id === ROBOT_USER_ID &&
+                    normalizedIncoming.type === 'group_message' &&
+                    normalizedIncoming.parent_message_id
+                ) {
+                    const parentMessageID = String(normalizedIncoming.parent_message_id).trim();
+                    const sessionsMap = get().agentStreamSessions;
+                    let matchedRequestId = '';
+                    Object.keys(sessionsMap).some((key) => {
+                        const session = sessionsMap[key];
+                        if (!session) return false;
+                        if (session.roomId === conversationId && session.parentMessageId === parentMessageID) {
+                            matchedRequestId = key;
+                            return true;
+                        }
+                        return false;
+                    });
+                    if (matchedRequestId) {
+                        const stream = sessionsMap[matchedRequestId];
+                        if (!stream) {
+                            return;
+                        }
+                        const controller = get().agentStreamControllers[matchedRequestId];
+                        if (controller) {
+                            try {
+                                controller.abort();
+                            } catch {
+                            }
+                        }
+                        set((state) => {
+                            const current = state.messages[conversationId] || [];
+                            const next = current.filter((m) => m.id !== stream.tempMessageId);
+                            const controllers = { ...state.agentStreamControllers };
+                            delete controllers[matchedRequestId];
+                            const sessions = { ...state.agentStreamSessions };
+                            delete sessions[matchedRequestId];
+                            return {
+                                messages: {
+                                    ...state.messages,
+                                    [conversationId]: next
+                                },
+                                agentStreamControllers: controllers,
+                                agentStreamSessions: sessions
+                            };
+                        });
+                    }
+                }
 
                 const chatMessages = get().messages[conversationId] || [];
                 const incomingTs = normalizedIncoming.timestamp || Date.now() / 1000;
@@ -591,6 +720,230 @@ export const useChatStore = create<ChatState>()(
                 });
             },
 
+            handleAgentCommandAck: (ack: WsAgentCommandAck) => {
+                const requestId = String(ack.request_id || '').trim();
+                const roomId = String(ack.room_id || '').trim();
+                const taskId = String(ack.task_id || '').trim();
+                if (!requestId || !roomId || !taskId) {
+                    return;
+                }
+                const parentMessageId = String(ack.parent_message_id || '').trim();
+                const parentSequenceId = typeof ack.parent_sequence_id === 'number' ? ack.parent_sequence_id : 0;
+                const existing = get().agentStreamSessions[requestId];
+                if (existing) {
+                    return;
+                }
+                const tempMessageId = `temp-agent-stream-${requestId}`;
+                const nowTs = Date.now() / 1000;
+                const tempMessage: Message = {
+                    id: tempMessageId,
+                    type: 'group_message',
+                    room_id: roomId,
+                    from_user_id: ROBOT_USER_ID,
+                    content: '正在处理中...',
+                    timestamp: nowTs,
+                    status: 'sending',
+                    parent_message_id: parentMessageId || undefined,
+                    parent_sequence_id: parentSequenceId || null
+                };
+                set((state) => {
+                    const current = state.messages[roomId] || [];
+                    const hasTemp = current.some((m) => m.id === tempMessageId);
+                    return {
+                        messages: {
+                            ...state.messages,
+                            [roomId]: hasTemp ? current : [...current, tempMessage]
+                        },
+                        agentStreamSessions: {
+                            ...state.agentStreamSessions,
+                            [requestId]: {
+                                requestId,
+                                taskId,
+                                roomId,
+                                parentMessageId,
+                                parentSequenceId,
+                                tempMessageId,
+                                finalized: false,
+                                finalText: ''
+                            }
+                        }
+                    };
+                });
+
+                const token = useAuthStore.getState().accessToken;
+                if (!token) {
+                    return;
+                }
+                const controller = new AbortController();
+                set((state) => ({
+                    agentStreamControllers: {
+                        ...state.agentStreamControllers,
+                        [requestId]: controller
+                    }
+                }));
+
+                void (async () => {
+                    try {
+                        const response = await fetch(buildAgentStreamURL(requestId), {
+                            method: 'GET',
+                            headers: {
+                                Authorization: `Bearer ${token}`,
+                                Accept: 'text/event-stream'
+                            },
+                            signal: controller.signal
+                        });
+                        if (!response.ok || !response.body) {
+                            throw new Error(`sse failed: ${response.status}`);
+                        }
+                        const reader = response.body.getReader();
+                        const decoder = new TextDecoder('utf-8');
+                        let buffer = '';
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) {
+                                break;
+                            }
+                            buffer += decoder.decode(value, { stream: true });
+                            const parts = buffer.split('\n\n');
+                            buffer = parts.pop() || '';
+                            for (const part of parts) {
+                                const events = parseSSEChunk(part + '\n\n');
+                                for (const rawEvent of events) {
+                                    if (!rawEvent.data || rawEvent.event === 'ping') {
+                                        continue;
+                                    }
+                                    let payload: AgentSSEEvent | null = null;
+                                    try {
+                                        payload = JSON.parse(rawEvent.data) as AgentSSEEvent;
+                                    } catch {
+                                        payload = null;
+                                    }
+                                    if (!payload) {
+                                        continue;
+                                    }
+                                    const eventType = String(payload.event_type || rawEvent.event || '').trim();
+                                    const currentSession = get().agentStreamSessions[requestId];
+                                    if (!currentSession) {
+                                        continue;
+                                    }
+                                    if (eventType === 'agent.step') {
+                                        const role = String(payload.role || '').trim();
+                                        const tool = String(payload.tool || '').trim();
+                                        const content = String(payload.content || '').trim();
+                                        const status = String(payload.status || '').trim() || 'running';
+                                        if (!role && !tool && !content) {
+                                            continue;
+                                        }
+                                        set((state) => {
+                                            const session = state.agentStreamSessions[requestId];
+                                            if (!session) return state;
+                                            const current = state.messages[session.roomId] || [];
+                                            const idx = current.findIndex((m) => m.id === session.tempMessageId);
+                                            if (idx === -1) return state;
+                                            const prev = current[idx];
+                                            const rawPayload = prev.payload_json;
+                                            const payloadObject = rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+                                                ? rawPayload as Record<string, any>
+                                                : {};
+                                            const existingSteps = Array.isArray(payloadObject.stream_steps)
+                                                ? payloadObject.stream_steps.filter((item) => item && typeof item === 'object')
+                                                : [];
+                                            const nextSteps = [
+                                                ...existingSteps,
+                                                {
+                                                    index: existingSteps.length + 1,
+                                                    step: typeof payload.step === 'number' ? payload.step : existingSteps.length + 1,
+                                                    role,
+                                                    tool,
+                                                    status,
+                                                    content
+                                                }
+                                            ];
+                                            const nextMessages = current.slice();
+                                            nextMessages[idx] = {
+                                                ...prev,
+                                                content: '正在处理中...',
+                                                payload_json: {
+                                                    ...payloadObject,
+                                                    stream_steps: nextSteps,
+                                                    stream_status: 'running',
+                                                    stream_request_id: requestId
+                                                },
+                                                status: 'sending',
+                                                timestamp: Date.now() / 1000
+                                            };
+                                            return {
+                                                messages: {
+                                                    ...state.messages,
+                                                    [session.roomId]: nextMessages
+                                                }
+                                            };
+                                        });
+                                        continue;
+                                    }
+                                    if (eventType === 'agent.done' || eventType === 'agent.error') {
+                                        const finalText = String(payload.content || payload.error || '').trim();
+                                        set((state) => {
+                                            const session = state.agentStreamSessions[requestId];
+                                            if (!session) return state;
+                                            const current = state.messages[session.roomId] || [];
+                                            const idx = current.findIndex((m) => m.id === session.tempMessageId);
+                                            if (idx === -1) {
+                                                return {
+                                                    agentStreamSessions: {
+                                                        ...state.agentStreamSessions,
+                                                        [requestId]: { ...session, finalized: true, finalText }
+                                                    }
+                                                };
+                                            }
+                                            const nextMessages = current.slice();
+                                            const prevMessage = nextMessages[idx];
+                                            const rawPayload = prevMessage.payload_json;
+                                            const payloadObject = rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+                                                ? rawPayload as Record<string, any>
+                                                : {};
+                                            nextMessages[idx] = {
+                                                ...prevMessage,
+                                                content: finalText || prevMessage.content,
+                                                payload_json: {
+                                                    ...payloadObject,
+                                                    stream_status: eventType === 'agent.done' ? 'done' : 'error',
+                                                    stream_request_id: requestId
+                                                },
+                                                status: eventType === 'agent.done' ? 'sent' : 'failed',
+                                                timestamp: Date.now() / 1000
+                                            };
+                                            return {
+                                                messages: {
+                                                    ...state.messages,
+                                                    [session.roomId]: nextMessages
+                                                },
+                                                agentStreamSessions: {
+                                                    ...state.agentStreamSessions,
+                                                    [requestId]: { ...session, finalized: true, finalText }
+                                                }
+                                            };
+                                        });
+                                        try {
+                                            controller.abort();
+                                        } catch {
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } catch {
+                    } finally {
+                        set((state) => {
+                            const controllers = { ...state.agentStreamControllers };
+                            delete controllers[requestId];
+                            return { agentStreamControllers: controllers };
+                        });
+                    }
+                })();
+            },
+
             loadMessages: async (roomId: string, limit: number = 50, offset: number = 0, mode: 'replace' | 'prepend' = 'replace') => {
                 try {
                     const rows = await messageDao.getByRoomId(roomId, limit, offset);
@@ -630,6 +983,12 @@ export const useChatStore = create<ChatState>()(
                         if (row.attachment_id && !msg.attachment_id) {
                             msg.attachment_id = row.attachment_id;
                         }
+                        if (row.parent_message_id && !msg.parent_message_id) {
+                            msg.parent_message_id = row.parent_message_id;
+                        }
+                        if (msg.parent_sequence_id === undefined || msg.parent_sequence_id === null) {
+                            msg.parent_sequence_id = row.parent_sequence_id ?? null;
+                        }
                         // Ensure image flag can be recovered after restart even if payload_json is incomplete
                         if (row.content_type === 'image') {
                             msg.is_image = true;
@@ -637,6 +996,32 @@ export const useChatStore = create<ChatState>()(
                         
                         return msg;
                     }).reverse();
+                    const messageByID = new Map<string, Message>();
+                    const messageBySequence = new Map<number, Message>();
+                    for (const loaded of loadedMessages) {
+                        if (loaded.id) {
+                            messageByID.set(loaded.id, loaded);
+                        }
+                        if (typeof loaded.sequence_id === 'number') {
+                            messageBySequence.set(loaded.sequence_id, loaded);
+                        }
+                    }
+                    for (const loaded of loadedMessages) {
+                        if (loaded.parent_message) {
+                            continue;
+                        }
+                        const parentByID = loaded.parent_message_id ? messageByID.get(loaded.parent_message_id) : undefined;
+                        if (parentByID) {
+                            loaded.parent_message = parentByID;
+                            continue;
+                        }
+                        if (typeof loaded.parent_sequence_id === 'number') {
+                            const parentBySequence = messageBySequence.get(loaded.parent_sequence_id);
+                            if (parentBySequence) {
+                                loaded.parent_message = parentBySequence;
+                            }
+                        }
+                    }
 
                     set(state => {
                         const current = state.messages[roomId] || [];
@@ -650,10 +1035,26 @@ export const useChatStore = create<ChatState>()(
                                 }
                             };
                         }
+                        const persistedIds = new Set(loadedMessages.map((m) => m.id).filter(Boolean));
+                        const streamingTemps = current.filter((m) => {
+                            const messageId = String(m.id || '').trim();
+                            if (!messageId || !messageId.startsWith('temp-agent-stream-')) {
+                                return false;
+                            }
+                            if (persistedIds.has(messageId)) {
+                                return false;
+                            }
+                            return Object.values(state.agentStreamSessions).some((session) => {
+                                if (!session) {
+                                    return false;
+                                }
+                                return session.roomId === roomId && session.tempMessageId === messageId;
+                            });
+                        });
                         return {
                             messages: {
                                 ...state.messages,
-                                [roomId]: loadedMessages
+                                [roomId]: [...loadedMessages, ...streamingTemps]
                             }
                         };
                     });

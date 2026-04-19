@@ -141,16 +141,18 @@ type RoomMember struct {
 // 复合唯一索引：(room_id, sequence_id) 保证房间内消息序号唯一且单调递增
 // 辅助索引：(room_id, created_at) 用于基于时间的时间轴查询
 type Message struct {
-	ID              string         `gorm:"type:char(36);primaryKey" json:"id"`
-	RoomID          string         `gorm:"type:char(36);not null;uniqueIndex:uidx_room_seq,priority:1;index:idx_room_created_at,priority:1" json:"room_id"`
-	Room            *Room          `gorm:"foreignKey:RoomID;constraint:OnDelete:CASCADE" json:"-"`
-	SenderID        *string        `gorm:"type:char(36);index" json:"sender_id,omitempty"`
-	Sender          *User          `gorm:"foreignKey:SenderID;constraint:OnDelete:SET NULL" json:"-"`
-	ContentType     ContentType    `gorm:"type:varchar(16);not null" json:"content_type"`
-	ContentText     *string        `gorm:"type:text" json:"content_text,omitempty"`
-	PayloadJSON     datatypes.JSON `gorm:"type:json" json:"payload_json,omitempty"`
-	AttachmentID    *string        `gorm:"type:char(36)" json:"attachment_id,omitempty"`
-	ParentMessageID *string        `gorm:"type:char(36);index" json:"parent_message_id,omitempty"`
+	ID               string         `gorm:"type:char(36);primaryKey" json:"id"`
+	RoomID           string         `gorm:"type:char(36);not null;uniqueIndex:uidx_room_seq,priority:1;index:idx_room_created_at,priority:1" json:"room_id"`
+	Room             *Room          `gorm:"foreignKey:RoomID;constraint:OnDelete:CASCADE" json:"-"`
+	SenderID         *string        `gorm:"type:char(36);index" json:"sender_id,omitempty"`
+	Sender           *User          `gorm:"foreignKey:SenderID;constraint:OnDelete:SET NULL" json:"-"`
+	ContentType      ContentType    `gorm:"type:varchar(16);not null" json:"content_type"`
+	ContentText      *string        `gorm:"type:text" json:"content_text,omitempty"`
+	PayloadJSON      datatypes.JSON `gorm:"type:json" json:"payload_json,omitempty"`
+	AttachmentID     *string        `gorm:"type:char(36)" json:"attachment_id,omitempty"`
+	ParentMessageID  *string        `gorm:"type:char(36);index" json:"parent_message_id,omitempty"`
+	ParentMessage    *Message       `gorm:"foreignKey:ParentMessageID;references:ID;constraint:OnDelete:SET NULL" json:"-"`
+	ParentSequenceID *int64         `gorm:"index" json:"parent_sequence_id,omitempty"`
 	// SequenceID 房间内单调递增的序号，从1开始
 	SequenceID int64          `gorm:"not null;uniqueIndex:uidx_room_seq,priority:2,sort:desc" json:"sequence_id"`
 	CreatedAt  time.Time      `gorm:"not null;index:idx_room_created_at,priority:2,sort:desc" json:"created_at"`

@@ -44,3 +44,23 @@ func DirectRoomKey(userA string, userB string) []string {
 func FriendIDsKey(userID string) []string {
 	return []string{"friend_ids", strings.TrimSpace(userID)}
 }
+
+func WSUserNodesKey(userID string) []string {
+	return []string{"ws", "user_nodes", strings.TrimSpace(userID)}
+}
+
+func WSRoomNodesKey(roomID string) []string {
+	return []string{"ws", "room_nodes", strings.TrimSpace(roomID)}
+}
+
+func WSUserConnsKey(userID string) []string {
+	return []string{"ws", "user_conns", strings.TrimSpace(userID)}
+}
+
+func WSConnHubKey(connID string) []string {
+	return []string{"ws", "conn_hub", strings.TrimSpace(connID)}
+}
+
+func WSNodeChannel(keyPrefix, nodeID string) string {
+	return keyPrefix + ":ws:hub:" + strings.TrimSpace(nodeID)
+}

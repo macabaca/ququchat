@@ -9,10 +9,33 @@ type Input struct {
 	RecentMessages             []string
 	MaxSteps                   int
 	RoomID                     string
+	RequestID                  string
+	TaskID                     string
+	UserID                     string
+	OnObservation              func(event ObservationEvent)
 	RAGSearch                  func(ctx context.Context, roomID string, query string, topK int, vector string) (string, error)
 	AIGCGenerate               func(ctx context.Context, prompt string) (string, error)
 	DynamicToolSpecs           []ToolSpec
 	MCPCallToolByQualifiedName func(ctx context.Context, qualifiedToolName string, arguments map[string]any) (string, error)
+}
+
+type ObservationEvent struct {
+	RequestID        string
+	TaskID           string
+	RoomID           string
+	UserID           string
+	Step             int
+	Role             string
+	Tool             string
+	Status           string
+	Input            string
+	Output           string
+	RawOutput        string
+	Error            string
+	DurationMs       int64
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 type ToolSpec struct {

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	agentmemory "ququchat/internal/taskservice/task/agent/memory"
 	agentservices "ququchat/internal/taskservice/task/agent/services"
+	agenttypes "ququchat/internal/taskservice/task/agent/types"
 )
 
 func RunFinalThinkNode(ctx context.Context, client ChatClient, state *State) (next string, err error) {
@@ -41,16 +43,28 @@ func RunFinalThinkNode(ctx context.Context, client ChatClient, state *State) (ne
 		}
 		return "final_think.retry", nil
 	}
-	finalText, synthErr := agentservices.SynthesizeFinalAnswer(ctx, client, goal, state.RecentMessages, trace, candidate)
+	startAt := time.Now()
+	synthPrompt := agentservices.BuildFinalSynthesizerPrompt(agenttypes.FinalSynthesizerPromptInput{
+		Goal:               goal,
+		Candidate:          candidate,
+		RecentMessagesText: agentmemory.BuildRecentMessagesSnippet(state.RecentMessages, 12),
+		TraceText:          agentmemory.BuildTraceSnippet(trace, 10),
+	})
+	finalText, usage, synthErr := chatWithUsage(ctx, client, synthPrompt)
+	durationMs := time.Since(startAt).Milliseconds()
 	if synthErr != nil {
 		if state.MemorySession != nil {
 			state.MemorySession.AppendObservation(agentmemory.Observation{
-				Step:   state.Step,
-				Role:   "FinalThink",
-				Tool:   "synthesize_final_answer",
-				Input:  agentmemory.ShortText(candidate, 220),
-				Status: "failed",
-				Error:  synthErr.Error(),
+				Step:             state.Step,
+				Role:             "FinalThink",
+				Tool:             "synthesize_final_answer",
+				Input:            agentmemory.ShortText(candidate, 220),
+				DurationMs:       durationMs,
+				PromptTokens:     usage.PromptTokens,
+				CompletionTokens: usage.CompletionTokens,
+				TotalTokens:      usage.TotalTokens,
+				Status:           "failed",
+				Error:            synthErr.Error(),
 			})
 		}
 		return "final_think.retry", nil
@@ -59,12 +73,16 @@ func RunFinalThinkNode(ctx context.Context, client ChatClient, state *State) (ne
 	if finalText == "" {
 		if state.MemorySession != nil {
 			state.MemorySession.AppendObservation(agentmemory.Observation{
-				Step:   state.Step,
-				Role:   "FinalThink",
-				Tool:   "synthesize_final_answer",
-				Input:  agentmemory.ShortText(candidate, 220),
-				Status: "failed",
-				Error:  "最终思考结果为空",
+				Step:             state.Step,
+				Role:             "FinalThink",
+				Tool:             "synthesize_final_answer",
+				Input:            agentmemory.ShortText(candidate, 220),
+				DurationMs:       durationMs,
+				PromptTokens:     usage.PromptTokens,
+				CompletionTokens: usage.CompletionTokens,
+				TotalTokens:      usage.TotalTokens,
+				Status:           "failed",
+				Error:            "最终思考结果为空",
 			})
 		}
 		return "final_think.retry", nil
@@ -82,12 +100,16 @@ func RunFinalThinkNode(ctx context.Context, client ChatClient, state *State) (ne
 	state.Plan.Action.Input = finishInput
 	if state.MemorySession != nil {
 		state.MemorySession.AppendObservation(agentmemory.Observation{
-			Step:   state.Step,
-			Role:   "FinalThink",
-			Tool:   "synthesize_final_answer",
-			Input:  agentmemory.ShortText(candidate, 220),
-			Output: agentmemory.ShortText(finalText, 220),
-			Status: "succeeded",
+			Step:             state.Step,
+			Role:             "FinalThink",
+			Tool:             "synthesize_final_answer",
+			Input:            agentmemory.ShortText(candidate, 220),
+			Output:           agentmemory.ShortText(finalText, 220),
+			DurationMs:       durationMs,
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens:      usage.TotalTokens,
+			Status:           "succeeded",
 		})
 	}
 	return "final_think.done", nil

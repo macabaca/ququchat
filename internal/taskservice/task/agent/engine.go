@@ -14,6 +14,10 @@ type ChatClient interface {
 	Chat(ctx context.Context, prompt string) (string, error)
 }
 
+type chatUsageClient interface {
+	ChatWithUsage(ctx context.Context, prompt string) (string, int, int, int, error)
+}
+
 type RAGSearchTool func(ctx context.Context, roomID string, query string, topK int, vector string) (string, error)
 type AIGCTool func(ctx context.Context, prompt string) (string, error)
 type MCPCallToolByQualifiedName func(ctx context.Context, qualifiedToolName string, arguments map[string]any) (string, error)
@@ -28,6 +32,20 @@ const (
 	ragSearchTopK          = 3
 	ragSearchVector        = "summary"
 )
+
+func chatWithUsage(ctx context.Context, client ChatClient, prompt string) (string, agentmemory.TokenUsage, error) {
+	if usageClient, ok := client.(chatUsageClient); ok {
+		text, promptTokens, completionTokens, totalTokens, err := usageClient.ChatWithUsage(ctx, prompt)
+		usage := agentmemory.TokenUsage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
+		}
+		return text, usage, err
+	}
+	text, err := client.Chat(ctx, prompt)
+	return text, agentmemory.TokenUsage{}, err
+}
 
 func Execute(ctx context.Context, client ChatClient, input Input) (string, error) {
 	if client == nil {
@@ -53,6 +71,29 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 		RecentMessages:         append([]string(nil), recentMessages...),
 		MaxRecent:              readRecentDefaultLimit,
 		FeedbackOutputMaxChars: feedbackOutputMaxChars,
+		OnObservation: func(obs agentmemory.Observation) {
+			if input.OnObservation == nil {
+				return
+			}
+			input.OnObservation(ObservationEvent{
+				RequestID:        strings.TrimSpace(input.RequestID),
+				TaskID:           strings.TrimSpace(input.TaskID),
+				RoomID:           strings.TrimSpace(input.RoomID),
+				UserID:           strings.TrimSpace(input.UserID),
+				Step:             obs.Step,
+				Role:             strings.TrimSpace(obs.Role),
+				Tool:             strings.TrimSpace(obs.Tool),
+				Status:           strings.TrimSpace(obs.Status),
+				Input:            strings.TrimSpace(obs.Input),
+				Output:           strings.TrimSpace(obs.Output),
+				RawOutput:        strings.TrimSpace(obs.RawOutput),
+				Error:            strings.TrimSpace(obs.Error),
+				DurationMs:       obs.DurationMs,
+				PromptTokens:     obs.PromptTokens,
+				CompletionTokens: obs.CompletionTokens,
+				TotalTokens:      obs.TotalTokens,
+			})
+		},
 	})
 	state := &State{
 		DomainState: DomainState{

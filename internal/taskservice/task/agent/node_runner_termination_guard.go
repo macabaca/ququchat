@@ -27,6 +27,7 @@ type terminationGuardSnapshot struct {
 
 type terminationGuardVoteResult struct {
 	Decision terminationGuardDecision
+	Usage    agentmemory.TokenUsage
 	Valid    bool
 }
 
@@ -64,8 +65,12 @@ func RunTerminationGuardNode(ctx context.Context, client ChatClient, state *Stat
 	votes := collectTerminationGuardVotes(ctx, client, prompt, terminationGuardJudgeCount)
 	validVotes := 0
 	canFinishVotes := 0
+	totalUsage := agentmemory.TokenUsage{}
 	reasons := make([]string, 0, len(votes))
 	for _, vote := range votes {
+		totalUsage.PromptTokens += vote.Usage.PromptTokens
+		totalUsage.CompletionTokens += vote.Usage.CompletionTokens
+		totalUsage.TotalTokens += vote.Usage.TotalTokens
 		if !vote.Valid {
 			continue
 		}
@@ -92,12 +97,15 @@ func RunTerminationGuardNode(ctx context.Context, client ChatClient, state *Stat
 		}
 		reasonText = "votes=" + strconv.Itoa(canFinishVotes) + "/" + strconv.Itoa(validVotes) + "；" + reasonText
 		state.MemorySession.AppendObservation(agentmemory.Observation{
-			Step:   state.Step,
-			Role:   "TerminationGuard",
-			Tool:   "termination_guard",
-			Input:  agentmemory.ShortText(prompt, 220),
-			Output: agentmemory.ShortText(strings.TrimSpace(reasonText), 220),
-			Status: "succeeded",
+			Step:             state.Step,
+			Role:             "TerminationGuard",
+			Tool:             "termination_guard",
+			Input:            agentmemory.ShortText(prompt, 220),
+			Output:           agentmemory.ShortText(strings.TrimSpace(reasonText), 220),
+			PromptTokens:     totalUsage.PromptTokens,
+			CompletionTokens: totalUsage.CompletionTokens,
+			TotalTokens:      totalUsage.TotalTokens,
+			Status:           "succeeded",
 		})
 	}
 	return "termination_guard.can_finish", nil
@@ -114,7 +122,8 @@ func collectTerminationGuardVotes(ctx context.Context, client ChatClient, prompt
 		index := i
 		go func() {
 			defer waitGroup.Done()
-			raw, chatErr := client.Chat(ctx, prompt)
+			raw, usage, chatErr := chatWithUsage(ctx, client, prompt)
+			results[index].Usage = usage
 			if chatErr != nil {
 				return
 			}

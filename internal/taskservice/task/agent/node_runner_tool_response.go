@@ -45,7 +45,9 @@ func RunToolResponseNode(ctx context.Context, client ChatClient, state *State) (
 		ToolRawOutput:    rawOutput,
 		RealtimeGuidance: agentservices.BuildRealtimePlanningGuidance(state.AvailableToolSpecs, time.Now()),
 	})
-	summaryRaw, chatErr := client.Chat(ctx, prompt)
+	startAt := time.Now()
+	summaryRaw, usage, chatErr := chatWithUsage(ctx, client, prompt)
+	durationMs := time.Since(startAt).Milliseconds()
 	summary := strings.TrimSpace(summaryRaw)
 	if summary == "" {
 		summary = rawOutput
@@ -56,13 +58,17 @@ func RunToolResponseNode(ctx context.Context, client ChatClient, state *State) (
 	if state.MemorySession != nil {
 		assistantToolCall := "{\"tool\":\"" + strings.TrimSpace(toolName) + "\",\"input\":" + normalizeToolInputForPrompt(actionInput) + "}"
 		record := agentmemory.Observation{
-			Step:      state.Step,
-			Role:      "ToolResponse",
-			Tool:      "summarize_tool_result",
-			Input:     agentmemory.ShortText(assistantToolCall, 220),
-			RawOutput: agentmemory.ShortText(rawOutput, 220),
-			Output:    agentmemory.ShortText(summary, 220),
-			Status:    "succeeded",
+			Step:             state.Step,
+			Role:             "ToolResponse",
+			Tool:             "summarize_tool_result",
+			Input:            agentmemory.ShortText(assistantToolCall, 220),
+			RawOutput:        agentmemory.ShortText(rawOutput, 220),
+			Output:           agentmemory.ShortText(summary, 220),
+			DurationMs:       durationMs,
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens:      usage.TotalTokens,
+			Status:           "succeeded",
 		}
 		if chatErr != nil {
 			record.Tool = "summarize_tool_result_fallback"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -34,8 +35,10 @@ const (
 type WsHandler struct {
 	db              *gorm.DB
 	hub             *Hub
+	router          *HubRouter
 	cacheClient     *cachepkg.RedisClient
 	taskService     *taskservice.MainService
+	streamHub       *taskservice.AgentStreamHub
 	robotInit       sync.Once
 	robotErr        error
 	doneConsumerMu  sync.Mutex
@@ -43,7 +46,7 @@ type WsHandler struct {
 	doneConsumerErr error
 }
 
-func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, taskService *taskservice.MainService) *WsHandler {
+func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, taskService *taskservice.MainService, streamHub *taskservice.AgentStreamHub, router *HubRouter) *WsHandler {
 	if hub == nil {
 		hub = NewHub()
 	}
@@ -56,8 +59,10 @@ func NewWsHandler(db *gorm.DB, hub *Hub, cacheClient *cachepkg.RedisClient, task
 	return &WsHandler{
 		db:          db,
 		hub:         hub,
+		router:      router,
 		cacheClient: cacheClient,
 		taskService: taskService,
+		streamHub:   streamHub,
 	}
 }
 
@@ -259,31 +264,46 @@ func (h *Hub) listFriendIDs(userID string) ([]string, error) {
 
 type Client struct {
 	hub    *Hub
+	router *HubRouter
 	conn   *websocket.Conn
 	send   chan []byte
 	userID string
+	connID string
 }
 
 type IncomingMessage struct {
-	Type         string `json:"type"`
-	ToUser       string `json:"to_user_id,omitempty"`
-	RoomID       string `json:"room_id,omitempty"`
-	Content      string `json:"content,omitempty"`
-	AttachmentID string `json:"attachment_id,omitempty"`
+	Type             string `json:"type"`
+	ToUser           string `json:"to_user_id,omitempty"`
+	RoomID           string `json:"room_id,omitempty"`
+	Content          string `json:"content,omitempty"`
+	AttachmentID     string `json:"attachment_id,omitempty"`
+	ParentMessageID  string `json:"parent_message_id,omitempty"`
+	ParentSequenceID *int64 `json:"parent_sequence_id,omitempty"`
 }
 
 type OutgoingMessage struct {
-	ID           string             `json:"id"`
-	Type         string             `json:"type"`
-	FromUser     string             `json:"from_user_id"`
-	ToUser       string             `json:"to_user_id,omitempty"`
-	RoomID       string             `json:"room_id,omitempty"`
-	Content      string             `json:"content,omitempty"`
-	AttachmentID string             `json:"attachment_id,omitempty"`
-	Attachment   *AttachmentPayload `json:"attachment,omitempty"`
-	PayloadJSON  datatypes.JSON     `json:"payload_json,omitempty"`
-	Timestamp    int64              `json:"timestamp"`
-	SequenceID   int64              `json:"sequence_id"`
+	ID               string             `json:"id"`
+	Type             string             `json:"type"`
+	FromUser         string             `json:"from_user_id"`
+	ToUser           string             `json:"to_user_id,omitempty"`
+	RoomID           string             `json:"room_id,omitempty"`
+	Content          string             `json:"content,omitempty"`
+	AttachmentID     string             `json:"attachment_id,omitempty"`
+	Attachment       *AttachmentPayload `json:"attachment,omitempty"`
+	PayloadJSON      datatypes.JSON     `json:"payload_json,omitempty"`
+	ParentMessageID  string             `json:"parent_message_id,omitempty"`
+	ParentSequenceID *int64             `json:"parent_sequence_id,omitempty"`
+	Timestamp        int64              `json:"timestamp"`
+	SequenceID       int64              `json:"sequence_id"`
+}
+
+type AgentCommandAck struct {
+	Type             string `json:"type"`
+	RequestID        string `json:"request_id"`
+	TaskID           string `json:"task_id"`
+	RoomID           string `json:"room_id"`
+	ParentMessageID  string `json:"parent_message_id,omitempty"`
+	ParentSequenceID int64  `json:"parent_sequence_id,omitempty"`
 }
 
 type AttachmentPayload struct {
@@ -322,13 +342,20 @@ func (h *WsHandler) Handle(c *gin.Context) {
 		return
 	}
 	log.Printf("ws connected user=%s ip=%s", userID, c.ClientIP())
+	connID := uuid.NewString()
 	client := &Client{
 		hub:    h.hub,
+		router: h.router,
 		conn:   conn,
 		send:   make(chan []byte, 256),
 		userID: userID,
+		connID: connID,
 	}
 	client.hub.register <- client
+	if h.router != nil {
+		roomIDs, _ := h.getUserRoomIDs(userID)
+		h.router.OnConnect(c.Request.Context(), userID, connID, roomIDs)
+	}
 
 	go client.writeLoop()
 	go client.readLoop(h)
@@ -337,6 +364,9 @@ func (h *WsHandler) Handle(c *gin.Context) {
 func (c *Client) readLoop(h *WsHandler) {
 	defer func() {
 		c.hub.unregister <- c
+		if c.router != nil {
+			c.router.OnDisconnect(context.Background(), c.userID, c.connID)
+		}
 		_ = c.conn.Close()
 	}()
 	c.conn.SetReadLimit(wsMaxMsgBytes)
@@ -385,29 +415,32 @@ func (c *Client) readLoop(h *WsHandler) {
 			if err != nil {
 				continue
 			}
-			savedMsg, err := h.saveDirectMessage(roomID, c.userID, msg.Content)
+			savedMsg, err := h.saveDirectMessage(roomID, c.userID, msg.Content, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 			if err != nil {
 				continue
 			}
 			out := OutgoingMessage{
-				ID:         savedMsg.ID,
-				Type:       "friend_message",
-				FromUser:   c.userID,
-				ToUser:     msg.ToUser,
-				RoomID:     roomID,
-				Content:    msg.Content,
-				Timestamp:  savedMsg.CreatedAt.Unix(),
-				SequenceID: savedMsg.SequenceID,
+				ID:       savedMsg.ID,
+				Type:     "friend_message",
+				FromUser: c.userID,
+				ToUser:   msg.ToUser,
+				RoomID:   roomID,
+				Content:  msg.Content,
+				ParentMessageID: func() string {
+					if savedMsg.ParentMessageID == nil {
+						return ""
+					}
+					return strings.TrimSpace(*savedMsg.ParentMessageID)
+				}(),
+				ParentSequenceID: savedMsg.ParentSequenceID,
+				Timestamp:        savedMsg.CreatedAt.Unix(),
+				SequenceID:       savedMsg.SequenceID,
 			}
 			b, err := json.Marshal(out)
 			if err != nil {
 				continue
 			}
-			c.hub.direct <- DirectMessage{
-				FromUserID: c.userID,
-				ToUserID:   msg.ToUser,
-				Data:       b,
-			}
+			c.routeDirect(c.userID, msg.ToUser, b)
 		} else if msg.Type == "group_message" {
 			if msg.RoomID == "" || msg.Content == "" {
 				continue
@@ -416,7 +449,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
 					continue
 				}
-				savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content)
+				savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 				if err != nil {
 					continue
 				}
@@ -425,39 +458,67 @@ func (c *Client) readLoop(h *WsHandler) {
 					continue
 				}
 				commandOut := OutgoingMessage{
-					ID:         savedMsg.ID,
-					Type:       "group_message",
-					FromUser:   c.userID,
-					RoomID:     msg.RoomID,
-					Content:    msg.Content,
-					Timestamp:  savedMsg.CreatedAt.Unix(),
-					SequenceID: savedMsg.SequenceID,
+					ID:       savedMsg.ID,
+					Type:     "group_message",
+					FromUser: c.userID,
+					RoomID:   msg.RoomID,
+					Content:  msg.Content,
+					ParentMessageID: func() string {
+						if savedMsg.ParentMessageID == nil {
+							return ""
+						}
+						return strings.TrimSpace(*savedMsg.ParentMessageID)
+					}(),
+					ParentSequenceID: savedMsg.ParentSequenceID,
+					Timestamp:        savedMsg.CreatedAt.Unix(),
+					SequenceID:       savedMsg.SequenceID,
 				}
 				commandBroadcast, err := json.Marshal(commandOut)
 				if err == nil {
-					c.hub.broadcast <- GroupMessage{
-						RoomID:  msg.RoomID,
-						UserIDs: memberIDs,
-						Data:    commandBroadcast,
-					}
+					c.routeBroadcast(msg.RoomID, memberIDs, commandBroadcast)
 				}
 				if h.taskService == nil {
 					continue
 				}
 				userID := c.userID
 				roomID := msg.RoomID
-				_, err = h.taskService.SubmitCommand(taskservice.SubmitCommandRequest{
-					UserID:  userID,
-					RoomID:  roomID,
-					Content: msg.Content,
+				requestID := taskservice.BuildWSCommandRequestID(userID, roomID, savedMsg.ID, savedMsg.SequenceID)
+				taskID, err := h.taskService.SubmitCommand(taskservice.SubmitCommandRequest{
+					RequestID:        requestID,
+					UserID:           userID,
+					RoomID:           roomID,
+					Content:          msg.Content,
+					ParentMessageID:  savedMsg.ID,
+					ParentSequenceID: savedMsg.SequenceID,
 				})
 				if err != nil {
+					h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+						EventType:        "agent.error",
+						RequestID:        requestID,
+						RoomID:           roomID,
+						UserID:           userID,
+						Status:           "failed",
+						Error:            err.Error(),
+						ParentMessageID:  savedMsg.ID,
+						ParentSequenceID: savedMsg.SequenceID,
+					})
 					log.Printf("submit command failed user=%s room=%s err=%v", userID, roomID, err)
-					if sendErr := h.sendRobotGroupMessage(roomID, err.Error(), nil); sendErr != nil {
+					if sendErr := h.sendRobotGroupMessage(roomID, err.Error(), nil, savedMsg.ID, &savedMsg.SequenceID); sendErr != nil {
 						log.Printf("send robot submit-failed message failed room=%s err=%v", roomID, sendErr)
 					}
 					continue
 				}
+				h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+					EventType:        "agent.start",
+					RequestID:        requestID,
+					RoomID:           roomID,
+					UserID:           userID,
+					Status:           "running",
+					Content:          strings.TrimSpace(msg.Content),
+					ParentMessageID:  savedMsg.ID,
+					ParentSequenceID: savedMsg.SequenceID,
+				})
+				h.sendAgentCommandAck(userID, roomID, requestID, taskID, savedMsg.ID, savedMsg.SequenceID)
 				continue
 			}
 			// Check if user is a member of the group and not muted
@@ -465,7 +526,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				// Optionally send error back to user
 				continue
 			}
-			savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content)
+			savedMsg, err := h.saveGroupMessage(msg.RoomID, c.userID, msg.Content, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 			if err != nil {
 				continue
 			}
@@ -477,23 +538,26 @@ func (c *Client) readLoop(h *WsHandler) {
 			}
 
 			out := OutgoingMessage{
-				ID:         savedMsg.ID,
-				Type:       "group_message",
-				FromUser:   c.userID,
-				RoomID:     msg.RoomID,
-				Content:    msg.Content,
-				Timestamp:  savedMsg.CreatedAt.Unix(),
-				SequenceID: savedMsg.SequenceID,
+				ID:       savedMsg.ID,
+				Type:     "group_message",
+				FromUser: c.userID,
+				RoomID:   msg.RoomID,
+				Content:  msg.Content,
+				ParentMessageID: func() string {
+					if savedMsg.ParentMessageID == nil {
+						return ""
+					}
+					return strings.TrimSpace(*savedMsg.ParentMessageID)
+				}(),
+				ParentSequenceID: savedMsg.ParentSequenceID,
+				Timestamp:        savedMsg.CreatedAt.Unix(),
+				SequenceID:       savedMsg.SequenceID,
 			}
 			b, err := json.Marshal(out)
 			if err != nil {
 				continue
 			}
-			c.hub.broadcast <- GroupMessage{
-				RoomID:  msg.RoomID,
-				UserIDs: memberIDs,
-				Data:    b,
-			}
+			c.routeBroadcast(msg.RoomID, memberIDs, b)
 		} else if msg.Type == "file_message" || msg.Type == "image_message" {
 			if msg.AttachmentID == "" {
 				continue
@@ -516,7 +580,7 @@ func (c *Client) readLoop(h *WsHandler) {
 				if err != nil {
 					continue
 				}
-				savedMsg, err := h.saveAttachmentMessage(roomID, c.userID, attachment.ID, payloadJSON, contentType)
+				savedMsg, err := h.saveAttachmentMessage(roomID, c.userID, attachment.ID, payloadJSON, contentType, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 				if err != nil {
 					continue
 				}
@@ -528,23 +592,26 @@ func (c *Client) readLoop(h *WsHandler) {
 					RoomID:       roomID,
 					AttachmentID: attachment.ID,
 					Attachment:   payload,
-					Timestamp:    savedMsg.CreatedAt.Unix(),
-					SequenceID:   savedMsg.SequenceID,
+					ParentMessageID: func() string {
+						if savedMsg.ParentMessageID == nil {
+							return ""
+						}
+						return strings.TrimSpace(*savedMsg.ParentMessageID)
+					}(),
+					ParentSequenceID: savedMsg.ParentSequenceID,
+					Timestamp:        savedMsg.CreatedAt.Unix(),
+					SequenceID:       savedMsg.SequenceID,
 				}
 				b, err := json.Marshal(out)
 				if err != nil {
 					continue
 				}
-				c.hub.direct <- DirectMessage{
-					FromUserID: c.userID,
-					ToUserID:   msg.ToUser,
-					Data:       b,
-				}
+				c.routeDirect(c.userID, msg.ToUser, b)
 			} else if msg.RoomID != "" {
 				if err := h.checkGroupPostingPermission(msg.RoomID, c.userID); err != nil {
 					continue
 				}
-				savedMsg, err := h.saveAttachmentMessage(msg.RoomID, c.userID, attachment.ID, payloadJSON, contentType)
+				savedMsg, err := h.saveAttachmentMessage(msg.RoomID, c.userID, attachment.ID, payloadJSON, contentType, strings.TrimSpace(msg.ParentMessageID), msg.ParentSequenceID)
 				if err != nil {
 					continue
 				}
@@ -559,18 +626,21 @@ func (c *Client) readLoop(h *WsHandler) {
 					RoomID:       msg.RoomID,
 					AttachmentID: attachment.ID,
 					Attachment:   payload,
-					Timestamp:    savedMsg.CreatedAt.Unix(),
-					SequenceID:   savedMsg.SequenceID,
+					ParentMessageID: func() string {
+						if savedMsg.ParentMessageID == nil {
+							return ""
+						}
+						return strings.TrimSpace(*savedMsg.ParentMessageID)
+					}(),
+					ParentSequenceID: savedMsg.ParentSequenceID,
+					Timestamp:        savedMsg.CreatedAt.Unix(),
+					SequenceID:       savedMsg.SequenceID,
 				}
 				b, err := json.Marshal(out)
 				if err != nil {
 					continue
 				}
-				c.hub.broadcast <- GroupMessage{
-					RoomID:  msg.RoomID,
-					UserIDs: memberIDs,
-					Data:    b,
-				}
+				c.routeBroadcast(msg.RoomID, memberIDs, b)
 			}
 		}
 	}
@@ -823,6 +893,30 @@ func (h *WsHandler) StartTaskDoneConsumer(ctx context.Context) error {
 		return h.doneConsumerErr
 	}
 	h.doneConsumerErr = h.taskService.StartDoneEventConsumer(ctx, func(handlerCtx context.Context, event taskservice.DoneEvent) error {
+		eventType := strings.TrimSpace(event.EventType)
+		if eventType == "agent.step" {
+			h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+				EventType: "agent.step",
+				RequestID: strings.TrimSpace(event.RequestID),
+				TaskID:    strings.TrimSpace(event.TaskID),
+				RoomID:    strings.TrimSpace(event.RoomID),
+				UserID:    strings.TrimSpace(event.UserID),
+				Step:      event.Step,
+				Role:      strings.TrimSpace(event.Role),
+				Tool:      strings.TrimSpace(event.Tool),
+				Status:    strings.TrimSpace(string(event.Status)),
+				Content:   strings.TrimSpace(event.Content),
+				Error:     strings.TrimSpace(event.ErrorMessage),
+				TokenUsage: map[string]int{
+					"prompt_tokens":     event.PromptTokens,
+					"completion_tokens": event.CompletionTokens,
+					"total_tokens":      event.TotalTokens,
+				},
+				ParentMessageID:  strings.TrimSpace(event.ParentMessageID),
+				ParentSequenceID: event.ParentSequenceID,
+			})
+			return nil
+		}
 		replyText := strings.TrimSpace(event.Final)
 		if replyText == "" {
 			replyText = strings.TrimSpace(event.ErrorMessage)
@@ -833,7 +927,40 @@ func (h *WsHandler) StartTaskDoneConsumer(ctx context.Context) error {
 		if strings.TrimSpace(replyText) == "" || strings.TrimSpace(event.RoomID) == "" {
 			return nil
 		}
-		return h.sendRobotGroupMessage(event.RoomID, replyText, event.Payload)
+		if eventType == "" {
+			for _, line := range splitMemoryLines(event.Payload) {
+				h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+					EventType:        "agent.step",
+					RequestID:        strings.TrimSpace(event.RequestID),
+					TaskID:           strings.TrimSpace(event.TaskID),
+					RoomID:           strings.TrimSpace(event.RoomID),
+					UserID:           strings.TrimSpace(event.UserID),
+					Status:           string(event.Status),
+					Content:          line,
+					ParentMessageID:  strings.TrimSpace(event.ParentMessageID),
+					ParentSequenceID: event.ParentSequenceID,
+				})
+			}
+		}
+		doneType := "agent.done"
+		if event.Status == tasksvc.StatusFailed {
+			doneType = "agent.error"
+		}
+		h.publishAgentStreamEvent(taskservice.AgentStreamEvent{
+			EventType:        doneType,
+			RequestID:        strings.TrimSpace(event.RequestID),
+			TaskID:           strings.TrimSpace(event.TaskID),
+			RoomID:           strings.TrimSpace(event.RoomID),
+			UserID:           strings.TrimSpace(event.UserID),
+			Status:           string(event.Status),
+			Content:          strings.TrimSpace(event.Final),
+			Error:            strings.TrimSpace(event.ErrorMessage),
+			Payload:          clonePayloadForStream(event.Payload),
+			ParentMessageID:  strings.TrimSpace(event.ParentMessageID),
+			ParentSequenceID: event.ParentSequenceID,
+		})
+		parentSequenceID := event.ParentSequenceID
+		return h.sendRobotGroupMessage(event.RoomID, replyText, event.Payload, event.ParentMessageID, &parentSequenceID)
 	})
 	if h.doneConsumerErr == nil {
 		h.doneConsumerUp = true
@@ -841,7 +968,7 @@ func (h *WsHandler) StartTaskDoneConsumer(ctx context.Context) error {
 	return h.doneConsumerErr
 }
 
-func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[string]interface{}) error {
+func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[string]interface{}, parentMessageID string, parentSequenceID *int64) error {
 	text := strings.TrimSpace(content)
 	if roomID == "" || text == "" {
 		return nil
@@ -853,7 +980,7 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[st
 	if err != nil {
 		return err
 	}
-	savedMsg, err := h.saveMessage(roomID, wsRobotUserID, models.ContentTypeText, &text, nil, payloadJSON)
+	savedMsg, err := h.saveMessage(roomID, wsRobotUserID, models.ContentTypeText, &text, nil, payloadJSON, strings.TrimSpace(parentMessageID), parentSequenceID)
 	if err != nil {
 		return err
 	}
@@ -868,19 +995,102 @@ func (h *WsHandler) sendRobotGroupMessage(roomID, content string, payload map[st
 		RoomID:      roomID,
 		Content:     text,
 		PayloadJSON: payloadJSON,
-		Timestamp:   savedMsg.CreatedAt.Unix(),
-		SequenceID:  savedMsg.SequenceID,
+		ParentMessageID: func() string {
+			if savedMsg.ParentMessageID == nil {
+				return ""
+			}
+			return strings.TrimSpace(*savedMsg.ParentMessageID)
+		}(),
+		ParentSequenceID: savedMsg.ParentSequenceID,
+		Timestamp:        savedMsg.CreatedAt.Unix(),
+		SequenceID:       savedMsg.SequenceID,
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
 		return err
 	}
-	h.hub.broadcast <- GroupMessage{
-		RoomID:  roomID,
-		UserIDs: memberIDs,
-		Data:    b,
+	if h.router != nil {
+		h.router.RouteBroadcast(context.Background(), roomID, memberIDs, b)
+	} else {
+		h.hub.broadcast <- GroupMessage{RoomID: roomID, UserIDs: memberIDs, Data: b}
 	}
 	return nil
+}
+
+func (h *WsHandler) publishAgentStreamEvent(event taskservice.AgentStreamEvent) {
+	if h == nil || h.streamHub == nil {
+		return
+	}
+	h.streamHub.Publish(event)
+}
+
+func splitMemoryLines(payload map[string]interface{}) []string {
+	if payload == nil {
+		return nil
+	}
+	rawMemory, ok := payload["memory"]
+	if !ok {
+		return nil
+	}
+	memoryText := strings.TrimSpace(fmt.Sprint(rawMemory))
+	if memoryText == "" {
+		return nil
+	}
+	lines := strings.Split(memoryText, "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func clonePayloadForStream(payload map[string]interface{}) map[string]interface{} {
+	if payload == nil {
+		return nil
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		cloned := make(map[string]interface{}, len(payload))
+		for k, v := range payload {
+			cloned[k] = v
+		}
+		return cloned
+	}
+	var cloned map[string]interface{}
+	if err := json.Unmarshal(b, &cloned); err != nil {
+		cloned = make(map[string]interface{}, len(payload))
+		for k, v := range payload {
+			cloned[k] = v
+		}
+	}
+	return cloned
+}
+
+func (h *WsHandler) sendAgentCommandAck(userID, roomID, requestID, taskID, parentMessageID string, parentSequenceID int64) {
+	if h == nil || h.hub == nil {
+		return
+	}
+	ack := AgentCommandAck{
+		Type:             "agent_command_ack",
+		RequestID:        strings.TrimSpace(requestID),
+		TaskID:           strings.TrimSpace(taskID),
+		RoomID:           strings.TrimSpace(roomID),
+		ParentMessageID:  strings.TrimSpace(parentMessageID),
+		ParentSequenceID: parentSequenceID,
+	}
+	b, err := json.Marshal(ack)
+	if err != nil {
+		return
+	}
+	if h.router != nil {
+		h.router.RouteDirectMessage(context.Background(), wsRobotUserID, strings.TrimSpace(userID), b)
+	} else {
+		h.hub.direct <- DirectMessage{FromUserID: wsRobotUserID, ToUserID: strings.TrimSpace(userID), Data: b}
+	}
 }
 
 func toJSONPayload(payload map[string]interface{}) (datatypes.JSON, error) {
@@ -894,23 +1104,24 @@ func toJSONPayload(payload map[string]interface{}) (datatypes.JSON, error) {
 	return datatypes.JSON(b), nil
 }
 
-func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string) (*models.Message, error) {
+func (h *WsHandler) saveGroupMessage(roomID, fromUserID, content string, parentMessageID string, parentSequenceID *int64) (*models.Message, error) {
 	text := content
-	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil)
+	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil, parentMessageID, parentSequenceID)
 }
 
-func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string) (*models.Message, error) {
+func (h *WsHandler) saveDirectMessage(roomID, fromUserID, content string, parentMessageID string, parentSequenceID *int64) (*models.Message, error) {
 	text := content
-	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil)
+	return h.saveMessage(roomID, fromUserID, models.ContentTypeText, &text, nil, nil, parentMessageID, parentSequenceID)
 }
 
-func (h *WsHandler) saveAttachmentMessage(roomID, fromUserID, attachmentID string, payload datatypes.JSON, contentType models.ContentType) (*models.Message, error) {
+func (h *WsHandler) saveAttachmentMessage(roomID, fromUserID, attachmentID string, payload datatypes.JSON, contentType models.ContentType, parentMessageID string, parentSequenceID *int64) (*models.Message, error) {
 	aid := attachmentID
-	return h.saveMessage(roomID, fromUserID, contentType, nil, &aid, payload)
+	return h.saveMessage(roomID, fromUserID, contentType, nil, &aid, payload, parentMessageID, parentSequenceID)
 }
 
-func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.ContentType, contentText *string, attachmentID *string, payload datatypes.JSON) (*models.Message, error) {
+func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.ContentType, contentText *string, attachmentID *string, payload datatypes.JSON, parentMessageID string, parentSequenceID *int64) (*models.Message, error) {
 	now := time.Now()
+	trimmedParentMessageID := strings.TrimSpace(parentMessageID)
 
 	// 重试逻辑：处理高并发下的 SequenceID 冲突（尤其是在 Postgres 无间隙锁的情况下）
 	maxRetries := 3
@@ -927,6 +1138,12 @@ func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.Co
 		}
 
 		err := h.db.Transaction(func(tx *gorm.DB) error {
+			resolvedParentMessageID, resolvedParentSequenceID, resolveErr := h.resolveParentReference(tx, roomID, trimmedParentMessageID, parentSequenceID)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			m.ParentMessageID = resolvedParentMessageID
+			m.ParentSequenceID = resolvedParentSequenceID
 			var lastMsg models.Message
 			// 尝试锁定最新的一条消息
 			// 注意：如果房间为空，First 会返回 RecordNotFound，此时无法加锁，依赖唯一索引冲突重试
@@ -952,6 +1169,33 @@ func (h *WsHandler) saveMessage(roomID, fromUserID string, contentType models.Co
 	}
 	// TODO: 记录重试失败日志
 	return nil, errors.New("failed to save message after retries")
+}
+
+func (h *WsHandler) resolveParentReference(tx *gorm.DB, roomID string, parentMessageID string, parentSequenceID *int64) (*string, *int64, error) {
+	trimmedParentMessageID := strings.TrimSpace(parentMessageID)
+	hasParentSequence := parentSequenceID != nil && *parentSequenceID > 0
+	if trimmedParentMessageID == "" && !hasParentSequence {
+		return nil, nil, nil
+	}
+	var parent models.Message
+	if trimmedParentMessageID != "" {
+		if err := tx.Where("id = ?", trimmedParentMessageID).First(&parent).Error; err != nil {
+			return nil, nil, err
+		}
+	} else {
+		if err := tx.Where("room_id = ? AND sequence_id = ?", roomID, *parentSequenceID).First(&parent).Error; err != nil {
+			return nil, nil, err
+		}
+	}
+	if strings.TrimSpace(parent.RoomID) != strings.TrimSpace(roomID) {
+		return nil, nil, errors.New("parent message does not belong to room")
+	}
+	if hasParentSequence && parent.SequenceID != *parentSequenceID {
+		return nil, nil, errors.New("parent sequence does not match parent message")
+	}
+	parentID := strings.TrimSpace(parent.ID)
+	parentSeq := parent.SequenceID
+	return &parentID, &parentSeq, nil
 }
 
 func (h *WsHandler) loadAttachmentPayload(userID, attachmentID string) (*models.Attachment, *AttachmentPayload, datatypes.JSON, error) {
@@ -1009,4 +1253,28 @@ func (h *WsHandler) ensureDirectRoomMembers(roomID, a, b string) {
 			}
 		}
 	}
+}
+
+func (h *WsHandler) getUserRoomIDs(userID string) ([]string, error) {
+	var roomIDs []string
+	err := h.db.Model(&models.RoomMember{}).
+		Where("user_id = ? AND left_at IS NULL", userID).
+		Pluck("room_id", &roomIDs).Error
+	return roomIDs, err
+}
+
+func (c *Client) routeDirect(fromUserID, toUserID string, data []byte) {
+	if c.router != nil {
+		c.router.RouteDirectMessage(context.Background(), fromUserID, toUserID, data)
+		return
+	}
+	c.hub.direct <- DirectMessage{FromUserID: fromUserID, ToUserID: toUserID, Data: data}
+}
+
+func (c *Client) routeBroadcast(roomID string, userIDs []string, data []byte) {
+	if c.router != nil {
+		c.router.RouteBroadcast(context.Background(), roomID, userIDs, data)
+		return
+	}
+	c.hub.broadcast <- GroupMessage{RoomID: roomID, UserIDs: userIDs, Data: data}
 }

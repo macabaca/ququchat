@@ -17,17 +17,19 @@ type Executor interface {
 }
 
 type ExecutorOptions struct {
-	LLMClient      LLMClient
-	RAGHandler     RAGHandler
-	AIGCClient     AIGCClient
-	MCPMultiClient *mcpclient.MultiClient
+	LLMClient        LLMClient
+	RAGHandler       RAGHandler
+	AIGCClient       AIGCClient
+	MCPMultiClient   *mcpclient.MultiClient
+	ProgressReporter AgentProgressReporter
 }
 
 type DefaultExecutor struct {
-	llmClient      LLMClient
-	ragHandler     RAGHandler
-	aigcClient     AIGCClient
-	mcpMultiClient *mcpclient.MultiClient
+	llmClient        LLMClient
+	ragHandler       RAGHandler
+	aigcClient       AIGCClient
+	mcpMultiClient   *mcpclient.MultiClient
+	progressReporter AgentProgressReporter
 }
 
 func NewDefaultExecutor(opts ExecutorOptions) *DefaultExecutor {
@@ -36,6 +38,7 @@ func NewDefaultExecutor(opts ExecutorOptions) *DefaultExecutor {
 		ragHandler:     opts.RAGHandler,
 		aigcClient:     opts.AIGCClient,
 		mcpMultiClient: opts.MCPMultiClient,
+		progressReporter: opts.ProgressReporter,
 	}
 }
 

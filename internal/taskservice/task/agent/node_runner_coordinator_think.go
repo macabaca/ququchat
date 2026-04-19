@@ -63,17 +63,23 @@ func RunCoordinatorThinkNode(ctx context.Context, client ChatClient, state *Stat
 		RecentMessageCount: len(recentMessages),
 	}
 	thinkPrompt := agentservices.BuildCoordinatorThinkPrompt(promptInput)
-	thoughtRaw, thinkErr := client.Chat(ctx, thinkPrompt)
+	startAt := time.Now()
+	thoughtRaw, usage, thinkErr := chatWithUsage(ctx, client, thinkPrompt)
+	durationMs := time.Since(startAt).Milliseconds()
 	if thinkErr != nil {
 		if state.MemorySession != nil {
 			state.MemorySession.AppendObservation(agentmemory.Observation{
-				Step:   step,
-				Role:   "CoordinatorThink",
-				Tool:   "think",
-				Input:  agentmemory.ShortText(thinkPrompt, 220),
-				Output: agentmemory.ShortText(thoughtRaw, 220),
-				Status: "failed",
-				Error:  thinkErr.Error(),
+				Step:       step,
+				Role:       "CoordinatorThink",
+				Tool:       "think",
+				Input:      agentmemory.ShortText(thinkPrompt, 220),
+				Output:     agentmemory.ShortText(thoughtRaw, 220),
+				DurationMs: durationMs,
+				PromptTokens: usage.PromptTokens,
+				CompletionTokens: usage.CompletionTokens,
+				TotalTokens: usage.TotalTokens,
+				Status:     "failed",
+				Error:      thinkErr.Error(),
 			})
 		}
 		return "", fmt.Errorf("coordinator_think 调用失败: %w", thinkErr)
@@ -84,12 +90,16 @@ func RunCoordinatorThinkNode(ctx context.Context, client ChatClient, state *Stat
 	}
 	if state.MemorySession != nil {
 		state.MemorySession.AppendObservation(agentmemory.Observation{
-			Step:   step,
-			Role:   "CoordinatorThink",
-			Tool:   "think",
-			Input:  agentmemory.ShortText(thinkPrompt, 220),
-			Output: agentmemory.ShortText(thought, 220),
-			Status: "succeeded",
+			Step:       step,
+			Role:       "CoordinatorThink",
+			Tool:       "think",
+			Input:      agentmemory.ShortText(thinkPrompt, 220),
+			Output:     agentmemory.ShortText(thought, 220),
+			DurationMs: durationMs,
+			PromptTokens: usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens: usage.TotalTokens,
+			Status:     "succeeded",
 		})
 	}
 	state.MaxSteps = maxSteps

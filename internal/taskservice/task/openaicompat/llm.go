@@ -45,6 +45,11 @@ type chatCompletionResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 func NewLLMClient(opts LLMOptions) (*LLMClient, error) {
@@ -73,9 +78,17 @@ func NewLLMClient(opts LLMOptions) (*LLMClient, error) {
 }
 
 func (c *LLMClient) Chat(ctx context.Context, prompt string) (string, error) {
+	content, _, _, _, err := c.ChatWithUsage(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	return content, nil
+}
+
+func (c *LLMClient) ChatWithUsage(ctx context.Context, prompt string) (string, int, int, int, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
-		return "", errors.New("llm prompt is empty")
+		return "", 0, 0, 0, errors.New("llm prompt is empty")
 	}
 	body, err := json.Marshal(map[string]any{
 		"model": c.model,
@@ -88,21 +101,27 @@ func (c *LLMClient) Chat(ctx context.Context, prompt string) (string, error) {
 		"stream": false,
 	})
 	if err != nil {
-		return "", err
+		return "", 0, 0, 0, err
 	}
 	out, err := c.doChatCompletion(ctx, body)
 	if err != nil {
-		return "", err
+		return "", 0, 0, 0, err
 	}
 	if len(out.Choices) == 0 {
-		return "", errors.New("llm response has no choices")
+		return "", 0, 0, 0, errors.New("llm response has no choices")
 	}
 	content := strings.TrimSpace(out.Choices[0].Message.Content)
 	content = extractAfterThinkTag(content)
 	if content == "" {
-		return "", errors.New("llm response content is empty")
+		return "", 0, 0, 0, errors.New("llm response content is empty")
 	}
-	return content, nil
+	promptTokens := out.Usage.PromptTokens
+	completionTokens := out.Usage.CompletionTokens
+	totalTokens := out.Usage.TotalTokens
+	if totalTokens <= 0 {
+		totalTokens = promptTokens + completionTokens
+	}
+	return content, promptTokens, completionTokens, totalTokens, nil
 }
 
 func (c *LLMClient) ChatWithFunctionCalling(ctx context.Context, prompt string, tools []toolruntime.FunctionToolDefinition) (string, map[string]any, string, error) {

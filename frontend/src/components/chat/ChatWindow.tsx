@@ -5,7 +5,7 @@ import MessageList from './MessageList';
 import InputArea from './InputArea';
 import { useChatStore } from '../../stores/chatStore';
 import { useAuthStore } from '../../stores/authStore';
-import { GroupMember, ROBOT_DISPLAY_NAME, ROBOT_USER_ID } from '../../types/models';
+import { GroupMember, Message, ROBOT_DISPLAY_NAME, ROBOT_USER_ID } from '../../types/models';
 import { messageDao, MessageRow } from '../../api/db_sqlite';
 import { fileService } from '../../api/FileService';
 import { localFileService } from '../../api/LocalFileService';
@@ -56,6 +56,7 @@ const ChatWindow: React.FC = () => {
     const [mainHasMorePrevious, setMainHasMorePrevious] = React.useState(true);
     const [isMainLoadingPrevious, setIsMainLoadingPrevious] = React.useState(false);
     const [unreadHint, setUnreadHint] = React.useState<{ roomId: string; count: number; earliestMessageId: string | null } | null>(null);
+    const [quotedMessage, setQuotedMessage] = React.useState<Message | null>(null);
 
     // Resolve active chat details
     const roomId = activeConversationId || '';
@@ -78,6 +79,7 @@ const ChatWindow: React.FC = () => {
         setMainLoadedOffset(0);
         setMainHasMorePrevious(true);
         setIsMainLoadingPrevious(false);
+        setQuotedMessage(null);
     }, [activeConversationId]);
 
     React.useEffect(() => {
@@ -349,6 +351,13 @@ const ChatWindow: React.FC = () => {
             setIsHistoryJumping(false);
         }
     };
+    const handleQuoteMessage = (msg: Message) => {
+        if (!msg?.id || typeof msg.sequence_id !== 'number') {
+            message.warning('该消息暂时无法引用');
+            return;
+        }
+        setQuotedMessage(msg);
+    };
 
     const openGroupPanel = async () => {
         if (!activeGroup) return;
@@ -495,8 +504,15 @@ const ChatWindow: React.FC = () => {
                     canLoadPrevious={mainHasMorePrevious}
                     isLoadingPrevious={isMainLoadingPrevious}
                     onLoadPrevious={loadPreviousMainMessages}
+                    onQuoteMessage={handleQuoteMessage}
                 />
-                <InputArea onSend={sendMessage} roomId={activeConversationId} roomName={title} />
+                <InputArea
+                    onSend={sendMessage}
+                    roomId={activeConversationId}
+                    roomName={title}
+                    quotedMessage={quotedMessage}
+                    onClearQuote={() => setQuotedMessage(null)}
+                />
             </Content>
             <Drawer
                 title="群管理"

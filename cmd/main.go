@@ -121,7 +121,7 @@ func main() {
 		}()
 	}
 
-	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket, redisClient, taskService)
+	r := api.SetupRouter(db, authCfg, cfg.Chat, cfg.File, cfg.Avatar, objStorage, bucket, redisClient, taskService, cfg.WS.NodeID)
 
 	// 简单首页/健康检查（便于开发验证）
 	r.GET("/", func(c *gin.Context) {

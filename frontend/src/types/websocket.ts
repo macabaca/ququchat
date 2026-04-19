@@ -32,5 +32,13 @@ export interface WsServerHeartbeat {
     ts?: number;
 }
 
-export type WsServerMsg = Message | WsServerEvent | WsServerHeartbeat;
+export interface WsAgentCommandAck {
+    type: 'agent_command_ack';
+    request_id: string;
+    task_id: string;
+    room_id: string;
+    parent_message_id?: string;
+    parent_sequence_id?: number;
+}
 
+export type WsServerMsg = Message | WsServerEvent | WsServerHeartbeat | WsAgentCommandAck;

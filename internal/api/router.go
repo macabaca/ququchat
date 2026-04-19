@@ -17,7 +17,7 @@ import (
 )
 
 // SetupRouter 初始化 Gin 路由，并将数据库句柄注入到上下文中
-func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string, redisClient *cachepkg.RedisClient, taskService *taskservice.MainService) *gin.Engine {
+func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, fileCfg config.File, avatarCfg config.Avatar, objStorage serverstorage.ObjectStorage, bucket string, redisClient *cachepkg.RedisClient, taskService *taskservice.MainService, wsNodeID string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
@@ -42,6 +42,11 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	api.POST("/auth/logout", middleware.JWTAuth(authCfg.JWTSecret), auth.Logout)
 
 	hub := handler.NewHub()
+	var wsRouter *handler.HubRouter
+	if redisClient != nil && wsNodeID != "" {
+		wsRouter = handler.NewHubRouter(wsNodeID, hub, redisClient)
+		wsRouter.StartSubscriber(context.Background())
+	}
 	userHandler := handler.NewUserHandler(db, fileCfg, avatarCfg, objStorage, bucket, hub, redisClient)
 	friends := api.Group("/friends", middleware.JWTAuth(authCfg.JWTSecret))
 	friends.POST("/add", userHandler.AddFriend)
@@ -55,7 +60,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	users.GET("/:user_id/avatar/url", userHandler.GetAvatarURL)
 	users.GET("/:user_id/avatar/thumb/url", userHandler.GetAvatarThumbURL)
 
-	groupHandler := handler.NewGroupHandler(db, hub, redisClient)
+	groupHandler := handler.NewGroupHandler(db, hub, redisClient, wsRouter)
 	groups := api.Group("/groups", middleware.JWTAuth(authCfg.JWTSecret))
 	groups.POST("/create", groupHandler.CreateGroup)
 	groups.GET("/:group_id", groupHandler.GetGroupDetail)
@@ -72,6 +77,9 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	api.GET("/messages/history/after", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetHistoryAfter)
 	api.GET("/messages/history/latest", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByFriend)
 	api.GET("/messages/history/group", middleware.JWTAuth(authCfg.JWTSecret), messageHandler.GetLatestByGroup)
+	streamHub := taskservice.NewAgentStreamHub()
+	agentStreamHandler := handler.NewAgentStreamHandler(streamHub)
+	api.GET("/agent/stream", middleware.JWTAuth(authCfg.JWTSecret), agentStreamHandler.Stream)
 
 	fileHandler := handler.NewFileHandler(db, fileCfg, objStorage, bucket)
 	files := api.Group("/files", middleware.JWTAuth(authCfg.JWTSecret))
@@ -84,7 +92,7 @@ func SetupRouter(db *gorm.DB, authCfg config.AuthSettings, chatCfg config.Chat, 
 	files.POST("/multipart/complete", fileHandler.CompleteMultipartUpload)
 	files.POST("/multipart/abort", fileHandler.AbortMultipartUpload)
 
-	wsHandler := handler.NewWsHandler(db, hub, redisClient, taskService)
+	wsHandler := handler.NewWsHandler(db, hub, redisClient, taskService, streamHub, wsRouter)
 	go func() {
 		for {
 			if err := wsHandler.StartTaskDoneConsumer(context.Background()); err != nil {

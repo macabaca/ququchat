@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	agentmemory "ququchat/internal/taskservice/task/agent/memory"
 	"ququchat/internal/taskservice/task/agent/toolruntime"
@@ -38,7 +39,9 @@ func RunPlannerNode(ctx context.Context, client ChatClient, state *State) (next 
 			replanReason = strings.TrimSpace(state.Plan.Thought)
 		}
 	}
-	outline, outlineErr := generatePlannerOutline(ctx, client, goal, recentMessages, maxSteps, replanReason, strings.TrimSpace(state.CurrentTask), state.AvailableToolSpecs)
+	startAt := time.Now()
+	outline, usage, outlineErr := generatePlannerOutline(ctx, client, goal, recentMessages, maxSteps, replanReason, strings.TrimSpace(state.CurrentTask), state.AvailableToolSpecs)
+	durationMs := time.Since(startAt).Milliseconds()
 	if outlineErr != nil {
 		return "", outlineErr
 	}
@@ -49,11 +52,15 @@ func RunPlannerNode(ctx context.Context, client ChatClient, state *State) (next 
 	state.CurrentTask = currentPlannerTask(state.Outline.Steps, 0)
 	if state.MemorySession != nil {
 		state.MemorySession.AppendObservation(agentmemory.Observation{
-			Step:   state.Step,
-			Role:   "Planner",
-			Tool:   "generate_execution_outline",
-			Status: "succeeded",
-			Output: agentmemory.ShortText(formatPlannerOutline(state.Outline.Steps, 0), 220),
+			Step:       state.Step,
+			Role:       "Planner",
+			Tool:       "generate_execution_outline",
+			DurationMs: durationMs,
+			PromptTokens: usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens: usage.TotalTokens,
+			Status:     "succeeded",
+			Output:     agentmemory.ShortText(formatPlannerOutline(state.Outline.Steps, 0), 220),
 		})
 	}
 	return "planner.done", nil

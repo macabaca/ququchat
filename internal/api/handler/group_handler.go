@@ -15,13 +15,14 @@ import (
 )
 
 type GroupHandler struct {
-	db    *gorm.DB
-	hub   *Hub
-	cache *cachepkg.RedisClient
+	db     *gorm.DB
+	hub    *Hub
+	router *HubRouter
+	cache  *cachepkg.RedisClient
 }
 
-func NewGroupHandler(db *gorm.DB, hub *Hub, cache *cachepkg.RedisClient) *GroupHandler {
-	return &GroupHandler{db: db, hub: hub, cache: cache}
+func NewGroupHandler(db *gorm.DB, hub *Hub, cache *cachepkg.RedisClient, router *HubRouter) *GroupHandler {
+	return &GroupHandler{db: db, hub: hub, router: router, cache: cache}
 }
 
 func (h *GroupHandler) invalidateGroupPostingPermission(roomID string, userIDs ...string) {
@@ -305,6 +306,13 @@ func (h *GroupHandler) DismissGroup(c *gin.Context) {
 	h.invalidateGroupPostingPermissionByRoom(room.ID)
 	h.invalidateGroupMemberIDs(room.ID)
 
+	if h.router != nil && h.cache != nil {
+		roomNodesKey := h.cache.BuildKey(cachepkg.WSRoomNodesKey(room.ID)...)
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_ = h.cache.Del(ctx, roomNodesKey)
+		cancel()
+	}
+
 	if h.hub != nil && len(memberIDs) > 0 {
 		h.hub.SendSystemEventToUsers(memberIDs, "group_list_updated")
 	}
@@ -398,6 +406,21 @@ func (h *GroupHandler) AddMembers(c *gin.Context) {
 	h.invalidateGroupPostingPermission(groupID, addedUserIDs...)
 	if len(addedUserIDs) > 0 {
 		h.invalidateGroupMemberIDs(groupID)
+	}
+
+	if h.router != nil && h.cache != nil && len(addedUserIDs) > 0 {
+		roomNodesKey := h.cache.BuildKey(cachepkg.WSRoomNodesKey(groupID)...)
+		for _, uid := range addedUserIDs {
+			userNodesKey := h.cache.BuildKey(cachepkg.WSUserNodesKey(uid)...)
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			nodes, err := h.cache.SMembers(ctx, userNodesKey)
+			cancel()
+			if err == nil && len(nodes) > 0 {
+				ctx2, cancel2 := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				_ = h.cache.SAdd(ctx2, roomNodesKey, nodes...)
+				cancel2()
+			}
+		}
 	}
 
 	if h.hub != nil && len(addedUserIDs) > 0 {

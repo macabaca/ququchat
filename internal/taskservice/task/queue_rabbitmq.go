@@ -15,20 +15,18 @@ type RabbitMQQueueOptions struct {
 	URL          string
 	QueueName    string
 	ExchangeName string
-	MaxPriority  int
 	MaxLength    int
 	Prefetch     int
 	ConsumerName string
 }
 
 type RabbitMQProducer struct {
-	conn        *amqp.Connection
-	channel     *amqp.Channel
-	queueName   string
-	exchange    string
-	maxPriority uint8
-	mu          sync.Mutex
-	closeOnce   sync.Once
+	conn      *amqp.Connection
+	channel   *amqp.Channel
+	queueName string
+	exchange  string
+	mu        sync.Mutex
+	closeOnce sync.Once
 }
 
 type RabbitMQConsumer struct {
@@ -37,7 +35,6 @@ type RabbitMQConsumer struct {
 	url         string
 	queueName   string
 	exchange    string
-	maxPriority int
 	maxLength   int
 	prefetch    int
 	dlqExchange string
@@ -93,10 +90,6 @@ func NewRabbitMQProducer(opts RabbitMQQueueOptions) (*RabbitMQProducer, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	maxPriority := opts.MaxPriority
-	if maxPriority <= 0 {
-		maxPriority = 10
-	}
 	if err := ch.ExchangeDeclare(
 		exchangeName,
 		"direct",
@@ -146,7 +139,7 @@ func NewRabbitMQProducer(opts RabbitMQQueueOptions) (*RabbitMQProducer, error) {
 		false,
 		false,
 		false,
-		resolveTaskQueueDeclareArgs(maxPriority, opts.MaxLength),
+		resolveTaskQueueDeclareArgs(opts.MaxLength),
 	); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
@@ -158,11 +151,10 @@ func NewRabbitMQProducer(opts RabbitMQQueueOptions) (*RabbitMQProducer, error) {
 		return nil, err
 	}
 	return &RabbitMQProducer{
-		conn:        conn,
-		channel:     ch,
-		queueName:   queueName,
-		exchange:    exchangeName,
-		maxPriority: uint8(maxPriority),
+		conn:      conn,
+		channel:   ch,
+		queueName: queueName,
+		exchange:  exchangeName,
 	}, nil
 }
 
@@ -179,10 +171,6 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	if exchangeName == "" {
 		exchangeName = queueName + ".exchange"
 	}
-	maxPriority := opts.MaxPriority
-	if maxPriority <= 0 {
-		maxPriority = 10
-	}
 	prefetch := opts.Prefetch
 	if prefetch <= 0 {
 		prefetch = 1
@@ -191,7 +179,7 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	if consumerTag == "" {
 		consumerTag = "task-queue-consumer"
 	}
-	conn, ch, deliveries, err := initRabbitMQConsumerConnection(url, queueName, exchangeName, maxPriority, opts.MaxLength, prefetch, consumerTag)
+	conn, ch, deliveries, err := initRabbitMQConsumerConnection(url, queueName, exchangeName, opts.MaxLength, prefetch, consumerTag)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +189,6 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 		url:         url,
 		queueName:   queueName,
 		exchange:    exchangeName,
-		maxPriority: maxPriority,
 		maxLength:   opts.MaxLength,
 		prefetch:    prefetch,
 		dlqExchange: DefaultTaskDLQExchange,
@@ -212,7 +199,7 @@ func NewRabbitMQConsumer(opts RabbitMQQueueOptions) (*RabbitMQConsumer, error) {
 	}, nil
 }
 
-func initRabbitMQConsumerConnection(url string, queueName string, exchangeName string, maxPriority int, maxLength int, prefetch int, consumerTag string) (*amqp.Connection, *amqp.Channel, <-chan amqp.Delivery, error) {
+func initRabbitMQConsumerConnection(url string, queueName string, exchangeName string, maxLength int, prefetch int, consumerTag string) (*amqp.Connection, *amqp.Channel, <-chan amqp.Delivery, error) {
 	conn, err := amqp.Dial(url)
 	if err != nil {
 		return nil, nil, nil, err
@@ -271,7 +258,7 @@ func initRabbitMQConsumerConnection(url string, queueName string, exchangeName s
 		false,
 		false,
 		false,
-		resolveTaskQueueDeclareArgs(maxPriority, maxLength),
+		resolveTaskQueueDeclareArgs(maxLength),
 	); err != nil {
 		_ = ch.Close()
 		_ = conn.Close()
@@ -317,10 +304,6 @@ func MigrateRabbitMQQueue(opts RabbitMQQueueOptions) error {
 	if exchangeName == "" {
 		exchangeName = queueName + ".exchange"
 	}
-	maxPriority := opts.MaxPriority
-	if maxPriority <= 0 {
-		maxPriority = 10
-	}
 	conn, err := amqp.Dial(url)
 	if err != nil {
 		return err
@@ -330,7 +313,7 @@ func MigrateRabbitMQQueue(opts RabbitMQQueueOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := ensureTaskQueueTopology(declareCh, exchangeName, queueName, maxPriority, opts.MaxLength); err == nil {
+	if err := ensureTaskQueueTopology(declareCh, exchangeName, queueName, opts.MaxLength); err == nil {
 		_ = declareCh.Close()
 		return nil
 	} else if !isQueueDeclareIncompatibleError(err) {
@@ -354,13 +337,10 @@ func MigrateRabbitMQQueue(opts RabbitMQQueueOptions) error {
 		return err
 	}
 	defer rebuildCh.Close()
-	if err := ensureTaskQueueTopology(rebuildCh, exchangeName, queueName, maxPriority, opts.MaxLength); err != nil {
-		return err
-	}
-	return nil
+	return ensureTaskQueueTopology(rebuildCh, exchangeName, queueName, opts.MaxLength)
 }
 
-func ensureTaskQueueTopology(ch *amqp.Channel, exchangeName string, queueName string, maxPriority int, maxLength int) error {
+func ensureTaskQueueTopology(ch *amqp.Channel, exchangeName string, queueName string, maxLength int) error {
 	if ch == nil {
 		return errors.New("rabbitmq channel is nil")
 	}
@@ -376,7 +356,7 @@ func ensureTaskQueueTopology(ch *amqp.Channel, exchangeName string, queueName st
 	if err := ch.QueueBind(DefaultTaskDLQQueue, DefaultTaskDLQRoutingKey, DefaultTaskDLQExchange, false, nil); err != nil {
 		return err
 	}
-	if _, err := ch.QueueDeclare(queueName, true, false, false, false, resolveTaskQueueDeclareArgs(maxPriority, maxLength)); err != nil {
+	if _, err := ch.QueueDeclare(queueName, true, false, false, false, resolveTaskQueueDeclareArgs(maxLength)); err != nil {
 		return err
 	}
 	if err := ch.QueueBind(queueName, queueName, exchangeName, false, nil); err != nil {
@@ -411,7 +391,6 @@ func (q *RabbitMQProducer) Push(t *Task) error {
 		DeliveryMode: amqp.Persistent,
 		Body:         body,
 		Timestamp:    time.Now(),
-		Priority:     q.toAMQPPriority(t.Priority),
 	})
 	q.mu.Unlock()
 	return err
@@ -473,7 +452,6 @@ func (q *RabbitMQConsumer) reconnectConsumer() error {
 		q.url,
 		q.queueName,
 		q.exchange,
-		q.maxPriority,
 		q.maxLength,
 		q.prefetch,
 		q.consumerTag,
@@ -607,29 +585,8 @@ func (m *rabbitQueueMessage) Nack(requeue bool) error {
 	return m.delivery.Nack(false, requeue)
 }
 
-func (q *RabbitMQProducer) toAMQPPriority(p Priority) uint8 {
-	if q == nil || q.maxPriority == 0 {
-		return 0
-	}
-	switch p {
-	case PriorityHigh:
-		return q.maxPriority
-	case PriorityLow:
-		if q.maxPriority <= 2 {
-			return 1
-		}
-		return 1
-	default:
-		if q.maxPriority <= 1 {
-			return 1
-		}
-		return q.maxPriority / 2
-	}
-}
-
-func resolveTaskQueueDeclareArgs(maxPriority int, maxLength int) amqp.Table {
+func resolveTaskQueueDeclareArgs(maxLength int) amqp.Table {
 	args := amqp.Table{
-		"x-max-priority":            int32(maxPriority),
 		"x-overflow":                "reject-publish-dlx",
 		"x-dead-letter-exchange":    DefaultTaskDLQExchange,
 		"x-dead-letter-routing-key": DefaultTaskDLQRoutingKey,

@@ -82,6 +82,9 @@ export interface Message {
     // File/Image specific
     attachment_id?: string;
     thumb_attachment_id?: string;
+    parent_message_id?: string;
+    parent_sequence_id?: number | null;
+    parent_message?: Message | null;
     is_image?: boolean;
     cache_path?: string | null;
     payload_json?: Record<string, any> | string | null;
