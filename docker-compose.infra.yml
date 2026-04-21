@@ -121,7 +121,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./internal/config/config.yaml:/app/internal/config/config.yaml:ro
+      - ./internal/config/config.infra.yaml:/app/internal/config/config.yaml:ro
       - ./data:/app/data
       - ./bash:/app/logs
     depends_on:
