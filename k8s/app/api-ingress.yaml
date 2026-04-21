@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ququchat-api        # Ingress 的名字
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"  # 设置代理读取超时时间，单位为秒
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"  # 设置代理发送超时时间，单位为秒
+spec:
+  ingressClassName: nginx      # 指定使用 nginx Ingress Controller
+  rules:
+    - http:
+        paths:
+         - path: /
+           pathType: Prefix
+           backend:
+             service:
+               name: ququchat-api   # 目标 Service 的名字
+               port:
+                 number: 8080      # 目标 Service 的端口

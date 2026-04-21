@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ququchat-api        # Deployment 的名字
+spec:
+  replicas: 2               # 跑几个 Pod（副本数）
+  selector:
+    matchLabels:
+      app: ququchat-api     # 用来找到属于这个 Deployment 的 Pod
+  template:                 # 下面描述每个 Pod 长什么样
+    metadata:
+      labels:
+        app: ququchat-api   # Pod 的标签，要和 selector 一致
+    spec:
+      containers:
+        - name: api
+          image: ququchat-api:local    # 镜像名
+          imagePullPolicy: Never       # kind 本地镜像必须设这个，否则会去远程拉
+          
+          # 端口声明
+          ports:
+            - containerPort: 8080      # 容器内监听的端口
+          
+          # 注入 Secret（所有 key 变为环境变量）
+          envFrom:
+            - secretRef:
+                name: ququchat-secret
+          
+          # 注入环境变量（使用 Downward API）
+          env:
+            - name: WS_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name # 自动取当前 Pod 的名字
+          
+          # 挂载 ConfigMap 到特定文件路径
+          volumeMounts:
+            - name: config
+              mountPath: /app/internal/config/config.yaml
+              subPath: config.yaml     # 只挂载单个文件，不覆盖整个目录
+              
+      hostAliases:
+        - ip: "100.70.124.12"
+          hostnames:
+            - "infra"
+      # 定义卷
+      volumes:
+        - name: config
+          configMap:
+            name: ququchat-config      # 对应的 ConfigMap 名字

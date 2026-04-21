@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ququchat-api        # Service 的名字
+spec:
+  type: NodePort                # 让 Service 在每个节点上都暴露一个端口
+  selector:
+    app: ququchat-api           # 选择标签为 app=ququchat-api 的 Pod
+  ports:
+    - port: 8080                # Service 内部端口
+      targetPort: 8080          # 转发到 Pod 的端口
+      nodePort: 30080           # 在每个节点上暴露的端口
