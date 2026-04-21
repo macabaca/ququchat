@@ -25,6 +25,8 @@ type RabbitMQProducer struct {
 	channel   *amqp.Channel
 	queueName string
 	exchange  string
+	url       string
+	maxLength int
 	mu        sync.Mutex
 	closeOnce sync.Once
 }
@@ -128,6 +130,8 @@ func NewRabbitMQProducer(opts RabbitMQQueueOptions) (*RabbitMQProducer, error) {
 		channel:   ch,
 		queueName: queueName,
 		exchange:  exchangeName,
+		url:       url,
+		maxLength: opts.MaxLength,
 	}, nil
 }
 
@@ -205,6 +209,35 @@ func ensureTaskQueueTopology(ch *amqp.Channel, exchangeName string, queueName st
 	return nil
 }
 
+func (q *RabbitMQProducer) reconnect() error {
+	if q.conn != nil && !q.conn.IsClosed() {
+		if ch, err := q.conn.Channel(); err == nil {
+			q.channel = ch
+			return nil
+		}
+	}
+	conn, err := amqp.Dial(q.url)
+	if err != nil {
+		return err
+	}
+	ch, err := conn.Channel()
+	if err != nil {
+		_ = conn.Close()
+		return err
+	}
+	if err := ensureTaskQueueTopology(ch, q.exchange, q.queueName, q.maxLength); err != nil {
+		_ = ch.Close()
+		_ = conn.Close()
+		return err
+	}
+	if q.conn != nil {
+		_ = q.conn.Close()
+	}
+	q.conn = conn
+	q.channel = ch
+	return nil
+}
+
 func (q *RabbitMQProducer) Push(t *Task) error {
 	if q == nil || q.channel == nil {
 		return errors.New("rabbitmq queue is not initialized")
@@ -232,6 +265,16 @@ func (q *RabbitMQProducer) Push(t *Task) error {
 		Body:         body,
 		Timestamp:    time.Now(),
 	})
+	if err != nil {
+		if reconnErr := q.reconnect(); reconnErr == nil {
+			err = q.channel.PublishWithContext(context.Background(), q.exchange, q.queueName, false, false, amqp.Publishing{
+				ContentType:  "application/json",
+				DeliveryMode: amqp.Persistent,
+				Body:         body,
+				Timestamp:    time.Now(),
+			})
+		}
+	}
 	q.mu.Unlock()
 	return err
 }
