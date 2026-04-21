@@ -25,15 +25,17 @@ func generatePlannerOutline(ctx context.Context, client ChatClient, goal string,
 			return nil, totalUsage, err
 		}
 		candidateRaw := strings.TrimSpace(raw)
-		formatterPrompt := buildPlannerJSONFormatterPrompt(raw, specs)
-		formatterRaw, formatterUsage, formatterErr := chatWithUsage(ctx, client, formatterPrompt)
-		totalUsage.PromptTokens += formatterUsage.PromptTokens
-		totalUsage.CompletionTokens += formatterUsage.CompletionTokens
-		totalUsage.TotalTokens += formatterUsage.TotalTokens
-		if formatterErr == nil && strings.TrimSpace(formatterRaw) != "" {
-			candidateRaw = strings.TrimSpace(formatterRaw)
-		}
 		steps, _, issues := validatePlannerOutlineOutput(candidateRaw, maxSteps, specs)
+		if len(issues) > 0 {
+			formatterRaw, formatterUsage, formatterErr := chatWithUsage(ctx, client, buildPlannerJSONFormatterPrompt(raw, specs))
+			totalUsage.PromptTokens += formatterUsage.PromptTokens
+			totalUsage.CompletionTokens += formatterUsage.CompletionTokens
+			totalUsage.TotalTokens += formatterUsage.TotalTokens
+			if formatterErr == nil && strings.TrimSpace(formatterRaw) != "" {
+				candidateRaw = strings.TrimSpace(formatterRaw)
+			}
+			steps, _, issues = validatePlannerOutlineOutput(candidateRaw, maxSteps, specs)
+		}
 		if len(issues) == 0 {
 			return steps, totalUsage, nil
 		}
