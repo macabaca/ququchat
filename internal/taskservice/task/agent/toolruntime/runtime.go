@@ -32,6 +32,7 @@ type ValidationError struct {
 type Runtime interface {
 	Run(ctx context.Context, toolName string, input string, roomID string) (string, error)
 	Validate(toolName string, input string) *ValidationError
+	GetTool(name string) (Tool, bool)
 }
 
 type ToolDescriptor struct {
@@ -52,8 +53,9 @@ type FunctionDefinitionBody struct {
 }
 
 type defaultRuntime struct {
-	cfg  Config
-	deps Deps
+	cfg      Config
+	deps     Deps
+	registry *Registry
 }
 
 var localFunctionToolDefinitions = map[string]FunctionToolDefinition{
@@ -142,11 +144,12 @@ var localFunctionToolDefinitions = map[string]FunctionToolDefinition{
 	},
 }
 
-func New(cfg Config, deps Deps) Runtime {
-	return &defaultRuntime{
-		cfg:  cfg,
-		deps: deps,
+func New(cfg Config, deps Deps, extraTools ...Tool) Runtime {
+	reg := NewRegistry()
+	for _, t := range extraTools {
+		reg.Register(t)
 	}
+	return &defaultRuntime{cfg: cfg, deps: deps, registry: reg}
 }
 
 func (r *defaultRuntime) Run(ctx context.Context, toolName string, input string, roomID string) (string, error) {
@@ -160,41 +163,10 @@ func (r *defaultRuntime) Run(ctx context.Context, toolName string, input string,
 		}
 		return r.deps.MCPCallByQualifiedName(ctx, toolName, args)
 	}
-	switch toolName {
-	case "search_rag":
-		args, err := ParseActionInputJSONObject(input)
-		if err != nil {
-			return "", err
-		}
-		query := ReadStringArg(args, "query")
-		if query == "" {
-			return "", errors.New("search_rag requires input.query")
-		}
-		if strings.TrimSpace(roomID) == "" {
-			return "", errors.New("search_rag requires room_id")
-		}
-		if r.deps.RAGSearch == nil {
-			return "", errors.New("search_rag is not configured")
-		}
-		return r.deps.RAGSearch(ctx, strings.TrimSpace(roomID), query, r.cfg.RAGSearchTopK, r.cfg.RAGSearchVector)
-	case "generate_image":
-		args, err := ParseActionInputJSONObject(input)
-		if err != nil {
-			return "", err
-		}
-		prompt := ReadStringArg(args, "prompt")
-		if prompt == "" {
-			return "", errors.New("generate_image requires input.prompt")
-		}
-		if r.deps.AIGCGenerate == nil {
-			return "", errors.New("generate_image is not configured")
-		}
-		return r.deps.AIGCGenerate(ctx, prompt)
-	case "get_current_time":
-		return timeNowRFC3339(), nil
-	default:
-		return "", errors.New("unsupported tool")
+	if t, ok := r.registry.Get(toolName); ok {
+		return t.Run(ctx, input, roomID)
 	}
+	return "", errors.New("unsupported tool")
 }
 
 func (r *defaultRuntime) Validate(toolName string, input string) *ValidationError {
@@ -204,59 +176,21 @@ func (r *defaultRuntime) Validate(toolName string, input string) *ValidationErro
 	if strings.Contains(toolName, ":") {
 		args, err := ParseActionInputJSONObject(input)
 		if err != nil {
-			return &ValidationError{
-				Message: "action.input 必须是 JSON 对象字符串",
-				Detail:  err.Error(),
-			}
+			return &ValidationError{Message: "action.input 必须是 JSON 对象字符串", Detail: err.Error()}
 		}
 		if knownErr := validateKnownMCPToolArgs(toolName, args); knownErr != nil {
-			return &ValidationError{
-				Message: knownErr.Error(),
-				Detail:  "示例: {\"urls\":[\"https://example.com\"]}",
-			}
+			return &ValidationError{Message: knownErr.Error(), Detail: "示例: {\"urls\":[\"https://example.com\"]}"}
 		}
 		return nil
 	}
-	args, err := ParseActionInputJSONObject(input)
-	if err != nil {
-		return &ValidationError{
-			Message: "action.input 必须是 JSON 对象字符串",
-			Detail:  err.Error(),
-		}
-	}
-	switch toolName {
-	case "search_rag":
-		if ReadStringArg(args, "query") == "" {
-			return &ValidationError{
-				Message: "search_rag 需要 input.query",
-				Detail:  "示例: {\"query\":\"检索关键词\"}",
-			}
-		}
-	case "generate_image":
-		if ReadStringArg(args, "prompt") == "" {
-			return &ValidationError{
-				Message: "generate_image 需要 input.prompt",
-				Detail:  "示例: {\"prompt\":\"一只戴墨镜的柴犬\"}",
-			}
-		}
-	case "finish":
-		if ReadStringArg(args, "final") == "" {
-			return &ValidationError{
-				Message: "finish 需要 input.final",
-				Detail:  "示例: {\"final\":\"最终答案正文\"}",
-			}
-		}
-	case "replan":
-		if HasKey(args, "reason") {
-			if _, ok := args["reason"].(string); !ok {
-				return &ValidationError{
-					Message: "replan 的 input.reason 必须是字符串",
-					Detail:  "示例: {\"reason\":\"当前方案命中率低\"}",
-				}
-			}
-		}
+	if t, ok := r.registry.Get(toolName); ok {
+		return t.Validate(input)
 	}
 	return nil
+}
+
+func (r *defaultRuntime) GetTool(name string) (Tool, bool) {
+	return r.registry.Get(name)
 }
 
 func ParseActionInputJSONObject(raw string) (map[string]any, error) {
@@ -375,7 +309,7 @@ func cloneSchemaMap(in map[string]any) map[string]any {
 		return map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},
-			"additionalProperties": true,
+			"additionalProperties": false,
 		}
 	}
 	out := make(map[string]any, len(in))
@@ -404,7 +338,7 @@ func mcpFunctionParametersSchema(normalizedToolName string) map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"properties":           map[string]any{},
-		"additionalProperties": true,
+		"additionalProperties": false,
 	}
 }
 

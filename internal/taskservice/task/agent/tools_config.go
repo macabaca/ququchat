@@ -385,17 +385,18 @@ func normalizeToolFromSpecs(specs []ToolSpec, raw string) string {
 }
 
 func formatFunctionToolSpec(spec ToolSpec) string {
+	params := cloneToolParameters(spec.Parameters)
+	if len(params) == 0 {
+		params = map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		}
+	}
 	payload := map[string]any{
 		"name":        strings.TrimSpace(spec.Name),
 		"description": strings.TrimSpace(spec.Description),
-		"parameters":  cloneToolParameters(spec.Parameters),
-	}
-	if len(payload["parameters"].(map[string]any)) == 0 {
-		payload["parameters"] = map[string]any{
-			"type":                 "object",
-			"properties":           map[string]any{},
-			"additionalProperties": true,
-		}
+		"parameters":  params,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

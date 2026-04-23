@@ -8,6 +8,7 @@ import (
 	agentmemory "ququchat/internal/taskservice/task/agent/memory"
 	agentrouting "ququchat/internal/taskservice/task/agent/routing"
 	"ququchat/internal/taskservice/task/agent/toolruntime"
+	"ququchat/internal/taskservice/task/agent/toolruntime/tools"
 )
 
 type ChatClient interface {
@@ -187,6 +188,8 @@ func newRoutingService(client ChatClient) *agentrouting.Service {
 			{From: "executor", Event: "executor.failed", To: "coordinator_think"},
 			{From: "executor", Event: "executor.finish", To: "final_judge"},
 			{From: "executor", Event: "executor.replan", To: "planner"},
+			{From: "executor", Event: "executor.skill_loaded", To: "coordinator_think"},
+			{From: "executor", Event: "executor.skill_context", To: "planner"},
 			{From: "final_judge", Event: "final_judge.done", To: "end"},
 			{From: "final_judge", Event: "final_judge.retry", To: "coordinator_think"},
 		},
@@ -198,15 +201,22 @@ func newRoutingService(client ChatClient) *agentrouting.Service {
 }
 
 func newToolRuntime(input Input) toolruntime.Runtime {
-	return toolruntime.New(
-		toolruntime.Config{
-			RAGSearchTopK:   ragSearchTopK,
-			RAGSearchVector: ragSearchVector,
-		},
-		toolruntime.Deps{
-			RAGSearch:              toolruntime.RAGSearchFunc(input.RAGSearch),
-			AIGCGenerate:           toolruntime.AIGCGenerateFunc(input.AIGCGenerate),
-			MCPCallByQualifiedName: toolruntime.MCPCallFunc(input.MCPCallToolByQualifiedName),
-		},
+	cfg := toolruntime.Config{
+		RAGSearchTopK:   ragSearchTopK,
+		RAGSearchVector: ragSearchVector,
+	}
+	deps := toolruntime.Deps{
+		RAGSearch:              toolruntime.RAGSearchFunc(input.RAGSearch),
+		AIGCGenerate:           toolruntime.AIGCGenerateFunc(input.AIGCGenerate),
+		MCPCallByQualifiedName: toolruntime.MCPCallFunc(input.MCPCallToolByQualifiedName),
+	}
+	return toolruntime.New(cfg, deps,
+		tools.NewRAGSearchTool(cfg, deps),
+		tools.NewGenerateImageTool(deps),
+		tools.NewGetCurrentTimeTool(),
+		tools.NewReplanTool(),
+		tools.NewFinishTool(),
+		tools.NewSkillTool(""),
+		tools.NewBashTool(nil),
 	)
 }

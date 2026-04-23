@@ -2,7 +2,6 @@ package llmmq
 
 import (
 	"context"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -15,118 +14,156 @@ type RateLimiterOptions struct {
 }
 
 type RateLimiter struct {
-	rpm int
-	tpm int
-
-	mu          sync.Mutex
-	reqBucket   *tokenBucket
-	tokenBucket *tokenBucket
-}
-
-type tokenBucket struct {
-	capacity     float64
-	tokens       float64
-	refillPerSec float64
-	lastRefill   time.Time
+	mu      sync.Mutex
+	rpm     int
+	tpm     int
+	rpmRing *slidingWindow
+	tpmRing *slidingWindow
 }
 
 func NewRateLimiter(opts RateLimiterOptions) *RateLimiter {
-	rpm := opts.RPM
-	if rpm < 0 {
-		rpm = 0
+	rpm := max0(opts.RPM)
+	tpm := max0(opts.TPM)
+	rl := &RateLimiter{rpm: rpm, tpm: tpm}
+	if rpm > 0 {
+		rl.rpmRing = newSlidingWindow(rpm)
 	}
-	tpm := opts.TPM
-	if tpm < 0 {
-		tpm = 0
+	if tpm > 0 {
+		tpmCap := rpm
+		if tpmCap <= 0 {
+			tpmCap = 10000
+		}
+		rl.tpmRing = newSlidingWindow(tpmCap)
 	}
-	return &RateLimiter{
-		rpm:         rpm,
-		tpm:         tpm,
-		reqBucket:   newTokenBucket(float64(rpm), float64(rpm)/60.0),
-		tokenBucket: newTokenBucket(float64(tpm), float64(tpm)/60.0),
-	}
+	return rl
 }
 
 func (l *RateLimiter) Wait(ctx context.Context, prompt string) error {
 	if l == nil || (l.rpm <= 0 && l.tpm <= 0) {
 		return nil
 	}
-	reserveTokens := l.EstimateTokens(prompt)
+	tokens := l.EstimateTokens(prompt)
 	for {
-		wait := l.tryReserve(time.Now(), reserveTokens)
+		wait := l.tryAcquire(time.Now(), tokens)
 		if wait <= 0 {
 			return nil
 		}
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+			timer.Stop()
 			return ctx.Err()
 		case <-timer.C:
 		}
 	}
 }
 
-func (l *RateLimiter) EstimateTokens(prompt string) int {
-	const baseOverheadTokens = 32
-	const conservativeMaxOutputTokens = 8192
-	trimmed := strings.TrimSpace(prompt)
-	promptTokens := utf8.RuneCountInString(trimmed) + baseOverheadTokens
-	if promptTokens < baseOverheadTokens {
-		promptTokens = baseOverheadTokens
-	}
-	estimate := promptTokens + conservativeMaxOutputTokens
-	if l != nil && l.tpm > 0 && estimate > l.tpm {
-		return l.tpm
-	}
-	return estimate
-}
-
-func (l *RateLimiter) tryReserve(now time.Time, tokens int) time.Duration {
+func (l *RateLimiter) tryAcquire(now time.Time, tokens int) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	waitReq := l.waitDurationByRPM(now)
-	waitTok := l.waitDurationByTPM(now, tokens)
-	wait := maxDuration(waitReq, waitTok)
+
+	var waitRPM, waitTPM time.Duration
+	if l.rpmRing != nil {
+		waitRPM = l.rpmRing.waitDuration(now, 1, l.rpm)
+	}
+	if l.tpmRing != nil {
+		need := tokens
+		if need > l.tpm {
+			need = l.tpm
+		}
+		waitTPM = l.tpmRing.waitDuration(now, need, l.tpm)
+	}
+	wait := maxDuration(waitRPM, waitTPM)
 	if wait > 0 {
 		return wait
 	}
-	if l.reqBucket != nil {
-		l.reqBucket.consume(now, 1)
+	if l.rpmRing != nil {
+		l.rpmRing.push(now, 1)
 	}
-	if l.tokenBucket != nil {
-		reserve := float64(tokens)
-		if l.tokenBucket.capacity > 0 && reserve > l.tokenBucket.capacity {
-			reserve = l.tokenBucket.capacity
+	if l.tpmRing != nil {
+		need := tokens
+		if need > l.tpm {
+			need = l.tpm
 		}
-		if reserve > 0 {
-			l.tokenBucket.consume(now, reserve)
-		}
+		l.tpmRing.push(now, need)
 	}
 	return 0
 }
 
-func (l *RateLimiter) waitDurationByRPM(now time.Time) time.Duration {
-	if l.rpm <= 0 || l.reqBucket == nil {
-		return 0
+func (l *RateLimiter) EstimateTokens(prompt string) int {
+	const baseOverhead = 32
+	const maxOutput = 8192
+	n := utf8.RuneCountInString(strings.TrimSpace(prompt)) + baseOverhead + maxOutput
+	if l != nil && l.tpm > 0 && n > l.tpm {
+		return l.tpm
 	}
-	return l.reqBucket.waitDuration(now, 1)
+	return n
 }
 
-func (l *RateLimiter) waitDurationByTPM(now time.Time, tokens int) time.Duration {
-	if l.tpm <= 0 || l.tokenBucket == nil {
+// slidingWindow is a fixed-capacity ring buffer tracking (timestamp, weight) entries
+// within a 60-second window. capacity = RPM or TPM limit.
+type slidingWindow struct {
+	buf         []swEntry
+	head, tail  int
+	count       int // number of valid entries
+	windowSum   int // sum of weights currently in window
+}
+
+type swEntry struct {
+	t      time.Time
+	weight int
+}
+
+func newSlidingWindow(capacity int) *slidingWindow {
+	return &slidingWindow{buf: make([]swEntry, capacity)}
+}
+
+const windowDuration = 60 * time.Second
+
+func (w *slidingWindow) evict(now time.Time) {
+	cutoff := now.Add(-windowDuration)
+	for w.count > 0 && w.buf[w.head].t.Before(cutoff) {
+		w.windowSum -= w.buf[w.head].weight
+		w.head = (w.head + 1) % len(w.buf)
+		w.count--
+	}
+}
+
+// waitDuration returns how long to wait before `needed` more weight fits in the window.
+func (w *slidingWindow) waitDuration(now time.Time, needed, limit int) time.Duration {
+	w.evict(now)
+	if w.windowSum+needed <= limit {
 		return 0
 	}
-	reserve := float64(tokens)
-	if l.tokenBucket.capacity > 0 && reserve > l.tokenBucket.capacity {
-		reserve = l.tokenBucket.capacity
+	// Walk from head until enough weight is evicted to fit `needed`.
+	sum := w.windowSum
+	i := w.head
+	for n := 0; n < w.count; n++ {
+		sum -= w.buf[i].weight
+		if sum+needed <= limit {
+			// This entry expiring is enough — wait until it leaves the window.
+			expiry := w.buf[i].t.Add(windowDuration)
+			if d := expiry.Sub(now); d > 0 {
+				return d
+			}
+			return time.Millisecond
+		}
+		i = (i + 1) % len(w.buf)
 	}
-	if reserve <= 0 {
-		return 0
+	return windowDuration
+}
+
+func (w *slidingWindow) push(now time.Time, weight int) {
+	if w.count == len(w.buf) {
+		// Ring is full: overwrite oldest (should not happen if waitDuration is respected).
+		w.windowSum -= w.buf[w.head].weight
+		w.head = (w.head + 1) % len(w.buf)
+		w.count--
 	}
-	return l.tokenBucket.waitDuration(now, reserve)
+	w.buf[w.tail] = swEntry{t: now, weight: weight}
+	w.tail = (w.tail + 1) % len(w.buf)
+	w.count++
+	w.windowSum += weight
 }
 
 func maxDuration(a, b time.Duration) time.Duration {
@@ -136,66 +173,9 @@ func maxDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-func newTokenBucket(capacity float64, refillPerSec float64) *tokenBucket {
-	if capacity <= 0 || refillPerSec <= 0 {
-		return nil
-	}
-	now := time.Now()
-	return &tokenBucket{
-		capacity:     capacity,
-		tokens:       capacity,
-		refillPerSec: refillPerSec,
-		lastRefill:   now,
-	}
-}
-
-func (b *tokenBucket) refill(now time.Time) {
-	if b == nil {
-		return
-	}
-	if b.lastRefill.IsZero() {
-		b.lastRefill = now
-		return
-	}
-	if now.Before(b.lastRefill) {
-		return
-	}
-	elapsed := now.Sub(b.lastRefill).Seconds()
-	if elapsed <= 0 {
-		return
-	}
-	b.tokens = math.Min(b.capacity, b.tokens+elapsed*b.refillPerSec)
-	b.lastRefill = now
-}
-
-func (b *tokenBucket) waitDuration(now time.Time, needed float64) time.Duration {
-	if b == nil || needed <= 0 {
+func max0(n int) int {
+	if n < 0 {
 		return 0
 	}
-	b.refill(now)
-	if b.tokens >= needed {
-		return 0
-	}
-	deficit := needed - b.tokens
-	if b.refillPerSec <= 0 {
-		return time.Second
-	}
-	seconds := deficit / b.refillPerSec
-	wait := time.Duration(math.Ceil(seconds * float64(time.Second)))
-	if wait <= 0 {
-		return time.Millisecond
-	}
-	return wait
-}
-
-func (b *tokenBucket) consume(now time.Time, amount float64) {
-	if b == nil || amount <= 0 {
-		return
-	}
-	b.refill(now)
-	if amount >= b.tokens {
-		b.tokens = 0
-		return
-	}
-	b.tokens -= amount
+	return n
 }

@@ -2,7 +2,6 @@ package aigcmq
 
 import (
 	"context"
-	"math"
 	"sync"
 	"time"
 )
@@ -13,36 +12,24 @@ type RateLimiterOptions struct {
 }
 
 type RateLimiter struct {
-	ipm int
-	ipd int
-
-	mu           sync.Mutex
-	minuteBucket *tokenBucket
-	dayBucket    *tokenBucket
-}
-
-type tokenBucket struct {
-	capacity     float64
-	tokens       float64
-	refillPerSec float64
-	lastRefill   time.Time
+	mu      sync.Mutex
+	ipm     int
+	ipd     int
+	ipmRing *slidingWindow
+	ipdWin  *fixedDayWindow
 }
 
 func NewRateLimiter(opts RateLimiterOptions) *RateLimiter {
-	ipm := opts.IPM
-	if ipm < 0 {
-		ipm = 0
+	ipm := max0(opts.IPM)
+	ipd := max0(opts.IPD)
+	rl := &RateLimiter{ipm: ipm, ipd: ipd}
+	if ipm > 0 {
+		rl.ipmRing = newSlidingWindow(ipm)
 	}
-	ipd := opts.IPD
-	if ipd < 0 {
-		ipd = 0
+	if ipd > 0 {
+		rl.ipdWin = &fixedDayWindow{}
 	}
-	return &RateLimiter{
-		ipm:          ipm,
-		ipd:          ipd,
-		minuteBucket: newTokenBucket(float64(ipm), float64(ipm)/60.0),
-		dayBucket:    newTokenBucket(float64(ipd), float64(ipd)/(24.0*60.0*60.0)),
-	}
+	return rl
 }
 
 func (l *RateLimiter) Wait(ctx context.Context, imageCount int) error {
@@ -53,78 +40,140 @@ func (l *RateLimiter) Wait(ctx context.Context, imageCount int) error {
 		imageCount = 1
 	}
 	for {
-		wait := l.tryReserve(time.Now(), imageCount)
+		wait := l.tryAcquire(time.Now(), imageCount)
 		if wait <= 0 {
 			return nil
 		}
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+			timer.Stop()
 			return ctx.Err()
 		case <-timer.C:
 		}
 	}
 }
 
-func (l *RateLimiter) tryReserve(now time.Time, imageCount int) time.Duration {
+func (l *RateLimiter) tryAcquire(now time.Time, imageCount int) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	waitMinute := l.waitByIPM(now, imageCount)
-	waitDay := l.waitByIPD(now, imageCount)
-	wait := maxDuration(waitMinute, waitDay)
+	var waitIPM, waitIPD time.Duration
+	if l.ipmRing != nil {
+		need := imageCount
+		if need > l.ipm {
+			need = l.ipm
+		}
+		waitIPM = l.ipmRing.waitDuration(now, need, l.ipm)
+	}
+	if l.ipdWin != nil {
+		waitIPD = l.ipdWin.waitDuration(now, imageCount, l.ipd)
+	}
+	wait := maxDuration(waitIPM, waitIPD)
 	if wait > 0 {
 		return wait
 	}
-	if l.minuteBucket != nil {
-		reserveMinute := float64(imageCount)
-		if l.minuteBucket.capacity > 0 && reserveMinute > l.minuteBucket.capacity {
-			reserveMinute = l.minuteBucket.capacity
+	if l.ipmRing != nil {
+		need := imageCount
+		if need > l.ipm {
+			need = l.ipm
 		}
-		if reserveMinute > 0 {
-			l.minuteBucket.consume(now, reserveMinute)
-		}
+		l.ipmRing.push(now, need)
 	}
-	if l.dayBucket != nil {
-		reserveDay := float64(imageCount)
-		if l.dayBucket.capacity > 0 && reserveDay > l.dayBucket.capacity {
-			reserveDay = l.dayBucket.capacity
-		}
-		if reserveDay > 0 {
-			l.dayBucket.consume(now, reserveDay)
-		}
+	if l.ipdWin != nil {
+		l.ipdWin.consume(now, imageCount)
 	}
 	return 0
 }
 
-func (l *RateLimiter) waitByIPM(now time.Time, imageCount int) time.Duration {
-	if l.ipm <= 0 || l.minuteBucket == nil {
-		return 0
-	}
-	reserve := float64(imageCount)
-	if l.minuteBucket.capacity > 0 && reserve > l.minuteBucket.capacity {
-		reserve = l.minuteBucket.capacity
-	}
-	if reserve <= 0 {
-		return 0
-	}
-	return l.minuteBucket.waitDuration(now, reserve)
+// slidingWindow is a fixed-capacity ring buffer for a 60-second window.
+type slidingWindow struct {
+	buf        []swEntry
+	head, tail int
+	count      int
+	windowSum  int
 }
 
-func (l *RateLimiter) waitByIPD(now time.Time, imageCount int) time.Duration {
-	if l.ipd <= 0 || l.dayBucket == nil {
+type swEntry struct {
+	t      time.Time
+	weight int
+}
+
+func newSlidingWindow(capacity int) *slidingWindow {
+	return &slidingWindow{buf: make([]swEntry, capacity)}
+}
+
+const minuteWindow = 60 * time.Second
+
+func (w *slidingWindow) evict(now time.Time) {
+	cutoff := now.Add(-minuteWindow)
+	for w.count > 0 && w.buf[w.head].t.Before(cutoff) {
+		w.windowSum -= w.buf[w.head].weight
+		w.head = (w.head + 1) % len(w.buf)
+		w.count--
+	}
+}
+
+func (w *slidingWindow) waitDuration(now time.Time, needed, limit int) time.Duration {
+	w.evict(now)
+	if w.windowSum+needed <= limit {
 		return 0
 	}
-	reserve := float64(imageCount)
-	if l.dayBucket.capacity > 0 && reserve > l.dayBucket.capacity {
-		reserve = l.dayBucket.capacity
+	sum := w.windowSum
+	i := w.head
+	for n := 0; n < w.count; n++ {
+		sum -= w.buf[i].weight
+		if sum+needed <= limit {
+			if d := w.buf[i].t.Add(minuteWindow).Sub(now); d > 0 {
+				return d
+			}
+			return time.Millisecond
+		}
+		i = (i + 1) % len(w.buf)
 	}
-	if reserve <= 0 {
+	return minuteWindow
+}
+
+func (w *slidingWindow) push(now time.Time, weight int) {
+	if w.count == len(w.buf) {
+		w.windowSum -= w.buf[w.head].weight
+		w.head = (w.head + 1) % len(w.buf)
+		w.count--
+	}
+	w.buf[w.tail] = swEntry{t: now, weight: weight}
+	w.tail = (w.tail + 1) % len(w.buf)
+	w.count++
+	w.windowSum += weight
+}
+
+// fixedDayWindow resets at midnight (local time).
+type fixedDayWindow struct {
+	date  time.Time
+	count int
+}
+
+func (w *fixedDayWindow) today(now time.Time) time.Time {
+	y, m, d := now.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+}
+
+func (w *fixedDayWindow) waitDuration(now time.Time, needed, limit int) time.Duration {
+	today := w.today(now)
+	if !today.Equal(w.date) {
 		return 0
 	}
-	return l.dayBucket.waitDuration(now, reserve)
+	if w.count+needed <= limit {
+		return 0
+	}
+	return today.Add(24 * time.Hour).Sub(now)
+}
+
+func (w *fixedDayWindow) consume(now time.Time, n int) {
+	today := w.today(now)
+	if !today.Equal(w.date) {
+		w.date = today
+		w.count = 0
+	}
+	w.count += n
 }
 
 func maxDuration(a, b time.Duration) time.Duration {
@@ -134,66 +183,9 @@ func maxDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-func newTokenBucket(capacity float64, refillPerSec float64) *tokenBucket {
-	if capacity <= 0 || refillPerSec <= 0 {
-		return nil
-	}
-	now := time.Now()
-	return &tokenBucket{
-		capacity:     capacity,
-		tokens:       capacity,
-		refillPerSec: refillPerSec,
-		lastRefill:   now,
-	}
-}
-
-func (b *tokenBucket) refill(now time.Time) {
-	if b == nil {
-		return
-	}
-	if b.lastRefill.IsZero() {
-		b.lastRefill = now
-		return
-	}
-	if now.Before(b.lastRefill) {
-		return
-	}
-	elapsed := now.Sub(b.lastRefill).Seconds()
-	if elapsed <= 0 {
-		return
-	}
-	b.tokens = math.Min(b.capacity, b.tokens+elapsed*b.refillPerSec)
-	b.lastRefill = now
-}
-
-func (b *tokenBucket) waitDuration(now time.Time, needed float64) time.Duration {
-	if b == nil || needed <= 0 {
+func max0(n int) int {
+	if n < 0 {
 		return 0
 	}
-	b.refill(now)
-	if b.tokens >= needed {
-		return 0
-	}
-	deficit := needed - b.tokens
-	if b.refillPerSec <= 0 {
-		return time.Second
-	}
-	seconds := deficit / b.refillPerSec
-	wait := time.Duration(math.Ceil(seconds * float64(time.Second)))
-	if wait <= 0 {
-		return time.Millisecond
-	}
-	return wait
-}
-
-func (b *tokenBucket) consume(now time.Time, amount float64) {
-	if b == nil || amount <= 0 {
-		return
-	}
-	b.refill(now)
-	if amount >= b.tokens {
-		b.tokens = 0
-		return
-	}
-	b.tokens -= amount
+	return n
 }

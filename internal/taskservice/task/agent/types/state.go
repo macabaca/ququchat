@@ -29,6 +29,8 @@ type DomainState struct {
 	URLAliasOrder      []string
 	NextURLAliasIndex  int
 	AvailableToolSpecs []ToolSpec
+	SkillAllowedTools  []string // set by skill executor, restricts bash tool
+	SkillDir           string   // working directory for bash tool when running a skill
 	MemorySession      agentmemory.Session
 	ToolRuntime        toolruntime.Runtime
 }
