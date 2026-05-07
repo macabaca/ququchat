@@ -122,7 +122,7 @@ llm:
   request_queue_max_length: 20000
   request_queue_message_ttl_ms: 0
   worker_size: 4
-  response_timeout_ms: 60000
+  response_timeout_ms: 120000
   api_key: "${LLM_API_KEY}"
   base_url: "https://api.siliconflow.cn/v1"
   # model: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
@@ -221,12 +221,15 @@ mcp_servers:
     name: "ququchat"
     version: "0.1.0"
     timeout_ms: 120000
-  minimax:
-    type: "streamable_http"
-    endpoint: "http://host.docker.internal:3000/rest"
-    name: "minimax-mcp"
-    version: "0.1.0"
-    timeout_ms: 60000
+  # minimax:
+  #   type: "streamable_http"
+  #   endpoint: "http://host.docker.internal:3000/rest"
+  #   name: "minimax-mcp"
+  #   version: "0.1.0"
+  #   timeout_ms: 60000
+
+wiki:
+  base_dir: "/root/lzy/wiki"
 
 ws:
   node_id: "node1" 

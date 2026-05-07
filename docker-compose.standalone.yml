@@ -173,6 +173,7 @@ services:
       - ./internal/config/config.infra.yaml:/app/internal/config/config.yaml:ro
       - ./data:/app/data
       - ./bash:/app/logs
+      - /root/lzy/wiki:/root/lzy/wiki
     depends_on:
       postgres:
         condition: service_healthy

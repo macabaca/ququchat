@@ -14,6 +14,7 @@ import (
 	taskagent "ququchat/internal/taskservice/task/agent"
 	"ququchat/internal/taskservice/task/aigcmq"
 	"ququchat/internal/taskservice/task/mcpclient"
+	"ququchat/internal/taskservice/wikiagent"
 )
 
 type AIGCClient interface {
@@ -36,8 +37,24 @@ func (e *DefaultExecutor) executeAgent(ctx context.Context, t *Task) (Result, er
 		RecentMessages: append([]string(nil), t.Payload.Agent.RecentMessages...),
 		MaxSteps:       t.Payload.Agent.MaxSteps,
 		RoomID:         strings.TrimSpace(t.Payload.Agent.RoomID),
+		UserID:         strings.TrimSpace(t.Payload.Agent.UserID),
 		RequestID:      strings.TrimSpace(t.RequestID),
 		TaskID:         strings.TrimSpace(t.ID),
+		WikiStore:      e.wikiStore,
+		WikiQueryFunc: func(ctx context.Context, goal string) string {
+			if e.wikiStore == nil && e.wikiDir == "" {
+				return ""
+			}
+			dirs := []string{}
+			roomID := strings.TrimSpace(t.Payload.Agent.RoomID)
+			if roomID != "" && e.wikiDir != "" {
+				dirs = append(dirs, e.wikiDir+"/room-"+roomID)
+			}
+			if len(dirs) == 0 && e.wikiStore != nil {
+				return e.wikiStore.QueryContext(roomID, goal)
+			}
+			return wikiagent.RunQuery(ctx, e.llmClient, dirs[0], goal)
+		},
 		OnObservation: func(event taskagent.ObservationEvent) {
 			if e == nil || e.progressReporter == nil {
 				return
@@ -74,6 +91,19 @@ func (e *DefaultExecutor) executeAgent(ctx context.Context, t *Task) (Result, er
 	})
 	if err != nil {
 		return Result{}, err
+	}
+	if e.wikiDir != "" {
+		conv := strings.Join(append([]string{goal}, t.Payload.Agent.RecentMessages...), "\n")
+		roomID := strings.TrimSpace(t.Payload.Agent.RoomID)
+		wikiDir := e.wikiDir
+		llmClient := e.llmClient
+		go func() {
+			if roomID != "" {
+				if err := wikiagent.RunIngest(context.Background(), llmClient, wikiDir+"/room-"+roomID, conv); err != nil {
+					log.Printf("[wiki] ingest room=%s: %v", roomID, err)
+				}
+			}
+		}()
 	}
 	final, memory := splitAgentFinalAndMemory(text)
 	payload := map[string]interface{}{}

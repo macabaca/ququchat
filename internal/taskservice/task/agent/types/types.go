@@ -2,6 +2,8 @@ package types
 
 import (
 	"context"
+
+	"ququchat/internal/taskservice/wiki"
 )
 
 type Input struct {
@@ -12,6 +14,12 @@ type Input struct {
 	RequestID                  string
 	TaskID                     string
 	UserID                     string
+	AgentDepth                 int
+	WikiOnlyMode               bool
+	WikiReadOnlyMode           bool
+	WikiStore                  wiki.Store
+	WikiDir                    string
+	WikiQueryFunc              func(ctx context.Context, goal string) string
 	OnObservation              func(event ObservationEvent)
 	RAGSearch                  func(ctx context.Context, roomID string, query string, topK int, vector string) (string, error)
 	AIGCGenerate               func(ctx context.Context, prompt string) (string, error)

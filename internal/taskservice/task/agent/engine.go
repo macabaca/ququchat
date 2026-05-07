@@ -65,7 +65,22 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 		maxSteps = maxStepsLimit
 	}
 	availableToolSpecs := listToolSpecsWithDynamic(input.DynamicToolSpecs)
-	toolRunner := newToolRuntime(input)
+	if input.WikiOnlyMode {
+		availableToolSpecs = []ToolSpec{
+			{Name: "wiki_list_files", Description: "列出 wiki 目录中的 .md 文件", Parameters: map[string]any{"type": "object", "properties": map[string]any{"dir": map[string]any{"type": "string"}}, "additionalProperties": false}},
+			{Name: "wiki_read_file", Description: "读取 wiki 文件内容", Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"}, "additionalProperties": false}},
+			{Name: "wiki_write_file", Description: "写入 wiki 文件", Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}}, "required": []string{"path", "content"}, "additionalProperties": false}},
+			{Name: "finish", Description: "完成任务", Parameters: map[string]any{"type": "object", "properties": map[string]any{"final": map[string]any{"type": "string"}}, "required": []string{"final"}, "additionalProperties": false}},
+		}
+	} else if input.WikiReadOnlyMode {
+		availableToolSpecs = []ToolSpec{
+			{Name: "wiki_list_files", Description: "列出 wiki 目录中的 .md 文件", Parameters: map[string]any{"type": "object", "properties": map[string]any{"dir": map[string]any{"type": "string"}}, "additionalProperties": false}},
+			{Name: "wiki_read_file", Description: "读取 wiki 文件内容", Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"}, "additionalProperties": false}},
+			{Name: "finish", Description: "完成任务", Parameters: map[string]any{"type": "object", "properties": map[string]any{"final": map[string]any{"type": "string"}}, "required": []string{"final"}, "additionalProperties": false}},
+		}
+	}
+	routingService := newRoutingService(client)
+	toolRunner := newToolRuntime(client, input)
 	memorySession := agentmemory.NewFacade().NewSession(agentmemory.SessionInput{
 		RoomID:                 strings.TrimSpace(input.RoomID),
 		Goal:                   goal,
@@ -96,6 +111,13 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			})
 		},
 	})
+	memorySession.AppendMessage(agentmemory.Message{Role: "user", Content: goal})
+	wikiContext := ""
+	if input.WikiQueryFunc != nil {
+		wikiContext = input.WikiQueryFunc(ctx, goal)
+	} else if input.WikiStore != nil {
+		wikiContext = input.WikiStore.QueryContext(strings.TrimSpace(input.RoomID), goal)
+	}
 	state := &State{
 		DomainState: DomainState{
 			Goal:               goal,
@@ -113,6 +135,7 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			AvailableToolSpecs: availableToolSpecs,
 			MemorySession:      memorySession,
 			ToolRuntime:        toolRunner,
+			WikiContext:        wikiContext,
 		},
 		ControlState: ControlState{
 			CurrentNode: "planner",
@@ -125,7 +148,6 @@ func Execute(ctx context.Context, client ChatClient, input Input) (string, error
 			FailReason:  "",
 		},
 	}
-	routingService := newRoutingService(client)
 	if runErr := routingService.Run(ctx, state); runErr != nil {
 		reason := strings.TrimSpace(state.FailReason)
 		if reason == "" {
@@ -200,7 +222,7 @@ func newRoutingService(client ChatClient) *agentrouting.Service {
 	return agentrouting.NewService(router, policy)
 }
 
-func newToolRuntime(input Input) toolruntime.Runtime {
+func newToolRuntime(client ChatClient, input Input) toolruntime.Runtime {
 	cfg := toolruntime.Config{
 		RAGSearchTopK:   ragSearchTopK,
 		RAGSearchVector: ragSearchVector,
@@ -210,7 +232,22 @@ func newToolRuntime(input Input) toolruntime.Runtime {
 		AIGCGenerate:           toolruntime.AIGCGenerateFunc(input.AIGCGenerate),
 		MCPCallByQualifiedName: toolruntime.MCPCallFunc(input.MCPCallToolByQualifiedName),
 	}
-	return toolruntime.New(cfg, deps,
+	if input.WikiOnlyMode && input.WikiDir != "" {
+		return toolruntime.New(cfg, deps,
+			tools.NewWikiReadTool(input.WikiDir),
+			tools.NewWikiWriteTool(input.WikiDir),
+			tools.NewWikiListTool(input.WikiDir),
+			tools.NewFinishTool(),
+		)
+	}
+	if input.WikiReadOnlyMode && input.WikiDir != "" {
+		return toolruntime.New(cfg, deps,
+			tools.NewWikiReadTool(input.WikiDir),
+			tools.NewWikiListTool(input.WikiDir),
+			tools.NewFinishTool(),
+		)
+	}
+	ts := []toolruntime.Tool{
 		tools.NewRAGSearchTool(cfg, deps),
 		tools.NewGenerateImageTool(deps),
 		tools.NewGetCurrentTimeTool(),
@@ -218,5 +255,20 @@ func newToolRuntime(input Input) toolruntime.Runtime {
 		tools.NewFinishTool(),
 		tools.NewSkillTool(""),
 		tools.NewBashTool(nil),
-	)
+		tools.NewSubAgentTool(input.AgentDepth, func(ctx context.Context, goal string) (string, error) {
+			return Execute(ctx, client, Input{
+				Goal:       goal,
+				RoomID:     input.RoomID,
+				UserID:     input.UserID,
+				MaxSteps:   maxStepsDefault,
+				AgentDepth: input.AgentDepth + 1,
+				WikiStore:  input.WikiStore,
+				WikiDir:    input.WikiDir,
+				RAGSearch:  input.RAGSearch,
+				AIGCGenerate:               input.AIGCGenerate,
+				MCPCallToolByQualifiedName: input.MCPCallToolByQualifiedName,
+			})
+		}),
+	}
+	return toolruntime.New(cfg, deps, ts...)
 }

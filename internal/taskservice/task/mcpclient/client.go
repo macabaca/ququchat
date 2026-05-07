@@ -46,7 +46,7 @@ func NewClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 120 * time.Second
 	}
 
 	baseTransport := http.DefaultTransport
@@ -178,6 +178,7 @@ func (c *Client) CallToolRaw(ctx context.Context, name string, arguments map[str
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err

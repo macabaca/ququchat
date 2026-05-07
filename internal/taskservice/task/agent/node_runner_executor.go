@@ -66,6 +66,10 @@ func RunExecutorNode(ctx context.Context, state *State) (next string, err error)
 	state.ToolError = ""
 	if state.MemorySession != nil {
 		state.MemorySession.AppendObservation(record)
+		state.MemorySession.AppendMessage(agentmemory.Message{
+			Role:    "tool_result",
+			Content: toolName + " → " + agentmemory.ShortText(toolOutput, 400),
+		})
 	}
 	if state.OutlineIndex < len(state.Outline.Steps)-1 {
 		state.OutlineIndex++

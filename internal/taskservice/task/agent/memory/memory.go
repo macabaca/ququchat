@@ -13,6 +13,11 @@ const (
 	errorMarker        = "错误报告："
 )
 
+type Message struct {
+	Role    string // "user" | "assistant" | "tool_result"
+	Content string
+}
+
 type SessionInput struct {
 	RoomID                 string
 	Goal                   string
@@ -68,6 +73,9 @@ type Facade interface {
 type Session interface {
 	Recall(ctx context.Context, req RecallRequest) (RecallContext, error)
 	AppendObservation(obs Observation)
+	AppendMessage(msg Message)
+	Messages() []Message
+	BuildMessagesText() string
 	BuildFeedback() string
 	Trace() []Observation
 	Finalize(finalAnswer string) Result
@@ -83,6 +91,7 @@ type defaultSession struct {
 	feedbackOutputMaxChars int
 	onObservation          func(obs Observation)
 	observations           []Observation
+	messages               []Message
 }
 
 func NewFacade() Facade {
@@ -180,6 +189,34 @@ func (s *defaultSession) AppendObservation(obs Observation) {
 	if s.onObservation != nil {
 		s.onObservation(normalized)
 	}
+}
+
+func (s *defaultSession) AppendMessage(msg Message) {
+	role := strings.TrimSpace(msg.Role)
+	content := strings.TrimSpace(msg.Content)
+	if role == "" || content == "" {
+		return
+	}
+	s.messages = append(s.messages, Message{Role: role, Content: content})
+}
+
+func (s *defaultSession) Messages() []Message {
+	return append([]Message(nil), s.messages...)
+}
+
+func (s *defaultSession) BuildMessagesText() string {
+	if len(s.messages) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, m := range s.messages {
+		b.WriteString("[")
+		b.WriteString(m.Role)
+		b.WriteString("] ")
+		b.WriteString(m.Content)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (s *defaultSession) BuildFeedback() string {

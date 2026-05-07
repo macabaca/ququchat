@@ -307,6 +307,7 @@ func main() {
 		RAGRerankTimeout:                 cfg.Rerank.TimeoutOrDefault(),
 		RAGRerankRecallTopN:              cfg.Rerank.RecallTopNOrDefault(),
 		MCPMultiClient:                   mcpMultiClient,
+		WikiDir:                          cfg.Wiki.BaseDir,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

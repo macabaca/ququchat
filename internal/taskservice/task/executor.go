@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ququchat/internal/taskservice/task/mcpclient"
+	"ququchat/internal/taskservice/wiki"
 )
 
 var ErrUnsupportedTask = errors.New("unsupported task type")
@@ -22,6 +23,8 @@ type ExecutorOptions struct {
 	AIGCClient       AIGCClient
 	MCPMultiClient   *mcpclient.MultiClient
 	ProgressReporter AgentProgressReporter
+	WikiStore        wiki.Store
+	WikiDir          string
 }
 
 type DefaultExecutor struct {
@@ -30,15 +33,19 @@ type DefaultExecutor struct {
 	aigcClient       AIGCClient
 	mcpMultiClient   *mcpclient.MultiClient
 	progressReporter AgentProgressReporter
+	wikiStore        wiki.Store
+	wikiDir          string
 }
 
 func NewDefaultExecutor(opts ExecutorOptions) *DefaultExecutor {
 	return &DefaultExecutor{
-		llmClient:      opts.LLMClient,
-		ragHandler:     opts.RAGHandler,
-		aigcClient:     opts.AIGCClient,
-		mcpMultiClient: opts.MCPMultiClient,
+		llmClient:        opts.LLMClient,
+		ragHandler:       opts.RAGHandler,
+		aigcClient:       opts.AIGCClient,
+		mcpMultiClient:   opts.MCPMultiClient,
 		progressReporter: opts.ProgressReporter,
+		wikiStore:        opts.WikiStore,
+		wikiDir:          opts.WikiDir,
 	}
 }
 

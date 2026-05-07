@@ -52,6 +52,7 @@ type AgentPayload struct {
 	RecentMessages []string
 	MaxSteps       int
 	RoomID         string
+	UserID         string
 }
 
 type RAGPayload struct {

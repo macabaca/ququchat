@@ -15,7 +15,7 @@ func BuildRealtimePlanningGuidance(specs []agenttypes.ToolSpec, now time.Time) s
 	builder.WriteString("。\n")
 	builder.WriteString("认知边界：你仅在 2025 年之前的数据上训练，这不代表当前时间停留在 2025 年前。\n")
 	if HasTavilyTool(specs) {
-		builder.WriteString("决策要求：若请求涉及即时信息、最新事件或实时数据，先调用 tavily 相关工具检索，再基于检索结果思考与回答。\n")
+		builder.WriteString("决策要求：若请求涉及即时信息、最新事件或实时数据，优先调用 tavily_search 检索（速度快）；仅当需要深度研究时才使用 tavily_research，再基于检索结果思考与回答。\n")
 	} else {
 		builder.WriteString("决策要求：若请求涉及即时信息、最新事件或实时数据，先调用可用联网检索工具（如 tavily 相关工具）检索，再基于检索结果思考与回答。\n")
 	}
@@ -63,7 +63,11 @@ func BuildCoordinatorPrompt(input agenttypes.CoordinatorPromptInput) string {
 		builder.WriteString(strings.TrimSpace(input.CurrentTask))
 		builder.WriteString("\n")
 	}
-	if strings.TrimSpace(input.Feedback) != "" {
+	if strings.TrimSpace(input.MessagesText) != "" {
+		builder.WriteString("对话历史：\n")
+		builder.WriteString(strings.TrimSpace(input.MessagesText))
+		builder.WriteString("\n")
+	} else if strings.TrimSpace(input.Feedback) != "" {
 		builder.WriteString("上一轮反馈：")
 		builder.WriteString(strings.TrimSpace(input.Feedback))
 		builder.WriteString("\n")
@@ -88,6 +92,11 @@ func BuildCoordinatorThinkPrompt(input agenttypes.CoordinatorPromptInput) string
 	builder.WriteString("思考与表达要求：即使工具描述或参数为英文，你也必须始终使用中文进行思考与输出。\n")
 	builder.WriteString(input.RealtimeGuidance)
 	builder.WriteString(input.AgentIdentity)
+	if strings.TrimSpace(input.WikiContext) != "" {
+		builder.WriteString("背景知识（来自知识库）：\n")
+		builder.WriteString(strings.TrimSpace(input.WikiContext))
+		builder.WriteString("\n")
+	}
 	builder.WriteString("目标：")
 	builder.WriteString(input.Goal)
 	builder.WriteString("\n")
@@ -114,7 +123,11 @@ func BuildCoordinatorThinkPrompt(input agenttypes.CoordinatorPromptInput) string
 		builder.WriteString(strings.TrimSpace(input.CurrentTask))
 		builder.WriteString("\n")
 	}
-	if strings.TrimSpace(input.Feedback) != "" {
+	if strings.TrimSpace(input.MessagesText) != "" {
+		builder.WriteString("对话历史：\n")
+		builder.WriteString(strings.TrimSpace(input.MessagesText))
+		builder.WriteString("\n")
+	} else if strings.TrimSpace(input.Feedback) != "" {
 		builder.WriteString("上一轮反馈：")
 		builder.WriteString(strings.TrimSpace(input.Feedback))
 		builder.WriteString("\n")
@@ -165,7 +178,11 @@ func BuildCoordinatorActPrompt(input agenttypes.CoordinatorPromptInput) string {
 		builder.WriteString(strings.TrimSpace(input.CurrentThought))
 		builder.WriteString("\n")
 	}
-	if strings.TrimSpace(input.Feedback) != "" {
+	if strings.TrimSpace(input.MessagesText) != "" {
+		builder.WriteString("对话历史：\n")
+		builder.WriteString(strings.TrimSpace(input.MessagesText))
+		builder.WriteString("\n")
+	} else if strings.TrimSpace(input.Feedback) != "" {
 		builder.WriteString("上一轮反馈：")
 		builder.WriteString(strings.TrimSpace(input.Feedback))
 		builder.WriteString("\n")

@@ -74,6 +74,10 @@ func RunToolResponseNode(ctx context.Context, client ChatClient, state *State) (
 			record.Tool = "summarize_tool_result_fallback"
 		}
 		state.MemorySession.AppendObservation(record)
+		state.MemorySession.AppendMessage(agentmemory.Message{
+			Role:    "tool_result",
+			Content: toolName + " → " + agentmemory.ShortText(summary, 400),
+		})
 	}
 	return "tool_response.done", nil
 }

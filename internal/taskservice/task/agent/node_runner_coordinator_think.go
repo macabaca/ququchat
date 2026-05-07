@@ -49,6 +49,10 @@ func RunCoordinatorThinkNode(ctx context.Context, client ChatClient, state *Stat
 		coordinatorFeedback = strings.TrimSpace(state.MemorySession.BuildFeedback())
 	}
 	coordinatorFeedback = appendURLAliasFeedback(coordinatorFeedback, state)
+	messagesText := ""
+	if state.MemorySession != nil {
+		messagesText = state.MemorySession.BuildMessagesText()
+	}
 	promptInput := agenttypes.CoordinatorPromptInput{
 		Goal:               goal,
 		RealtimeGuidance:   agentservices.BuildRealtimePlanningGuidance(state.AvailableToolSpecs, time.Now()),
@@ -60,6 +64,8 @@ func RunCoordinatorThinkNode(ctx context.Context, client ChatClient, state *Stat
 		OutlineText:        formatPlannerOutline(state.Outline.Steps, outlineIndex),
 		CurrentTask:        currentTask,
 		Feedback:           coordinatorFeedback,
+		MessagesText:       messagesText,
+		WikiContext:        state.WikiContext,
 		RecentMessageCount: len(recentMessages),
 	}
 	thinkPrompt := agentservices.BuildCoordinatorThinkPrompt(promptInput)
@@ -90,17 +96,18 @@ func RunCoordinatorThinkNode(ctx context.Context, client ChatClient, state *Stat
 	}
 	if state.MemorySession != nil {
 		state.MemorySession.AppendObservation(agentmemory.Observation{
-			Step:       step,
-			Role:       "CoordinatorThink",
-			Tool:       "think",
-			Input:      agentmemory.ShortText(thinkPrompt, 220),
-			Output:     agentmemory.ShortText(thought, 220),
-			DurationMs: durationMs,
-			PromptTokens: usage.PromptTokens,
+			Step:             step,
+			Role:             "CoordinatorThink",
+			Tool:             "think",
+			Input:            agentmemory.ShortText(thinkPrompt, 220),
+			Output:           agentmemory.ShortText(thought, 220),
+			DurationMs:       durationMs,
+			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,
-			TotalTokens: usage.TotalTokens,
-			Status:     "succeeded",
+			TotalTokens:      usage.TotalTokens,
+			Status:           "succeeded",
 		})
+		state.MemorySession.AppendMessage(agentmemory.Message{Role: "assistant", Content: thought})
 	}
 	state.MaxSteps = maxSteps
 	state.Step = step

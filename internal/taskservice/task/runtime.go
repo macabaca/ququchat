@@ -13,6 +13,7 @@ import (
 	"ququchat/internal/taskservice/task/llmmq"
 	"ququchat/internal/taskservice/task/mcpclient"
 	"ququchat/internal/taskservice/task/openaicompat"
+	"ququchat/internal/taskservice/wiki"
 )
 
 type RuntimeOptions struct {
@@ -72,6 +73,7 @@ type RuntimeOptions struct {
 	RAGHandler                       RAGHandler
 	MCPMultiClient                   *mcpclient.MultiClient
 	AgentProgressReporter            AgentProgressReporter
+	WikiDir                          string
 	OnFinish                         func(ctx context.Context, doneTask *Task)
 }
 
@@ -244,6 +246,8 @@ func NewRuntime(opts RuntimeOptions) *Runtime {
 		AIGCClient:       aigcClient,
 		MCPMultiClient:   mcpMultiClient,
 		ProgressReporter: opts.AgentProgressReporter,
+		WikiStore:        wiki.NewFileStore(opts.WikiDir),
+		WikiDir:          wiki.ResolveBaseDir(opts.WikiDir),
 	})
 	pools := make([]*Pool, 0, len(consumerQueues))
 	for _, queue := range consumerQueues {

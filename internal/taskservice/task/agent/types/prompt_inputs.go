@@ -13,6 +13,8 @@ type CoordinatorPromptInput struct {
 	CurrentTask        string
 	CurrentThought     string
 	Feedback           string
+	MessagesText       string
+	WikiContext        string
 	RecentMessageCount int
 }
 

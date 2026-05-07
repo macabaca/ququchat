@@ -31,6 +31,7 @@ type DomainState struct {
 	AvailableToolSpecs []ToolSpec
 	SkillAllowedTools  []string // set by skill executor, restricts bash tool
 	SkillDir           string   // working directory for bash tool when running a skill
+	WikiContext        string   // injected from wiki store at session start
 	MemorySession      agentmemory.Session
 	ToolRuntime        toolruntime.Runtime
 }

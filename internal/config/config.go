@@ -27,6 +27,11 @@ type Config struct {
 	Storage        Storage              `yaml:"storage" json:"storage"`
 	Minio          Minio                `yaml:"minio" json:"minio"`
 	OSS            OSS                  `yaml:"oss" json:"oss"`
+	Wiki           Wiki                 `yaml:"wiki" json:"wiki"`
+}
+
+type Wiki struct {
+	BaseDir string `yaml:"base_dir" json:"base_dir"`
 }
 
 type MCPServer struct {

@@ -182,7 +182,7 @@ func parseCoordinatorAction(raw string) (string, string, error) {
 		actionObj = nested
 	}
 	toolName := strings.TrimSpace(fmt.Sprint(actionObj["tool"]))
-	actionInput := strings.TrimSpace(fmt.Sprint(actionObj["input"]))
+	actionInput := normalizeActionInputValue(actionObj["input"])
 	if toolName == "" {
 		toolName = strings.TrimSpace(fmt.Sprint(root["name"]))
 	}
@@ -205,6 +205,24 @@ func parseCoordinatorAction(raw string) (string, string, error) {
 		return "", "", errors.New("coordinator行动阶段缺少 action.input")
 	}
 	return toolName, actionInput, nil
+}
+
+func normalizeActionInputValue(raw any) string {
+	if raw == nil {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]any:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(data))
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
 }
 
 func normalizeFunctionArgumentsAsJSONString(raw any) string {
